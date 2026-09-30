@@ -125,3 +125,8 @@
 - web 进程发送（测试邮件、重发）若在 submitting 时崩溃会停在 submitting：worker 启动恢复只处理 job 发起的投递，这一点与测试邮件既有行为一致，未改。
 - DST（F19）：`resolveWallTime` 以当天前后 24 小时的两个偏移为候选，逐个验证；两个都成立 = 重复时刻取较早 instant（overlap_earlier）；都不成立 = 落在跳过区间，二分到转换点（gap_shifted）。`wallTimeToUtc` 保持签名不变。周期 occurrence 的唯一键尚未包含"选择的偏移"，调整标记也还没持久化到 occurrence（当前实例时区 Asia/Shanghai 无 DST，不影响）。
 - smoke 脚本的进程清理改为跨平台：有 `taskkill` 走原 Windows 路径，否则按进程树 `kill`。T7 的 schema 版本从 `EXPECTED_SCHEMA_VERSION` 读取，不再写死。
+
+## 2026-09-30 生产升级后的修复
+
+- 备份/恢复的"web 是否仍在运行"检查改为：health 响应体里 `service === "dash-campus"` 才算运行中。原来只要有 HTTP 响应就算，而生产的 `APP_BASE_URL` 经过 Caddy，web 停止后 Caddy 回 502，检查永远不放行。仍然走 `APP_BASE_URL` 而不是改成连容器地址：源码部署和 Compose 部署共用一套判据，web 在运行时经代理也能拿到本应用的响应。数据库异常时 health 返回 503 但仍带 service 字段，这时 web 确实在运行，照样拒绝。
+- 冒烟脚本在 `smoke-lib.sh` 里 `unset FORCE_COLOR`：断言按字符串比较 node 打印的值，FORCE_COLOR 会给数字和布尔值加 ANSI 颜色码（"11" != "11"）。只影响设置了这个变量的环境（如 AgentBox），不改各脚本的断言写法。

@@ -71,6 +71,34 @@ docker compose up -d
 scripts/stop.sh && scripts/backup.sh ../backups && git pull && scripts/build.sh && scripts/migrate.sh && scripts/start.sh
 ```
 
+### 生产（服务器上不是 git 仓库）：用 GitHub 源码包升级
+
+2026-09-30 实际走通的顺序。`<SHA>` 用要上线的 `main` 提交的完整 SHA。
+
+```bash
+cd /opt/dash-campus
+SHA=<SHA>
+# 0. 服务还在跑时先下载，缩短停机时间
+curl -fsSL "https://codeload.github.com/AndyYJF/dash-campus/tar.gz/$SHA" -o "/tmp/dash-$SHA.tgz"
+# 1. 停机 → 备份：必须看到"备份完成"才能继续
+docker compose stop web worker
+docker compose --profile ops run --rm ops scripts/backup.sh /app/backups
+# 2. 覆盖源码：包里没有 .env、data/、backups/，这三样不动
+tar -xzf "/tmp/dash-$SHA.tgz" --no-same-owner --strip-components=2 -C /opt/dash-campus "dash-campus-$SHA/app"
+# 3. 构建 → 迁移 → 启动 → 核对
+docker compose build
+docker compose --profile ops run --rm ops scripts/migrate.sh
+docker compose up -d web worker
+curl -s "http://127.0.0.1:${DASH_PORT}/api/v1/health"
+```
+
+注意：
+
+- 不要在交互式 SSH 里执行 `set -e`：任何一条命令失败都会让整个登录 shell 退出，重新登录后变量丢失。
+- 备份失败时停下来看原因，不要继续覆盖源码或迁移。服务已停时想先恢复，直接 `docker compose up -d web worker`（旧镜像、旧库都没动）。
+- 2026-09-30 之前构建的镜像里，备份检查会把反向代理的 502 当成"web 仍在运行"而拒绝备份。用这类旧镜像备份时，临时把检查地址指向 web 容器本身：`docker compose --profile ops run --rm -e APP_BASE_URL=http://web:3000 ops scripts/backup.sh /app/backups`（web 停止时 `web` 在 compose 网络里解析不到，检查放行；web 在运行时照样拒绝）。修复后的镜像不需要这一步。
+- `.env not found. Continuing without it.` 可以忽略：ops 容器的变量已由 compose 的 `env_file` 注入。
+
 ## 5. 备份（停机）
 
 ```bash
@@ -139,7 +167,7 @@ scripts/start.sh worker
 | 进程 | `docker compose` 的 `web`、`worker`，`restart: unless-stopped` |
 | 端口 | web 只映射 `127.0.0.1:${DASH_PORT}`（宿主 3000 被占用时改这个变量） |
 | HTTPS | 宿主已有的 Caddy，在 Caddyfile 末尾追加独立站点块（改前备份），Let's Encrypt 自动续期 |
-| SMTP | 该主机出站 465 不通，改用 `587` + `explicit`（STARTTLS），登录已验证，尚未发过真实邮件 |
+| SMTP | 该主机出站 465 不通，改用 `587` + `explicit`（STARTTLS），2026-09-30 主人已验证真实发送 |
 | 初始化 | 2026-09-29 主人已完成；`SETUP_TOKEN` 已清空 |
 | 部署密钥 | 本机专用密钥，公钥用 `DEPLOY_PUBKEY` 传给 `scripts/server-add-deploy-key.sh`，不写进仓库 |
 

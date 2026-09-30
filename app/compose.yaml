@@ -1,0 +1,46 @@
+# Dash Campus 自部署（计划 10.1）：web + worker 同机，共享本地持久目录 ./data。
+# 端口只映射到宿主环回 127.0.0.1:3000，由主机上的反向代理提供 HTTPS；不直接暴露公网。
+# 迁移、备份、恢复都是一次性命令，见 docs/deploy.md。
+services:
+  web:
+    build: .
+    image: dash-campus:local
+    env_file: .env
+    environment:
+      DATABASE_PATH: /app/data/dash-campus.db
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "127.0.0.1:${DASH_PORT:-3000}:3000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    image: dash-campus:local
+    env_file: .env
+    environment:
+      DATABASE_PATH: /app/data/dash-campus.db
+    volumes:
+      - ./data:/app/data
+    command: ["node", "node_modules/tsx/dist/cli.mjs", "src/worker/index.ts"]
+    # SIGTERM 后 worker 等在途任务结束再退出（单个外部调用最长 45 秒）
+    stop_grace_period: 60s
+    restart: unless-stopped
+    depends_on:
+      - web
+
+  # 一次性运维命令（不常驻）：docker compose run --rm ops scripts/migrate.sh
+  ops:
+    image: dash-campus:local
+    env_file: .env
+    environment:
+      DATABASE_PATH: /app/data/dash-campus.db
+    volumes:
+      - ./data:/app/data
+      - ./backups:/app/backups
+    entrypoint: ["bash"]
+    profiles: ["ops"]

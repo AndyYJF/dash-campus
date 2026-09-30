@@ -1,0 +1,139 @@
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-3);
+  align-items: stretch;
+}
+
+.candidate {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.candidate h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.fieldLabel {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  display: block;
+}
+
+.list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 14px;
+}
+
+.req {
+  font-size: 13px;
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.status {
+  font-size: 12px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.met {
+  background: color-mix(in srgb, var(--color-ok) 18%, transparent);
+  color: var(--color-ok);
+}
+
+.unknown {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+}
+
+.unmet {
+  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+  color: var(--color-danger);
+}
+
+.quote {
+  border-left: 3px solid var(--color-border);
+  padding-left: var(--space-2);
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.stages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  list-style: none;
+  padding: 0;
+  margin: var(--space-2) 0;
+  font-size: 13px;
+}
+
+.stage {
+  color: var(--color-text-muted);
+}
+
+.stageActive {
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.stageDone {
+  color: var(--color-ok);
+}
+
+.banner {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font-size: 13px;
+  margin-bottom: var(--space-3);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.actions {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+}
+
+.draft {
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  margin-top: var(--space-3);
+  background: var(--color-surface);
+}
+
+.inlineLabel {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  font-size: 14px;
+  margin-bottom: var(--space-2);
+}
+
+.inlineLabel input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}

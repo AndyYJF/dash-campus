@@ -1,0 +1,38 @@
+{
+  "name": "dash-campus",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "migrate": "tsx --env-file-if-exists=.env src/scripts/migrate.ts",
+    "worker": "tsx --env-file-if-exists=.env src/worker/index.ts",
+    "test": "tsx --test \"test/**/*.test.ts\"",
+    "backup": "tsx --env-file-if-exists=.env src/scripts/backup.ts",
+    "restore": "tsx --env-file-if-exists=.env src/scripts/restore.ts",
+    "resume-after-restore": "tsx --env-file-if-exists=.env src/scripts/resume.ts"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "next": "16.3.6",
+    "nodemailer": "^10.0.12",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tsx": "^4.23.15",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^20",
+    "@types/nodemailer": "^8.0.2",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.6",
+    "playwright-core": "1.63.0",
+    "typescript": "^5"
+  }
+}

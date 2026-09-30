@@ -19,9 +19,9 @@ export default function TaskList({
   const [error, setError] = useState<string | null>(null);
   const sections: Array<{ key: string; label: string }> = [
     { key: "overdue", label: "已逾期" },
-    { key: "today", label: "今天截止" },
-    { key: "upcoming", label: "临近截止" },
-    { key: "this_week", label: "本周安排" },
+    { key: "today", label: "今天" },
+    { key: "upcoming", label: "未来七天" },
+    { key: "this_week", label: "本周未定时" },
   ];
 
   async function complete(task: TaskRow) {

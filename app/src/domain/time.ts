@@ -30,18 +30,46 @@ export function mondayOf(localDate: string): string {
   return d.toISOString().slice(0, 10);
 }
 
-/** 当地墙钟时间 → UTC instant。不存在的 DST 时刻按调用方规则处理（T2 先取迭代逼近）。 */
-export function wallTimeToUtc(date: string, time: string, tz: string): Date {
+export type WallTimeAdjustment = "none" | "gap_shifted" | "overlap_earlier";
+
+/**
+ * 当地墙钟时间 → UTC instant（开发计划"日期与时区"，F19）：
+ * - 不存在的时刻（夏令时开始跳过的区间）向后移到第一个有效时刻，标 gap_shifted；
+ * - 重复的时刻（夏令时结束回拨）取较早的那一次（较早偏移），标 overlap_earlier。
+ * 以当天前后 24 小时的偏移为两个候选：转换不会在一天内发生两次。
+ */
+export function resolveWallTime(
+  date: string,
+  time: string,
+  tz: string,
+): { instant: Date; adjustment: WallTimeAdjustment } {
   // time 形如 "HH:MM"
-  const guess = new Date(`${date}T${time}:00Z`);
-  for (let i = 0; i < 3; i++) {
-    const offset = tzOffsetMs(guess, tz);
-    const next = new Date(`${date}T${time}:00Z`);
-    next.setTime(next.getTime() - offset);
-    if (Math.abs(next.getTime() - guess.getTime()) < 1000) break;
-    guess.setTime(next.getTime());
+  const naive = Date.parse(`${date}T${time}:00Z`);
+  const DAY = 86_400_000;
+  const before = tzOffsetMs(new Date(naive - DAY), tz);
+  const after = tzOffsetMs(new Date(naive + DAY), tz);
+  const valid = [...new Set([before, after])]
+    .map((o) => naive - o)
+    .filter((t) => tzOffsetMs(new Date(t), tz) === naive - t)
+    .sort((x, y) => x - y);
+
+  if (valid.length === 1) return { instant: new Date(valid[0]!), adjustment: "none" };
+  if (valid.length > 1) return { instant: new Date(valid[0]!), adjustment: "overlap_earlier" };
+
+  // 落在跳过的区间：二分找转换点（第一个使用新偏移的时刻），精确到秒
+  let lo = Math.min(naive - before, naive - after);
+  let hi = Math.max(naive - before, naive - after);
+  while (hi - lo > 1000) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (tzOffsetMs(new Date(mid), tz) === after) hi = mid;
+    else lo = mid;
   }
-  return guess;
+  return { instant: new Date(hi), adjustment: "gap_shifted" };
+}
+
+/** 当地墙钟时间 → UTC instant；DST 规则见 resolveWallTime */
+export function wallTimeToUtc(date: string, time: string, tz: string): Date {
+  return resolveWallTime(date, time, tz).instant;
 }
 
 /** tz 相对 UTC 的偏移毫秒（正 = 本地超前 UTC） */

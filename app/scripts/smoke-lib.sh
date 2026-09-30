@@ -5,8 +5,27 @@ SMOKE_PORT=""
 
 smoke_track() { SMOKE_PIDS+=("$1"); }
 
+smoke_kill_tree() { # Linux/macOS：先杀子进程再杀自己（npx → next 是子进程）
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do smoke_kill_tree "$c"; done
+  kill "$1" 2>/dev/null || true
+}
+
+smoke_kill() { # 结束单个已登记进程（含子进程），跨平台
+  if command -v taskkill > /dev/null 2>&1; then
+    local w; w=$(cat "/proc/$1/winpid" 2>/dev/null || echo "$1")
+    taskkill //F //T //PID "$w" > /dev/null 2>&1 || true
+  else
+    smoke_kill_tree "$1"
+  fi
+}
+
 smoke_cleanup() {
   local p w
+  if ! command -v taskkill > /dev/null 2>&1; then
+    for p in "${SMOKE_PIDS[@]}"; do smoke_kill_tree "$p"; done
+    return 0
+  fi
   for p in "${SMOKE_PIDS[@]}"; do
     w=$(cat "/proc/$p/winpid" 2>/dev/null || echo "$p")
     taskkill //F //T //PID "$w" > /dev/null 2>&1 || true

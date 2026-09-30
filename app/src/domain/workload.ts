@@ -75,9 +75,7 @@ export function computeWorkload(
   const events = listFixedEvents();
   // 只看覆盖本周的窗口：别周的配置不算数
   const weekLast = addDays(localMonday, 6);
-  const hasAnyTimeData = blocks.some(
-    (b) => inValidRange(localMonday, b.validFrom, b.validUntil) || inValidRange(weekLast, b.validFrom, b.validUntil),
-  );
+  const hasAnyTimeData = blocks.some((b) => overlapsRange(localMonday, weekLast, b.validFrom, b.validUntil));
 
   return {
     committedMinutes: sum(committed),
@@ -117,15 +115,18 @@ function netAvailableMinutes(
       .sort((a, b) => a[0] - b[0]);
     const merged = mergeWindows(dayWindows);
 
-    // 当日固定事件占用
-    const busy: Array<[number, number]> = events
-      .filter(
-        (e) =>
-          e.weekday === dow &&
-          inValidRange(date, e.validFrom, e.validUntil) &&
-          (e.eventDate === null || e.eventDate === date),
-      )
-      .map((e) => [toMinutes(e.localStart), toMinutes(e.localEnd)]);
+    // 当日固定事件占用（合并并集，重叠事件只扣一次）
+    const busy = mergeWindows(
+      events
+        .filter(
+          (e) =>
+            e.weekday === dow &&
+            inValidRange(date, e.validFrom, e.validUntil) &&
+            (e.eventDate === null || e.eventDate === date),
+        )
+        .map((e) => [toMinutes(e.localStart), toMinutes(e.localEnd)] as [number, number])
+        .sort((a, b) => a[0] - b[0]),
+    );
 
     for (const [s, e] of merged) {
       let start = s;
@@ -171,6 +172,13 @@ function toMinutes(hhmm: string): number {
 function inValidRange(date: string, from: string | null, until: string | null): boolean {
   if (from && date < from) return false;
   if (until && date > until) return false;
+  return true;
+}
+
+/** 有效期 [from, until] 与 [first, last] 是否有交集（null 表示不限） */
+function overlapsRange(first: string, last: string, from: string | null, until: string | null): boolean {
+  if (from && from > last) return false;
+  if (until && until < first) return false;
   return true;
 }
 

@@ -7,6 +7,7 @@ import IntegrationStatus from "./IntegrationStatus";
 import AiBudgetCard from "./AiBudgetCard";
 import DataExportCard from "./DataExportCard";
 import type { IntegrationStatusMap } from "@/contracts/integration-status";
+import type { TaskRow } from "@/repositories/planning";
 import {
   MAIL_COLUMN_KEYS,
   type MailColumnKey,
@@ -22,22 +23,41 @@ type PreviewResp = { sample: boolean; subject: string; html: string; text: strin
 type NotificationsResp = {
   pendingReminders: Array<{ taskId: string; title: string; triggerAt: string }>;
   upcomingReminders: Array<{ jobId: string; taskId: string; title: string; runAt: string }>;
+  inFlightOldReminders: Array<{
+    deliveryId: string;
+    taskId: string;
+    title: string;
+    status: string;
+    reminderRevision: number;
+    currentRevision: number;
+  }>;
   recentDeliveries: Array<{
     id: string;
     taskId: string | null;
     subject: string;
     status: string;
+    attempt: number;
+    resentFrom: string | null;
     error: string | null;
     createdAt: string;
   }>;
 };
+
+const RESENDABLE = new Set(["unknown", "failed"]);
+
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
 
 const DELIVERY_STATUS_LABEL: Record<string, string> = {
   queued: "排队中（未准入）",
   submitting: "发送中",
   accepted: "已被发送服务接受（不代表已读）",
   failed: "失败",
-  unknown: "结果不确定（不自动重发）",
+  unknown: "结果未确定，可能已发送（不自动重发）",
   cancelled: "已取消",
 };
 
@@ -49,6 +69,9 @@ export default function SettingsView() {
   const [notifs, setNotifs] = useState<NotificationsResp | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [previewTasks, setPreviewTasks] = useState<TaskRow[]>([]);
+  const [previewTaskId, setPreviewTaskId] = useState("");
+  const [confirmResendId, setConfirmResendId] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     api<{ integrations: IntegrationStatusMap }>("/api/v1/integrations")
@@ -63,6 +86,13 @@ export default function SettingsView() {
     api<NotificationsResp>("/api/v1/notifications")
       .then((r) => setNotifs(r))
       .catch(() => setNotifs(null));
+    api<{ tasks: TaskRow[] }>("/api/v1/tasks")
+      .then((r) =>
+        setPreviewTasks(
+          r.tasks.filter((t) => !t.archivedAt && t.status !== "done" && t.status !== "cancelled"),
+        ),
+      )
+      .catch(() => setPreviewTasks([]));
   }, []);
 
   useEffect(refresh, [refresh]);
@@ -90,7 +120,10 @@ export default function SettingsView() {
     setBusy(true);
     setMessage(null);
     try {
-      const r = await api<PreviewResp>("/api/v1/mail/preview", { method: "POST", body: {} });
+      const r = await api<PreviewResp>("/api/v1/mail/preview", {
+        method: "POST",
+        body: previewTaskId ? { taskId: previewTaskId } : {},
+      });
       setPreview(r);
     } catch (e) {
       setMessage(e instanceof ApiError ? `${e.code}: ${e.message}` : "预览失败");
@@ -115,6 +148,28 @@ export default function SettingsView() {
     } catch (e) {
       setMessage(e instanceof ApiError ? `${e.code}: ${e.message}` : "发送失败");
     } finally {
+      setBusy(false);
+      refresh();
+    }
+  }
+
+  async function doResend(deliveryId: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const r = await api<{ delivery: { status: string; attempt: number } }>(
+        `/api/v1/deliveries/${deliveryId}/resend`,
+        { method: "POST", body: { confirmDuplicateRisk: true } },
+      );
+      setMessage(
+        r.delivery.status === "accepted"
+          ? `第 ${r.delivery.attempt} 次尝试已被发送服务接受（不代表已读）`
+          : `重发状态：${DELIVERY_STATUS_LABEL[r.delivery.status] ?? r.delivery.status}`,
+      );
+    } catch (e) {
+      setMessage(e instanceof ApiError ? `${e.code}: ${e.message}` : "重发失败");
+    } finally {
+      setConfirmResendId(null);
       setBusy(false);
       refresh();
     }
@@ -212,6 +267,17 @@ export default function SettingsView() {
           <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={busy} onClick={saveSettings}>
             保存设置
           </button>
+          <label className={styles.muted}>
+            预览用任务{" "}
+            <select value={previewTaskId} onChange={(e) => setPreviewTaskId(e.target.value)}>
+              <option value="">合成示例</option>
+              {previewTasks.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.title}
+                </option>
+              ))}
+            </select>
+          </label>
           <button className={styles.btn} disabled={busy} onClick={doPreview}>
             预览邮件（不发送）
           </button>
@@ -240,25 +306,68 @@ export default function SettingsView() {
         {notifs && notifs.pendingReminders.length === 0 && <p className={styles.muted}>无</p>}
         {notifs?.pendingReminders.map((r) => (
           <div key={r.taskId} className={styles.logItem}>
-            {r.title}（触发 {r.triggerAt}）
+            {r.title}（触发 {formatTime(r.triggerAt)}）
           </div>
         ))}
         <h3 className={styles.muted}>未来提醒</h3>
         {notifs && notifs.upcomingReminders.length === 0 && <p className={styles.muted}>无</p>}
         {notifs?.upcomingReminders.map((r) => (
           <div key={r.jobId} className={styles.logItem}>
-            {r.title}（{r.runAt} 发送）
+            {r.title}（{formatTime(r.runAt)} 发送）
           </div>
         ))}
+        {notifs && notifs.inFlightOldReminders.length > 0 && (
+          <>
+            <h3 className={styles.muted}>存在发送中的旧提醒</h3>
+            <p className={styles.muted}>
+              这些任务改期前的提醒已经交给发送服务，可能仍会到达，按新时间的提醒另行发送。
+            </p>
+            {notifs.inFlightOldReminders.map((r) => (
+              <div key={r.deliveryId} className={styles.logItem}>
+                <span className={styles.taskMeta}>{DELIVERY_STATUS_LABEL[r.status] ?? r.status}</span>{" "}
+                {r.title}（旧版本 {r.reminderRevision}，当前 {r.currentRevision}）
+              </div>
+            ))}
+          </>
+        )}
         <h3 className={styles.muted}>投递记录</h3>
         {notifs && notifs.recentDeliveries.length === 0 && <p className={styles.muted}>无</p>}
-        {notifs?.recentDeliveries.map((d) => (
-          <div key={d.id} className={styles.logItem}>
-            <span className={styles.taskMeta}>{DELIVERY_STATUS_LABEL[d.status] ?? d.status}</span>{" "}
-            {d.subject}
-            {d.error && <span className={styles.muted}>（{d.error}）</span>}
-          </div>
-        ))}
+        {notifs?.recentDeliveries.map((d) => {
+          const resent = notifs.recentDeliveries.some((x) => x.resentFrom === d.id);
+          return (
+            <div key={d.id} className={styles.logItem}>
+              <span className={styles.taskMeta}>{DELIVERY_STATUS_LABEL[d.status] ?? d.status}</span>{" "}
+              {d.subject}
+              <span className={styles.muted}>
+                {" "}
+                · {formatTime(d.createdAt)}
+                {d.attempt > 1 ? ` · 第 ${d.attempt} 次尝试` : ""}
+              </span>
+              {d.error && <span className={styles.muted}>（{d.error}）</span>}
+              {RESENDABLE.has(d.status) && !resent && confirmResendId !== d.id && (
+                <button className={styles.btn} disabled={busy} onClick={() => setConfirmResendId(d.id)}>
+                  重发…
+                </button>
+              )}
+              {resent && <span className={styles.muted}> · 已重发</span>}
+              {confirmResendId === d.id && (
+                <div className={styles.actionsRow} role="group" aria-label="确认重发">
+                  <span className={styles.muted}>
+                    {d.status === "unknown"
+                      ? "这封邮件可能已经发出，重发可能让你收到两封。"
+                      : "上次发送失败，重发会再尝试一次。"}
+                  </span>
+                  <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={busy} onClick={() => doResend(d.id)}>
+                    确认重发
+                  </button>
+                  <button className={styles.btn} disabled={busy} onClick={() => setConfirmResendId(null)}>
+                    取消
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {message && <p className={styles.muted}>{message}</p>}

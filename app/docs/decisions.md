@@ -115,3 +115,13 @@
 - setup token 比较：去首尾空白、容忍 `SETUP_TOKEN=` 前缀，常量时间比较；错误信息只给长度，不回显内容。初始化完成后清空生产 `SETUP_TOKEN`（`hasOwner` 已使其失效，清空是多一层保险）。
 - 部署用本机专用 SSH 密钥，公钥与服务器地址不入库，不在任何文件里保存服务器密码。
 
+
+## 2026-09-30 待修清单 4、6、7、8 与 F19
+
+- 登录限速放内存：web 单进程，重启清零可以接受，不为此加表。按来源地址每 15 分钟 10 次失败，另设全局 100 次防换地址穷举；达到上限时连正确密码也先返回 429（否则限速对猜中的那次无效）。成功登录清掉该地址计数。来源取 `X-Forwarded-For` 最后一跳：web 只监听环回，前面的 Caddy 不信任客户端传来的 XFF（未配 trusted_proxies），会用真实地址覆写。
+- 外键失败统一映射为 422 `INVALID_REFERENCE`：`runIdempotent` 兜住所有创建，任务/项目 PATCH 和记录 POST 用 `withReferenceCheck`。不在每个路由里逐个预查 ID——数据库外键已经是唯一可信判据。
+- 首页近期行动按 v1.2 第 4 节重排：今天 = 今天计划（时段开始在今天）或今天截止；临近 = 未来 7 天内的时段或截止；本周未定时 = 归属本周。三者都不满足的任务不上首页（此前被归到"临近截止"）。组内先有具体时间的，再高优先级，再创建顺序。分类挪到 `src/domain/today.ts` 以便单测。
+- 显式重发（unknown/failed）：由 web 进程直接发送（与测试邮件同一路径），不经 worker、不自动重试。沿用原投递的收件人与正文快照，只换新 requestId、attempt+1；新列 `deliveries.resent_from` + 部分唯一索引保证同一条原投递只能重发一次，重复点击 409。提醒类要求任务未结束且 reminderRevision 未变，改期后的旧提醒不重发（新提醒由 job 负责）。请求必须带 `confirmDuplicateRisk: true`，界面两步确认并说明可能收到两封。
+- web 进程发送（测试邮件、重发）若在 submitting 时崩溃会停在 submitting：worker 启动恢复只处理 job 发起的投递，这一点与测试邮件既有行为一致，未改。
+- DST（F19）：`resolveWallTime` 以当天前后 24 小时的两个偏移为候选，逐个验证；两个都成立 = 重复时刻取较早 instant（overlap_earlier）；都不成立 = 落在跳过区间，二分到转换点（gap_shifted）。`wallTimeToUtc` 保持签名不变。周期 occurrence 的唯一键尚未包含"选择的偏移"，调整标记也还没持久化到 occurrence（当前实例时区 Asia/Shanghai 无 DST，不影响）。
+- smoke 脚本的进程清理改为跨平台：有 `taskkill` 走原 Windows 路径，否则按进程树 `kill`。T7 的 schema 版本从 `EXPECTED_SCHEMA_VERSION` 读取，不再写死。

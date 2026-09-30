@@ -52,3 +52,12 @@ export type JobRow = {
 /** 提醒触发点默认值（计划 4.3：日期型默认本日 09:00；精确时刻型提前量默认 24h） */
 export const DATE_DUE_REMINDER_LOCAL_TIME = "09:00";
 export const INSTANT_DUE_LEAD_MINUTES = 24 * 60;
+
+/** 对外返回的 job：租约 token 只给 worker 用，不经 HTTP 暴露 */
+export type PublicJob = Omit<JobRow, "leaseToken">;
+
+export function toPublicJob(job: JobRow): PublicJob {
+  const copy: Partial<JobRow> = { ...job };
+  delete copy.leaseToken;
+  return copy as PublicJob;
+}

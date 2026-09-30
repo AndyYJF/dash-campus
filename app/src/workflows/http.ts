@@ -33,6 +33,24 @@ export class HttpError extends Error {
   }
 }
 
+/** SQLite 外键约束失败：请求里引用的 ID 不存在，按输入错误处理而不是 500 */
+export function isForeignKeyViolation(e: unknown): boolean {
+  return (e as { code?: string } | null)?.code === "SQLITE_CONSTRAINT_FOREIGNKEY";
+}
+
+export const invalidReference422 = () =>
+  errorResponse("INVALID_REFERENCE", "引用的目标、项目、任务或其他对象不存在", 422);
+
+/** 同步执行数据库变更；外键失败转成 422，其他错误照常抛出 */
+export function withReferenceCheck(fn: () => NextResponse): NextResponse {
+  try {
+    return fn();
+  } catch (e) {
+    if (isForeignKeyViolation(e)) return invalidReference422();
+    throw e;
+  }
+}
+
 type IdemArgs = { actorScope: string; route: string };
 
 /**
@@ -69,6 +87,7 @@ export function runIdempotent(
     return tx.immediate();
   } catch (e) {
     if (e instanceof HttpError) return errorResponse(e.code, e.message, e.status, e.details);
+    if (isForeignKeyViolation(e)) return invalidReference422();
     throw e;
   }
 }

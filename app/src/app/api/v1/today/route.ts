@@ -1,11 +1,12 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { requireOwner } from "@/workflows/auth-guard";
-import { dueBoundaryUtc, instanceTimezone, localDateInTz, mondayOf } from "@/domain/time";
+import { instanceTimezone, localDateInTz, mondayOf } from "@/domain/time";
+import { buildActions } from "@/domain/today";
 import { computeWorkload, weekRange } from "@/domain/workload";
 import { getFocus } from "@/repositories/focus";
 import { listProposals } from "@/repositories/proposals";
-import { listTasks, type TaskRow } from "@/repositories/planning";
+import { listTasks } from "@/repositories/planning";
 import { listRecentLogs } from "@/repositories/logs";
 import { getDecisionByRevision, getRevision, listMessages } from "@/repositories/inbox";
 
@@ -25,21 +26,7 @@ export function GET(request: NextRequest) {
   const localMonday = mondayOf(localDate);
 
   const allTasks = listTasks();
-  const actionable = allTasks.filter(
-    (t) => t.status === "todo" || t.status === "doing" || t.status === "blocked",
-  );
-
-  const sections: Record<string, TaskRow[]> = { overdue: [], today: [], upcoming: [], this_week: [] };
-  for (const task of actionable) {
-    sections[classify(task, localDate, localMonday, asOf)].push(task);
-  }
-  const order = { overdue: 0, today: 1, upcoming: 2, this_week: 3 };
-  const actions = (Object.entries(sections) as Array<[string, TaskRow[]]>)
-    .flatMap(([section, tasks]) =>
-      tasks.sort((a, b) => (dueBoundaryUtc(a.due) ?? "9999") < (dueBoundaryUtc(b.due) ?? "9999") ? -1 : 1)
-        .map((task) => ({ task, section: section as "overdue" | "today" | "upcoming" | "this_week" })),
-    )
-    .sort((a, b) => order[a.section] - order[b.section]);
+  const actions = buildActions(allTasks, localDate, localMonday, asOf, tz);
   const shownActions = actions.slice(0, 6);
 
   const proposals = listProposals({ status: "pending" }).filter(
@@ -103,21 +90,4 @@ export function GET(request: NextRequest) {
     moreDecisionCount: allDecisions.length - decisions.length,
     recentLogs: listRecentLogs(3),
   });
-}
-
-function classify(
-  task: TaskRow,
-  localDate: string,
-  localMonday: string,
-  asOf: Date,
-): "overdue" | "today" | "upcoming" | "this_week" {
-  const boundary = dueBoundaryUtc(task.due);
-  if (boundary && new Date(boundary).getTime() < asOf.getTime()) return "overdue";
-  if (task.due.kind === "date" && task.due.localDate === localDate) return "today";
-  if (task.due.kind === "instant" && localDateInTz(new Date(task.due.at), task.due.timezone) === localDate) {
-    return "today";
-  }
-  if (boundary) return "upcoming";
-  if (task.plannedWeek?.localMonday === localMonday) return "this_week";
-  return "upcoming";
 }

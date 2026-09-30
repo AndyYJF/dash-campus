@@ -1,18 +1,11 @@
-import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getConfig } from "@/config";
 import { hashPassword } from "@/domain/password";
 import { createOwner, hasOwner } from "@/domain/session";
+import { sameSecret } from "@/domain/secrets";
 
 export const dynamic = "force-dynamic";
-
-/** 常量时间比较（长度不同直接不等；长度本身不是秘密） */
-function sameSecret(a: string, b: string): boolean {
-  const x = Buffer.from(a);
-  const y = Buffer.from(b);
-  return x.length === y.length && crypto.timingSafeEqual(x, y);
-}
 
 const setupSchema = z.object({
   token: z.string().min(1),

@@ -118,6 +118,8 @@ export function updateGoal(
       vals.push(v as string);
     }
   }
+  // 空 patch 只校验版本，不递增
+  if (sets.length === 0) return current.version === expectedVersion ? current : "conflict";
   sets.push("version = version + 1", "updated_at = ?");
   vals.push(now(), id, expectedVersion);
   const r = db
@@ -243,7 +245,8 @@ export function updateProject(
         .run(...vals);
       if (r.changes === 0) return "conflict" as const;
     } else if (patch.goalIds === undefined) {
-      return current;
+      // 空 patch 只校验版本
+      return current.version === expectedVersion ? current : ("conflict" as const);
     }
     if (patch.goalIds !== undefined) {
       // goalIds 变更也走版本检查

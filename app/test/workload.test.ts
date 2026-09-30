@@ -115,3 +115,30 @@ test("cancelled 不计入承诺；固定事件扣减窗口", () => {
   // 周二 600 − 120 = 480，× 0.8 = 384
   assert.equal(w.weekCapacityMinutes, 384);
 });
+
+test("重叠固定事件只扣一次", () => {
+  const week = "2026-11-02";
+  addBlock("ov1", week, 3, "09:00", "19:00");
+  const ins = getDb().prepare(
+    `INSERT INTO fixed_events (id, title, weekday, local_start, local_end, timezone, event_date, valid_from, valid_until)
+     VALUES (?, '课', 3, ?, ?, 'Asia/Shanghai', NULL, ?, ?)`,
+  );
+  ins.run("ov-a", "12:00", "14:00", week, addDaysLocal(week, 6));
+  ins.run("ov-b", "13:00", "15:00", week, addDaysLocal(week, 6));
+  const w = computeWorkload([], week, new Date("2026-11-01T00:00:00+08:00"));
+  // 周三 600 − 并集 180 = 420，× 0.8 = 336
+  assert.equal(w.weekCapacityMinutes, 336);
+});
+
+test("只覆盖周中几天的窗口也算有时间数据", () => {
+  const week = "2026-11-09";
+  getDb()
+    .prepare(
+      `INSERT INTO availability_blocks (id, title, weekday, local_start, local_end, timezone, valid_from, valid_until)
+       VALUES ('mid', '', 3, '09:00', '11:00', 'Asia/Shanghai', ?, ?)`,
+    )
+    .run(addDaysLocal(week, 2), addDaysLocal(week, 3));
+  const w = computeWorkload([], week, new Date("2026-11-08T00:00:00+08:00"));
+  assert.equal(w.hasAnyTimeData, true);
+  assert.equal(w.weekCapacityMinutes, 96);
+});

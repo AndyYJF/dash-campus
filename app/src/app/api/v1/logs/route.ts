@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createLog, listLogs } from "@/repositories/logs";
 import { requireOwner } from "@/workflows/auth-guard";
-import { errorResponse } from "@/workflows/http";
+import { errorResponse, withReferenceCheck } from "@/workflows/http";
 
 export const dynamic = "force-dynamic";
 
@@ -39,16 +39,18 @@ export async function POST(request: NextRequest) {
   if (!auth.ok) return auth.response;
   const parsed = logSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return errorResponse("VALIDATION", "输入不合法", 422, parsed.error.issues);
-  const result = createLog({
-    clientEntryId: parsed.data.clientEntryId,
-    occurredOn: parsed.data.occurredOn,
-    progress: parsed.data.progress,
-    blocker: parsed.data.blocker,
-    taskId: parsed.data.taskId ?? null,
-    projectId: parsed.data.projectId ?? null,
+  return withReferenceCheck(() => {
+    const result = createLog({
+      clientEntryId: parsed.data.clientEntryId,
+      occurredOn: parsed.data.occurredOn,
+      progress: parsed.data.progress,
+      blocker: parsed.data.blocker,
+      taskId: parsed.data.taskId ?? null,
+      projectId: parsed.data.projectId ?? null,
+    });
+    if (result === "content_conflict") {
+      return errorResponse("CONTENT_CONFLICT", "相同 clientEntryId 已用于不同内容的记录", 409);
+    }
+    return NextResponse.json({ log: result.log }, { status: result.replayed ? 200 : 201 });
   });
-  if (result === "content_conflict") {
-    return errorResponse("CONTENT_CONFLICT", "相同 clientEntryId 已用于不同内容的记录", 409);
-  }
-  return NextResponse.json({ log: result.log }, { status: result.replayed ? 200 : 201 });
 }

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { findSessionByToken, SESSION_COOKIE, type SessionRecord } from "@/domain/session";
+import { sameSecret } from "@/domain/secrets";
 
 /**
  * 登录守卫与 CSRF。
@@ -21,7 +22,7 @@ export function requireOwner(request: NextRequest): AuthResult {
   }
   if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
     const csrfHeader = request.headers.get("x-csrf-token");
-    if (!csrfHeader || csrfHeader !== session.csrfToken) {
+    if (!csrfHeader || !sameSecret(csrfHeader, session.csrfToken)) {
       return {
         ok: false,
         response: NextResponse.json(

@@ -16,6 +16,7 @@ mkdir -p ./data/smoke-t7 "$BK"
 bash scripts/migrate.sh > /dev/null
 
 source scripts/smoke-lib.sh
+EXPECTED_SCHEMA=$(sed -n 's/^export const EXPECTED_SCHEMA_VERSION = \([0-9]*\);$/\1/p' src/repositories/db.ts)
 SMOKE_PORT=3216
 B="http://localhost:3216/api/v1"
 C=/tmp/dash-t7-cookies.txt
@@ -33,8 +34,7 @@ start_web() {
   return 1
 }
 stop_web() {
-  local w; w=$(cat "/proc/$WEB_PID/winpid" 2>/dev/null || echo "$WEB_PID")
-  taskkill //F //T //PID "$w" > /dev/null 2>&1 || true
+  smoke_kill "$WEB_PID"
   for _ in $(seq 1 20); do curl -s -o /dev/null "$B/health" || return 0; sleep 1; done
 }
 login() {
@@ -88,16 +88,16 @@ stop_web
 out=$(bash scripts/backup.sh "$BK" 2>&1)
 check "停机后备份成功" "$(echo "$out" | grep -c '备份完成')" "1"
 BDIR=$(ls -d "$BK"/dash-campus-backup-* | head -1)
-check "备份清单记录 schemaVersion" "$(jget "j.schemaVersion" < "$BDIR/manifest.json")" "10"
+check "备份清单记录 schemaVersion" "$(jget "j.schemaVersion" < "$BDIR/manifest.json")" "$EXPECTED_SCHEMA"
 
 # 4. schema 不匹配：web 拒绝启动并说明
-node -e "const D=require('better-sqlite3');const d=new D('$DATABASE_PATH');d.prepare('UPDATE schema_version SET version=9').run();d.close()"
+node -e "const D=require('better-sqlite3');const d=new D('$DATABASE_PATH');d.prepare('UPDATE schema_version SET version=$((EXPECTED_SCHEMA - 1))').run();d.close()"
 set +e
 timeout 60 npx next start -p 3216 > /tmp/dash-t7-web-bad.log 2>&1; rc=$?
 set -e
 check "schema 过旧时 web 退出" "$([ $rc -ne 0 ] && echo yes || echo no)" "yes"
 check "退出说明提示迁移" "$(grep -c 'scripts/migrate.sh' /tmp/dash-t7-web-bad.log)" "1"
-node -e "const D=require('better-sqlite3');const d=new D('$DATABASE_PATH');d.prepare('UPDATE schema_version SET version=10').run();d.close()"
+node -e "const D=require('better-sqlite3');const d=new D('$DATABASE_PATH');d.prepare('UPDATE schema_version SET version=$EXPECTED_SCHEMA').run();d.close()"
 
 # 5. 恢复：hold 状态
 set +e
@@ -121,7 +121,7 @@ npx tsx src/worker/index.ts > /tmp/dash-t7-worker.log 2>&1 &
 WK=$!; smoke_track $WK
 sleep 8
 check "hold 期间 worker 不领取" "$(grep -c '恢复暂停' /tmp/dash-t7-worker.log)" "1"
-w=$(cat "/proc/$WK/winpid" 2>/dev/null || echo "$WK"); taskkill //F //T //PID "$w" > /dev/null 2>&1 || true
+smoke_kill "$WK"
 sleep 1
 
 # 6. resume：非交互需显式确认

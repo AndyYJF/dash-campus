@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { toPublicJob } from "@/contracts/jobs";
 import { getJob, requestCancel } from "@/repositories/jobs";
 import { requireOwner } from "@/workflows/auth-guard";
 import { errorResponse, notFound404 } from "@/workflows/http";
@@ -23,5 +24,6 @@ export async function POST(request: NextRequest, ctx: Params) {
     return errorResponse("NOT_CANCELLABLE", "该作业类型不可取消", 422);
   }
   const result = requestCancel(id);
-  return NextResponse.json({ result, job: getJob(id) });
+  const after = getJob(id);
+  return NextResponse.json({ result, job: after ? toPublicJob(after) : null });
 }

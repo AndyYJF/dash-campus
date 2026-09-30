@@ -1,5 +1,6 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { toPublicJob } from "@/contracts/jobs";
 import { getJob } from "@/repositories/jobs";
 import { listDeliveriesByJob } from "@/repositories/deliveries";
 import { requireOwner } from "@/workflows/auth-guard";
@@ -19,7 +20,8 @@ export async function GET(request: NextRequest, ctx: Params) {
   const deliveries = listDeliveriesByJob(id).map((d) => {
     const copy: Record<string, unknown> = { ...d };
     delete copy.snapshot;
+    delete copy.leaseToken;
     return copy;
   });
-  return NextResponse.json({ job, deliveries });
+  return NextResponse.json({ job: toPublicJob(job), deliveries });
 }

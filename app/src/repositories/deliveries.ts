@@ -35,6 +35,8 @@ export type DeliveryRow = {
   };
   status: DeliveryStatus;
   attempt: number;
+  /** 主人显式重发时指向原投递 */
+  resentFrom: string | null;
   error: string | null;
   createdAt: string;
   updatedAt: string;
@@ -57,6 +59,7 @@ function mapDelivery(r: Record<string, unknown>): DeliveryRow {
     snapshot: JSON.parse(r.snapshot_json as string) as DeliveryRow["snapshot"],
     status: r.status as DeliveryStatus,
     attempt: r.attempt as number,
+    resentFrom: (r.resent_from as string | null) ?? null,
     error: (r.error as string | null) ?? null,
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
@@ -72,6 +75,8 @@ export function createDelivery(input: {
   recipient: string;
   subject: string;
   snapshot: DeliveryRow["snapshot"];
+  attempt?: number;
+  resentFrom?: string | null;
 }): DeliveryRow {
   const db = getDb();
   const id = crypto.randomUUID();
@@ -79,8 +84,8 @@ export function createDelivery(input: {
   const t = now();
   db.prepare(
     `INSERT INTO deliveries (id, job_id, task_id, request_id, lease_token, reminder_revision,
-       recipient, subject, snapshot_json, status, attempt, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 1, ?, ?)`,
+       recipient, subject, snapshot_json, status, attempt, resent_from, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
   ).run(
     id,
     input.jobId,
@@ -91,6 +96,8 @@ export function createDelivery(input: {
     input.recipient,
     input.subject,
     JSON.stringify(input.snapshot),
+    input.attempt ?? 1,
+    input.resentFrom ?? null,
     t,
     t,
   );

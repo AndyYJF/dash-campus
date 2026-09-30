@@ -72,7 +72,7 @@ export function GET(request: NextRequest) {
 
   const inFlightOldReminders = db
     .prepare(
-      `SELECT d.id, d.task_id, d.status, d.reminder_revision, t.reminder_revision AS current_revision
+      `SELECT d.id, d.task_id, d.status, d.reminder_revision, t.reminder_revision AS current_revision, t.title
        FROM deliveries d JOIN tasks t ON t.id = d.task_id
        WHERE d.status IN ('submitting', 'unknown') AND d.reminder_revision < t.reminder_revision
        ORDER BY d.created_at DESC LIMIT 20`,
@@ -83,6 +83,7 @@ export function GET(request: NextRequest) {
     status: string;
     reminder_revision: number;
     current_revision: number;
+    title: string;
   }>;
 
   const recentDeliveries = listDeliveries().map((d) => {
@@ -99,6 +100,7 @@ export function GET(request: NextRequest) {
     inFlightOldReminders: inFlightOldReminders.map((d) => ({
       deliveryId: d.id,
       taskId: d.task_id,
+      title: d.title,
       status: d.status,
       reminderRevision: d.reminder_revision,
       currentRevision: d.current_revision,

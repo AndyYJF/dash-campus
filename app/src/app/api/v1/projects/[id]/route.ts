@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { expectedVersionSchema, projectPatchSchema } from "@/contracts/planning";
 import { getProject, updateProject } from "@/repositories/planning";
 import { requireOwner } from "@/workflows/auth-guard";
-import { conflict409, errorResponse, notFound404 } from "@/workflows/http";
+import { conflict409, errorResponse, notFound404, withReferenceCheck } from "@/workflows/http";
 
 export const dynamic = "force-dynamic";
 
@@ -29,8 +29,10 @@ export async function PATCH(request: NextRequest, ctx: Params) {
     return errorResponse("VALIDATION", "输入不合法", 422, parsed.error.issues);
   }
   const { expectedVersion, ...patch } = parsed.data;
-  const result = updateProject(id, patch, expectedVersion);
-  if (result === "not_found") return notFound404("项目不存在或已归档");
-  if (result === "conflict") return conflict409();
-  return NextResponse.json({ project: result });
+  return withReferenceCheck(() => {
+    const result = updateProject(id, patch, expectedVersion);
+    if (result === "not_found") return notFound404("项目不存在或已归档");
+    if (result === "conflict") return conflict409();
+    return NextResponse.json({ project: result });
+  });
 }

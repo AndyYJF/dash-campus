@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
 
   const final = getDelivery(delivery.id)!;
   return NextResponse.json({
-    delivery: { ...final, snapshot: undefined },
+    delivery: { ...final, snapshot: undefined, leaseToken: undefined },
     recipient: cfg.MAIL_TO,
   });
 }

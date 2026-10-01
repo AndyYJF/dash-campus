@@ -6,7 +6,10 @@ export default function ReviewsPage() {
   return (
     <AppShell currentPath="/reviews">
       <div className={styles.pageHeader}>
-        <h1>回顾</h1>
+        <div>
+          <h1>回顾</h1>
+          <p className={styles.pageSub}>每周看一次事实、推测与建议，由你决定怎么调整。</p>
+        </div>
       </div>
       <ReviewsView />
     </AppShell>

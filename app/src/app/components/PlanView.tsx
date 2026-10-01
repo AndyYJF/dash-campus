@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, newIdempotencyKey } from "./api";
-import Link from "next/link";
 import TaskForm, { mondaysFrom } from "./TaskForm";
+import { TaskMeta } from "./TaskList";
 import { formatMinutes } from "./WeekStatusStrip";
 import styles from "./dash.module.css";
 import type { WeekPlan } from "@/contracts/today";
@@ -87,7 +87,7 @@ export default function PlanView() {
 
   return (
     <div>
-      <section className={styles.card} aria-labelledby="focus-title">
+      <section className={`${styles.card} ${styles.cardFeature}`} aria-labelledby="focus-title">
         <h2 id="focus-title">本周重点（{plan.week.localMonday} 起）</h2>
         <form
           className={styles.inlineForm}
@@ -115,7 +115,7 @@ export default function PlanView() {
 
       <section className={styles.card} aria-labelledby="load-title">
         <h2 id="load-title">周负担</h2>
-        <div className={styles.strip} style={{ marginBottom: 8 }}>
+        <div className={styles.strip}>
           <div className={styles.stripItem}>
             <span className={styles.stripLabel}>整周承诺（含已完成）</span>
             <span className={styles.stripValue}>{formatMinutes(w.committedMinutes)}</span>
@@ -144,28 +144,17 @@ export default function PlanView() {
         <h2 id="tasks-title">本周任务</h2>
         {plan.tasks.length === 0 && <p className={styles.empty}>本周还没有任务。</p>}
         {plan.tasks.map((t) => (
-          <div key={t.id} className={styles.taskRow} style={{ flexWrap: "wrap" }}>
+          <div key={t.id} className={`${styles.taskRow} ${styles.taskRowWrap}`}>
             <div className={styles.taskBody}>
               <span className={styles.taskTitle}>
                 <span
-                  className={`${styles.badge} ${t.status === "done" ? styles.badgeOk : t.status === "blocked" ? styles.badgeHigh : ""}`}
+                  className={`${styles.badge} ${t.status === "done" ? styles.badgeOk : t.status === "blocked" ? styles.badgeHigh : t.status === "doing" ? styles.badgeAccent : ""}`}
                 >
                   {TASK_STATUS[t.status]}
                 </span>{" "}
                 {t.title}
               </span>
-              <span className={styles.taskMeta}>
-                {t.estimateMinutes !== null ? `${t.estimateMinutes} 分钟` : "估时未知"}
-                {t.due.kind === "date" && ` · ${t.due.localDate} 截止`}
-                {t.due.kind === "instant" && ` · ${new Date(t.due.at).toLocaleString()} 截止`}
-                {t.scheduledStart && ` · 安排在 ${new Date(t.scheduledStart).toLocaleString()}`}
-                {t.projectId && (
-                  <>
-                    {" · "}
-                    <Link href={`/projects/${t.projectId}`}>所属项目</Link>
-                  </>
-                )}
-              </span>
+              <TaskMeta task={t} />
             </div>
             {t.status !== "done" && t.status !== "cancelled" && editing !== t.id && (
               <button className={styles.btn} onClick={() => setEditing(t.id)}>

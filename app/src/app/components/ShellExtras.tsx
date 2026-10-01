@@ -29,7 +29,8 @@ export default function ShellExtras() {
       <div className={styles.recentTitle}>近期项目</div>
       {projects.map((p) => (
         <Link key={p.id} href={`/projects/${p.id}`} className={styles.recentLink}>
-          {p.title}
+          <span className={styles.recentDot} aria-hidden="true" />
+          <span className={styles.recentText}>{p.title}</span>
         </Link>
       ))}
     </div>

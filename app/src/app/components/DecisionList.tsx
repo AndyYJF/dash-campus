@@ -20,7 +20,7 @@ export default function DecisionList({ summary }: { summary: TodaySummary }) {
               {d.title}
             </span>
             <span className={styles.taskMeta}>
-              <Link href={d.href}>查看依据并处理</Link>
+              <Link href={d.href}>查看依据并处理 →</Link>
             </span>
           </div>
         </div>

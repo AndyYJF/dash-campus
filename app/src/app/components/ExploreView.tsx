@@ -196,7 +196,7 @@ export default function ExploreView() {
 
           <div className={styles.card}>
             <h2>最近的探索</h2>
-            {runs.length === 0 && <p className={styles.muted}>还没有探索记录。</p>}
+            {runs.length === 0 && <p className={styles.empty}>还没有探索记录。提一个问题开始第一次探索。</p>}
             {runs.map((r) => (
               <div key={r.id} className={styles.taskRow}>
                 <span className={styles.taskTitle}>

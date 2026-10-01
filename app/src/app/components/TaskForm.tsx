@@ -85,10 +85,9 @@ export default function TaskForm({
         value={d.title}
         onChange={(e) => edit({ title: e.target.value })}
       />
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      <div className={styles.fieldRow}>
         <input
           className={styles.field}
-          style={{ maxWidth: 120 }}
           type="number"
           min={0}
           placeholder="估时(分钟)"
@@ -98,7 +97,6 @@ export default function TaskForm({
         />
         <input
           className={styles.field}
-          style={{ maxWidth: 160 }}
           type="date"
           aria-label="截止日期"
           value={d.dueDate}
@@ -107,7 +105,6 @@ export default function TaskForm({
         {weekOptions && weekOptions.length > 0 && (
           <select
             className={styles.field}
-            style={{ maxWidth: 180 }}
             aria-label="归属周"
             value={d.plannedMonday}
             onChange={(e) => edit({ plannedMonday: e.target.value })}

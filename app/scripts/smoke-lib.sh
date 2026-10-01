@@ -1,5 +1,7 @@
 # 冒烟脚本共用：后台进程登记与退出清理（source 使用）
 # Git Bash 的 $! 是 MSYS pid，taskkill 需要 Windows pid（/proc/<pid>/winpid），否则 node 残留并锁住 smoke 库
+# 断言按字符串比较 node 打印的值；FORCE_COLOR 会给数字/布尔加 ANSI 颜色码，导致 "11" != "11"
+unset FORCE_COLOR
 SMOKE_PIDS=()
 SMOKE_PORT=""
 

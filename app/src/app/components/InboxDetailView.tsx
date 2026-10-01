@@ -111,17 +111,26 @@ export default function InboxDetailView() {
 
       <div className={styles.card}>
         <h2 className={styles.sectionTitle}>判定与分区</h2>
-        <p>
-          资格判定：
-          {decision?.applicability === "TRUE" && " 符合"}
-          {decision?.applicability === "FALSE" && " 不符合"}
-          {decision?.applicability === "UNKNOWN" && " 条件未知（不据标题猜资格）"}
-          {!decision?.applicability && " 未筛选（仅存原文）"}
-          {" · 分区："}
-          {PARTITION_LABEL[decision?.partition ?? ""] ?? decision?.partition}
-          {decision?.manualPartition && "（人工覆盖）"}
-          {decision?.matchedRuleId && "（人工规则）"}
-        </p>
+        <dl className={styles.facts}>
+          <dt>资格判定</dt>
+          <dd>
+            {decision?.applicability === "TRUE" && <span className={`${styles.badge} ${styles.badgeOk}`}>符合</span>}
+            {decision?.applicability === "FALSE" && <span className={styles.badge}>不符合</span>}
+            {decision?.applicability === "UNKNOWN" && (
+              <>
+                <span className={`${styles.badge} ${styles.badgeHigh}`}>条件未知</span>{" "}
+                <span className={styles.muted}>不据标题猜资格</span>
+              </>
+            )}
+            {!decision?.applicability && <span className={styles.badge}>未筛选（仅存原文）</span>}
+          </dd>
+          <dt>分区</dt>
+          <dd>
+            {PARTITION_LABEL[decision?.partition ?? ""] ?? decision?.partition}
+            {decision?.manualPartition && "（人工覆盖）"}
+            {decision?.matchedRuleId && "（人工规则）"}
+          </dd>
+        </dl>
         {condition && (
           <div className={styles.muted}>
             条件依据：

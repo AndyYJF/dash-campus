@@ -44,12 +44,17 @@ export function workerLooksAlive(dbPath: string, now = Date.now()): string | nul
   }
 }
 
-/** web 是否仍在监听：GET /api/v1/health 有响应即视为运行中 */
+/**
+ * web 是否仍在运行：GET /api/v1/health 返回本应用自己的健康响应（service = dash-campus）才算。
+ * 生产的 APP_BASE_URL 经过反向代理，web 停止后代理仍会回 502 等页面，不能把"有响应"当成"在运行"。
+ * 数据库异常时 health 返回 503 但仍带 service 字段，这种情况 web 确实在运行，照样拒绝。
+ */
 export async function webLooksAlive(baseUrl: string): Promise<boolean> {
   try {
     const ctl = AbortSignal.timeout(2000);
-    await fetch(new URL("/api/v1/health", baseUrl), { signal: ctl });
-    return true;
+    const res = await fetch(new URL("/api/v1/health", baseUrl), { signal: ctl });
+    const body = (await res.json().catch(() => null)) as { service?: unknown } | null;
+    return body?.service === "dash-campus";
   } catch {
     return false;
   }

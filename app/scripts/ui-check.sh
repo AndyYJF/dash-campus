@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 浏览器界面检查：独立库 + 独立端口 3217，fixture 模型，不调用真实服务、不发邮件。
-# 需要本机 Edge（EDGE_PATH 可覆盖）。截图与结果写入 data/ui-check/。
+# 需要一个 Chromium 系浏览器：默认找本机 Edge，其他环境用 EDGE_PATH 指定（如 /usr/bin/google-chrome）。
+# 机器上要有中文字体，否则截图里中文是方块。截图与结果写入 data/ui-check/。
 set -euo pipefail
 cd "$(dirname "$0")/.." || exit 1
 

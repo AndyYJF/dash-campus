@@ -4,7 +4,7 @@ import { useEffect, useState, type KeyboardEvent } from "react";
 import { api } from "./api";
 import { useDraft } from "./useDraft";
 import ErrorNote, { toErrorState } from "./ErrorNote";
-import BlockerAssist from "./BlockerAssist";
+import LogTimeline from "./LogTimeline";
 import styles from "./dash.module.css";
 import type { TaskRow } from "@/repositories/planning";
 
@@ -147,23 +147,16 @@ export default function QuickLogForm({
           <button type="submit" className={`${styles.btn} ${styles.btnPrimary}`} disabled={busy}>
             {busy ? "保存中…" : "保存记录"}
           </button>
-          <span className={styles.muted}>进展和卡点至少填一项；Ctrl+Enter 也可提交</span>
+          <span className={styles.muted}>
+            进展和卡点至少填一项；<span className={styles.kbd}>Ctrl</span> + <span className={styles.kbd}>Enter</span> 也可提交
+          </span>
         </div>
         <ErrorNote error={error} />
       </form>
       <h3 className={styles.sectionTitle}>最近记录</h3>
       {recentLogs.length === 0 && <p className={styles.empty}>还没有记录。写一条今天的进展或卡点吧。</p>}
       {recentLogs.length > 0 && (
-        <div>
-          {recentLogs.map((log) => (
-            <div key={log.id} className={styles.logItem}>
-              <div className={styles.taskMeta}>{log.occurredOn}</div>
-              {log.progress && <div>{log.progress}</div>}
-              {log.blocker && <div className={styles.muted}>卡点：{log.blocker}</div>}
-              <BlockerAssist log={log} />
-            </div>
-          ))}
-        </div>
+        <LogTimeline logs={recentLogs} />
       )}
     </section>
   );

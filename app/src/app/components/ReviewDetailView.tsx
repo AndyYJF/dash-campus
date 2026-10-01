@@ -8,6 +8,7 @@ import ErrorNote, { toErrorState } from "./ErrorNote";
 import ProposalCard from "./ProposalCard";
 import { useDraft } from "./useDraft";
 import { REVIEW_STATUS } from "./ReviewsView";
+import BackLink from "./BackLink";
 import styles from "./dash.module.css";
 import ex from "./explore.module.css";
 import type { ProposalRow } from "@/repositories/proposals";
@@ -122,10 +123,8 @@ export default function ReviewDetailView() {
 
   return (
     <div>
-      <p>
-        <Link href="/reviews">← 回顾</Link>
-      </p>
-      <h1 style={{ marginTop: 0 }}>{review.localMonday} 起的一周</h1>
+      <BackLink href="/reviews" label="回顾" />
+      <h1>{review.localMonday} 起的一周</h1>
       <p className={styles.muted}>
         {REVIEW_STATUS[review.status] ?? review.status}
         {review.generatedAt && ` · 生成于 ${new Date(review.generatedAt).toLocaleString("zh-CN")}`}

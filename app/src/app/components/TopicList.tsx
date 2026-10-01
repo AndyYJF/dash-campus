@@ -97,7 +97,7 @@ export default function TopicList({ searchReady, onRun }: { searchReady: boolean
     <div className={styles.card}>
       <h2>关注方向</h2>
       <p className={styles.muted}>开启后每周按选定时间检索一次，最多 3 个新候选；证据相同的候选不重复提醒。</p>
-      {topics.length === 0 && <p className={styles.muted}>还没有关注方向。</p>}
+      {topics.length === 0 && <p className={styles.empty}>还没有关注方向。</p>}
       {topics.map((t) => (
         <div key={t.id} className={styles.logItem}>
           <div className={ex.row}>

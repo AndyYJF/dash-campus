@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Icon from "./Icon";
 import styles from "./dash.module.css";
 import type { TodaySummary } from "@/contracts/today";
 
@@ -19,7 +20,12 @@ export default function WeekStatusStrip({ summary }: { summary: TodaySummary }) 
   return (
     <section className={styles.strip} aria-label="本周状态">
       <div className={styles.stripItem}>
-        <span className={styles.stripLabel}>本周重点</span>
+        <span className={styles.stripLabel}>
+          <span className={styles.stripIcon}>
+            <Icon name="target" size={16} />
+          </span>
+          本周重点
+        </span>
         {focus ? (
           <span className={styles.stripValueText}>{focus.title}</span>
         ) : (
@@ -33,14 +39,24 @@ export default function WeekStatusStrip({ summary }: { summary: TodaySummary }) 
         </span>
       </div>
       <div className={styles.stripItem}>
-        <span className={styles.stripLabel}>剩余任务 · 已知估时</span>
+        <span className={styles.stripLabel}>
+          <span className={`${styles.stripIcon} ${styles.stripIconWarm}`}>
+            <Icon name="hourglass" size={16} />
+          </span>
+          剩余任务 · 已知估时
+        </span>
         <span className={styles.stripValue}>{formatMinutes(known)}</span>
         <span className={styles.stripNote}>
           {workload.remainingUnknownCount > 0 ? `另有 ${workload.remainingUnknownCount} 项估时未知` : "全部已估时"}
         </span>
       </div>
       <div className={styles.stripItem}>
-        <span className={styles.stripLabel}>未来可安排时间</span>
+        <span className={styles.stripLabel}>
+          <span className={`${styles.stripIcon} ${styles.stripIconInfo}`}>
+            <Icon name="clock" size={16} />
+          </span>
+          未来可安排时间
+        </span>
         {cap === null ? (
           <span className={styles.stripValueText}>
             尚未设置可用时间 <Link href="/plan">去设置</Link>

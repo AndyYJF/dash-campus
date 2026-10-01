@@ -1,53 +1,83 @@
+/* 探索、候选、复盘详情等页面共用的补充样式（基础样式在 dash.module.css） */
+
+/* 候选并排比较：最多三列，窄屏自动成单列 */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: var(--space-4);
   align-items: stretch;
 }
 
 .candidate {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-5);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow var(--transition), border-color var(--transition);
+}
+
+.candidate:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-md);
 }
 
 .candidate h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
+  line-height: 1.45;
 }
 
+/* 字段小标题；作为 <label> 包住输入框时，输入框自动与文字留出间距 */
 .fieldLabel {
-  font-size: 12px;
-  color: var(--color-text-muted);
   display: block;
+  font-size: var(--text-small);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.fieldLabel > input,
+.fieldLabel > select,
+.fieldLabel > textarea {
+  margin-top: 6px;
+  font-weight: 400;
 }
 
 .list {
   margin: 0;
-  padding-left: 18px;
-  font-size: 14px;
+  padding-left: 1.2em;
+  font-size: var(--text-body);
 }
 
+.list li + li {
+  margin-top: var(--space-1);
+}
+
+/* 前置条件：状态徽标 + 说明 */
 .req {
-  font-size: 13px;
   display: flex;
   gap: var(--space-2);
   align-items: baseline;
+  font-size: var(--text-small);
+  line-height: 1.6;
 }
 
 .status {
+  flex: 0 0 auto;
   font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
   padding: 0 var(--space-2);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   white-space: nowrap;
 }
 
 .met {
-  background: color-mix(in srgb, var(--color-ok) 18%, transparent);
+  background: var(--color-ok-soft);
   color: var(--color-ok);
 }
 
@@ -57,56 +87,107 @@
 }
 
 .unmet {
-  background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+  background: var(--color-danger-soft);
   color: var(--color-danger);
 }
 
+/* 原文引用 */
 .quote {
-  border-left: 3px solid var(--color-border);
-  padding-left: var(--space-2);
   margin: 0;
-  font-size: 13px;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--color-accent);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--color-surface-muted);
+  font-size: var(--text-small);
+  line-height: 1.65;
   color: var(--color-text-muted);
   overflow-wrap: anywhere;
 }
 
+/* 运行阶段：一排步骤，当前步骤高亮，已完成的打勾色 */
 .stages {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-1) var(--space-2);
+  gap: var(--space-2);
   list-style: none;
   padding: 0;
-  margin: var(--space-2) 0;
-  font-size: 13px;
+  margin: var(--space-3) 0;
+  font-size: var(--text-small);
+}
+
+/* 组件里三种状态各用一个类（不叠加），基础外观三者共用 */
+.stage,
+.stageActive,
+.stageDone {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 4px var(--space-3);
+  border-radius: var(--radius-pill);
+  font-weight: 500;
 }
 
 .stage {
+  background: var(--color-surface-muted);
   color: var(--color-text-muted);
 }
 
+.stage::before,
+.stageActive::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.45;
+}
+
 .stageActive {
-  font-weight: 700;
-  color: var(--color-text);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-weight: 650;
+}
+
+.stageActive::before {
+  opacity: 1;
 }
 
 .stageDone {
+  background: var(--color-ok-soft);
   color: var(--color-ok);
 }
 
+
 .banner {
+  padding: var(--space-3) var(--space-4);
+  margin-bottom: var(--space-4);
+  border-left: 3px solid var(--color-warning-text);
+  border-radius: var(--radius-md);
   background: var(--color-warning-bg);
   color: var(--color-warning-text);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-  font-size: 13px;
-  margin-bottom: var(--space-3);
+  font-size: var(--text-small);
+}
+
+.banner a {
+  color: inherit;
+  font-weight: 600;
 }
 
 .row {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: var(--space-2) var(--space-3);
   align-items: center;
+}
+
+/* 一行里的输入控件按内容宽度排，不各占一整行 */
+.row > input,
+.row > select {
+  width: auto;
+  min-width: 0;
+  flex: 0 1 auto;
+  margin-bottom: 0;
 }
 
 .actions {
@@ -114,26 +195,30 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  padding-top: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
 }
 
+/* 项目草案编辑区 */
 .draft {
-  border: 1px solid var(--color-accent);
-  border-radius: var(--radius-md);
-  padding: var(--space-3) var(--space-4);
   margin-top: var(--space-3);
-  background: var(--color-surface);
+  padding: var(--space-4);
+  border: 1.5px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
 }
 
 .inlineLabel {
   display: flex;
   gap: var(--space-2);
   align-items: center;
-  font-size: 14px;
-  margin-bottom: var(--space-2);
+  min-height: 36px;
+  font-size: var(--text-body);
+  cursor: pointer;
 }
 
 .inlineLabel input[type="checkbox"] {
+  flex: 0 0 auto;
   width: 18px;
   height: 18px;
 }

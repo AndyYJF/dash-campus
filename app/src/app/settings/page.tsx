@@ -6,7 +6,10 @@ export default function SettingsPage() {
   return (
     <AppShell currentPath="/settings">
       <div className={styles.pageHeader}>
-        <h1>设置</h1>
+        <div>
+          <h1>设置</h1>
+          <p className={styles.pageSub}>集成状态、提醒邮件、AI 用量与数据导出。</p>
+        </div>
       </div>
       <SettingsView />
     </AppShell>

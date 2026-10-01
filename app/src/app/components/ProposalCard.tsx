@@ -77,7 +77,7 @@ export default function ProposalCard({
           {p.reason || "（无标题提案）"}
         </strong>
         <span className={styles.badge}>{SOURCE[p.sourceKind] ?? p.sourceKind}</span>
-        <span className={styles.taskMeta}>
+        <span className={`${styles.badge} ${p.status === "pending" ? styles.badgeAccent : p.status === "applied" ? styles.badgeOk : ""}`}>
           {p.status === "pending" ? (p.snoozeUntil && new Date(p.snoozeUntil) > new Date() ? `暂缓至 ${fmt(p.snoozeUntil)}` : "待处理") : ({ applied: "已应用", rejected: "已拒绝", snoozed: "已暂缓" } as Record<string, string>)[p.status]}
         </span>
       </div>

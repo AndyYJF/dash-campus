@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import Link from "next/link";
+import BackLink from "./BackLink";
 import { api, ApiError } from "./api";
 import styles from "./dash.module.css";
 import ex from "./explore.module.css";
@@ -81,10 +81,8 @@ export default function ExplorationRunView() {
 
   return (
     <div>
-      <p>
-        <Link href="/explore">← 探索</Link>
-      </p>
-      <h1 style={{ marginTop: 0 }}>{run.query}</h1>
+      <BackLink href="/explore" label="探索" />
+      <h1>{run.query}</h1>
       {run.integrationMode !== "real" && <p className={ex.banner}>{MODE_LABEL[run.integrationMode]}</p>}
 
       <div className={styles.card}>

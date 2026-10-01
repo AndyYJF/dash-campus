@@ -130,3 +130,17 @@
 
 - 备份/恢复的"web 是否仍在运行"检查改为：health 响应体里 `service === "dash-campus"` 才算运行中。原来只要有 HTTP 响应就算，而生产的 `APP_BASE_URL` 经过 Caddy，web 停止后 Caddy 回 502，检查永远不放行。仍然走 `APP_BASE_URL` 而不是改成连容器地址：源码部署和 Compose 部署共用一套判据，web 在运行时经代理也能拿到本应用的响应。数据库异常时 health 返回 503 但仍带 service 字段，这时 web 确实在运行，照样拒绝。
 - 冒烟脚本在 `smoke-lib.sh` 里 `unset FORCE_COLOR`：断言按字符串比较 node 打印的值，FORCE_COLOR 会给数字和布尔值加 ANSI 颜色码（"11" != "11"）。只影响设置了这个变量的环境（如 AgentBox），不改各脚本的断言写法。
+
+## 2026-10-01 界面改版
+
+主人要求深度重做界面，可以不遵循原计划第 5 节的界面规定。保留的是可用性底线（`scripts/ui-check.mts` 的断言），视觉与布局重新定。
+
+- 设计变量重做（`globals.css`）：暖白纸张底色、墨色文字、青绿主色，另加一个靛蓝辅助色（info）。字号整体放大一档（正文 15px、数值 28px），圆角 8/12/16，卡片带极浅阴影。`--color-*` 变量名不变、保持十六进制，因为 ui-check 直接读它们算对比度。
+- 主题三态：亮色 / 跟随系统 / 暗色。手动选择写 `html[data-theme]` 并存 `localStorage.theme`；根布局用一段同步内联脚本在首次绘制前应用（Next 16 文档 preventing-flash-before-hydration 的做法），`<html>` 加 `suppressHydrationWarning`。暗色变量在 CSS 里写了两份（媒体查询一份、`[data-theme="dark"]` 一份）：纯 CSS 没法复用，换来的是不依赖 JS 也能跟随系统。
+- 读"只有浏览器才知道的值"（本机主题选择、当前时间的问候语）用 `useSyncExternalStore`，不在 effect 里 setState：项目的 lint 规则禁止后者，前者也自带服务端快照，不会水合不一致。
+- 手机导航从顶部横排改成底部固定标签栏，顶部只留品牌、设置和"写记录"。半透明背景和模糊放在顶部那一行上而不是侧栏容器上：`backdrop-filter` 会让容器成为固定定位的基准，底部标签栏会跟着错位。
+- 图标手写一小套线条 SVG（`Icon.tsx`），不引入图标库；图标只做装饰（aria-hidden），含义仍由文字表达。
+- 所有输入控件的基础外观用 `:where()` 写在全局：不增加优先级，组件类照常覆盖，也不会再出现没加 `.field` 的"裸"控件。
+- 任务行的分隔线画在行内（伪元素），不用 border：行有圆角的悬停底色，border 会跟着圆角弯。
+- 收件箱列表不再直接显示内部代码（`UNKNOWN`、分区键），改成与详情页一致的中文徽标。
+- 界面检查不再绑定 Edge：`EDGE_PATH` 可以指向任意 Chromium 系浏览器。新增 `scripts/ui-shot.mts`（按页面/宽度/主题截图）和 `scripts/ui-seed-rich.mts`（更丰富的示例数据），只用于开发时看效果。

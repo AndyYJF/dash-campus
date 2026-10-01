@@ -28,8 +28,11 @@ const d = new Date(`${today}T00:00:00Z`);
 d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
 const monday = d.toISOString().slice(0, 10);
 
-await call("/setup", { token: "ui-check-token", password: "smoke-pass-123" }).catch(() => {});
-csrf = (await call("/auth/login", { password: "smoke-pass-123" })).csrfToken as string;
+// 默认值对应 scripts/ui-check.sh 的独立库；也可以用环境变量指向别的实例（如开发库）
+const SETUP_TOKEN = process.env.UI_SETUP_TOKEN ?? "ui-check-token";
+const PASSWORD = process.env.UI_PASSWORD ?? "smoke-pass-123";
+await call("/setup", { token: SETUP_TOKEN, password: PASSWORD }).catch(() => {});
+csrf = (await call("/auth/login", { password: PASSWORD })).csrfToken as string;
 
 const project = await call(
   "/projects",

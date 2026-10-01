@@ -3,10 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, newIdempotencyKey } from "./api";
 import TaskForm from "./TaskForm";
-import Link from "next/link";
 import ExplorationConclusion from "./ExplorationConclusion";
 import StageReport from "./StageReport";
-import BlockerAssist from "./BlockerAssist";
+import BackLink from "./BackLink";
+import LogTimeline from "./LogTimeline";
+import { TaskMeta } from "./TaskList";
 import styles from "./dash.module.css";
 import type { TaskRow, ProjectRow } from "@/repositories/planning";
 import type { DailyLogRow, ArtifactRow } from "@/repositories/logs";
@@ -84,14 +85,14 @@ export default function ProjectView({ projectId }: { projectId: string }) {
     <div>
       <div className={styles.pageHeader}>
         <div>
-          <p className={styles.muted} style={{ margin: 0 }}>
-            <Link href="/plan">计划</Link> / 项目
-          </p>
-          <h1>{project.title}</h1>
+          <BackLink href="/plan" label="计划" />
+          <h1>
+            {project.title}{" "}
+            <span className={`${styles.badge} ${project.status === "active" ? styles.badgeAccent : ""}`}>
+              {PROJECT_STATUS[project.status]}
+            </span>
+          </h1>
         </div>
-        <span className={`${styles.badge} ${project.status === "active" ? styles.badgeAccent : ""}`}>
-          {PROJECT_STATUS[project.status]}
-        </span>
       </div>
 
       <div className={styles.columns}>
@@ -119,12 +120,12 @@ export default function ProjectView({ projectId }: { projectId: string }) {
               <div key={t.id} className={styles.taskRow}>
                 <div className={styles.taskBody}>
                   <span className={styles.taskTitle}>
-                    <span className={`${styles.badge} ${t.status === "done" ? styles.badgeOk : t.status === "blocked" ? styles.badgeHigh : ""}`}>
+                    <span className={`${styles.badge} ${t.status === "done" ? styles.badgeOk : t.status === "blocked" ? styles.badgeHigh : t.status === "doing" ? styles.badgeAccent : ""}`}>
                       {TASK_STATUS[t.status]}
                     </span>{" "}
                     {t.title}
                   </span>
-                  <span className={styles.taskMeta}>{t.estimateMinutes !== null ? `${t.estimateMinutes} 分钟` : "估时未知"}</span>
+                  <TaskMeta task={t} />
                 </div>
               </div>
             ))}
@@ -137,14 +138,7 @@ export default function ProjectView({ projectId }: { projectId: string }) {
           <section className={styles.card}>
             <h2>相关记录</h2>
             {logs.length === 0 && <p className={styles.empty}>还没有记录。可以在今天页写一条并关联到这个项目的任务。</p>}
-            {logs.map((log) => (
-              <div key={log.id} className={styles.logItem}>
-                <div className={styles.taskMeta}>{log.occurredOn}</div>
-                {log.progress && <div>{log.progress}</div>}
-                {log.blocker && <div className={styles.muted}>卡点：{log.blocker}</div>}
-                <BlockerAssist log={log} />
-              </div>
-            ))}
+            {logs.length > 0 && <LogTimeline logs={logs} />}
           </section>
         </div>
 

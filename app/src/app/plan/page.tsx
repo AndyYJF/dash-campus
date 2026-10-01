@@ -6,7 +6,10 @@ export default function PlanPage() {
   return (
     <AppShell currentPath="/plan">
       <div className={styles.pageHeader}>
-        <h1>计划</h1>
+        <div>
+          <h1>计划</h1>
+          <p className={styles.pageSub}>定下本周重点，看清负担放不放得下，再安排任务。</p>
+        </div>
       </div>
       <PlanView />
     </AppShell>

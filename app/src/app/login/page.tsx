@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import styles from "@/app/components/dash.module.css";
 import auth from "@/app/components/auth.module.css";
+import Icon from "@/app/components/Icon";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -48,8 +49,14 @@ export default function LoginPage() {
   return (
     <main className={auth.wrap}>
       <div className={auth.panel}>
-        <div className={auth.brand}>Dash Campus</div>
-        <h1>登录</h1>
+        <div className={auth.brand}>
+          <span className={auth.mark} aria-hidden="true">
+            D
+          </span>
+          Dash Campus
+        </div>
+        <h1>欢迎回来</h1>
+        <p className={auth.lead}>输入密码，继续今天的计划与记录。</p>
         <form onSubmit={submit}>
           <label className={styles.label}>
             密码
@@ -63,8 +70,7 @@ export default function LoginPage() {
           </label>
           <button
             type="submit"
-            className={`${styles.btn} ${styles.btnPrimary}`}
-            style={{ width: "100%" }}
+            className={`${styles.btn} ${styles.btnPrimary} ${styles.btnBlock}`}
             disabled={busy}
           >
             {busy ? "登录中…" : "登录"}
@@ -81,6 +87,10 @@ export default function LoginPage() {
           </p>
         )}
       </div>
+      <p className={auth.foot}>
+        <Icon name="lock" size={14} />
+        单用户自部署实例，数据只保存在你自己的服务器上。
+      </p>
     </main>
   );
 }

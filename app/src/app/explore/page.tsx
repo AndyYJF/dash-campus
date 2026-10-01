@@ -6,7 +6,10 @@ export default function ExplorePage() {
   return (
     <AppShell currentPath="/explore">
       <div className={styles.pageHeader}>
-        <h1>探索</h1>
+        <div>
+          <h1>探索</h1>
+          <p className={styles.pageSub}>带着问题找方向：检索资料、比较候选实践，再决定要不要动手。</p>
+        </div>
       </div>
       <ExploreView />
     </AppShell>

@@ -94,7 +94,7 @@ export default function ReviewsView() {
           <h2>待处理的建议（{pending.length}）</h2>
           <p className={styles.muted}>每份建议独立处理，只能整体应用、拒绝或暂缓。</p>
         </div>
-        {pending.length === 0 && <p className={styles.muted}>没有待处理的建议。</p>}
+        {pending.length === 0 && <p className={styles.empty}>没有待处理的建议。生成一次周复盘，或在记录旁点「分析这个卡点」，这里就会出现建议。</p>}
         {pending.map((p) => (
           <ProposalCard key={p.id} proposal={p} tasks={taskMap} onChanged={refresh} />
         ))}
@@ -119,7 +119,6 @@ export default function ReviewsView() {
               id="rv-week"
               type="date"
               className={styles.field}
-              style={{ maxWidth: 170, marginBottom: 0 }}
               value={monday}
               onChange={(e) => setMonday(e.target.value)}
             />
@@ -132,7 +131,7 @@ export default function ReviewsView() {
         </div>
         <div className={styles.card}>
           <h2>复盘记录</h2>
-          {reviews.length === 0 && <p className={styles.muted}>还没有复盘。</p>}
+          {reviews.length === 0 && <p className={styles.empty}>还没有复盘。</p>}
           {reviews.map((r) => (
             <div key={r.id} className={styles.taskRow}>
               <span className={styles.taskTitle}>

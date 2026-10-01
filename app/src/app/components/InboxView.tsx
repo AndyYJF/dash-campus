@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
+import Icon from "./Icon";
 import styles from "./dash.module.css";
 
 /**
@@ -33,6 +34,13 @@ const PARTITION_LABEL: Record<string, string> = {
 
 const ORDER = ["action", "review", "opportunity", "info", "folded"];
 
+/** 资格判定的可读说法与徽标颜色（与详情页一致，不直接显示内部代码） */
+const APPLICABILITY: Record<string, { label: string; cls: string }> = {
+  TRUE: { label: "符合条件", cls: styles.badgeOk },
+  FALSE: { label: "不符合条件", cls: "" },
+  UNKNOWN: { label: "条件未知", cls: styles.badgeHigh },
+};
+
 export default function InboxView() {
   const [items, setItems] = useState<InboxItem[] | null>(null);
   const [showFolded, setShowFolded] = useState(false);
@@ -62,15 +70,18 @@ export default function InboxView() {
         <div className={styles.card}>
           <h2 className={styles.error}>有 {conflicts.length} 条通知的修订顺序无法确定，需要你选择当前版本。</h2>
           {conflicts.map((c) => (
-            <div key={c.id} className={styles.taskRow}>
+            <div key={c.id} className={`${styles.taskRow} ${styles.taskRowCenter}`}>
               <span className={styles.taskTitle}>{c.title}</span>
-              <a href={`/inbox/${c.id}`}>去选择</a>
+              <a className={`${styles.btn} ${styles.btnGhost}`} href={`/inbox/${c.id}`}>
+                去选择
+                <Icon name="chevronRight" size={16} />
+              </a>
             </div>
           ))}
         </div>
       )}
 
-      {visible.length === 0 && <p className={styles.muted}>收件箱为空。</p>}
+      {visible.length === 0 && <p className={styles.empty}>收件箱是空的。外部通知导入后会出现在这里。</p>}
 
       {ORDER.filter((p) => visible.some((i) => i.partition === p)).map((p) => (
         <div key={p} className={styles.card}>
@@ -78,15 +89,27 @@ export default function InboxView() {
           {visible
             .filter((i) => i.partition === p)
             .map((i) => (
-              <div key={i.id} className={styles.taskRow}>
-                <span className={styles.taskTitle}>
-                  <strong>{i.title}</strong>
-                  <span className={styles.taskMeta}>
-                    {i.applicability ? ` · 判定 ${i.applicability}` : " · 未筛选"}
-                    {i.noticeType ? ` · ${i.noticeType}` : ""}
+              <div key={i.id} className={`${styles.taskRow} ${styles.taskRowCenter}`}>
+                <div className={styles.taskBody}>
+                  <span className={styles.taskTitle}>{i.title}</span>
+                  {i.textPreview && <span className={styles.taskMeta}>{i.textPreview}</span>}
+                  <span className={styles.metaRow}>
+                    <span className={`${styles.badge} ${APPLICABILITY[i.applicability ?? ""]?.cls ?? ""}`}>
+                      {APPLICABILITY[i.applicability ?? ""]?.label ?? "未筛选"}
+                    </span>
+                    {i.noticeType && <span className={styles.metaItem}>类型 {i.noticeType}</span>}
+                    {i.occurredAt && (
+                      <span className={styles.metaItem}>
+                        <Icon name="clock" size={14} />
+                        {new Date(i.occurredAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    )}
                   </span>
-                </span>
-                <a href={`/inbox/${i.id}`}>查看</a>
+                </div>
+                <a className={`${styles.btn} ${styles.btnGhost}`} href={`/inbox/${i.id}`}>
+                  查看
+                  <Icon name="chevronRight" size={16} />
+                </a>
               </div>
             ))}
         </div>

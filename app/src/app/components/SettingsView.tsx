@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
 import styles from "./dash.module.css";
+import Icon from "./Icon";
 import IntegrationStatus from "./IntegrationStatus";
 import AiBudgetCard from "./AiBudgetCard";
+import ThemeToggle from "./ThemeToggle";
 import DataExportCard from "./DataExportCard";
 import type { IntegrationStatusMap } from "@/contracts/integration-status";
 import type { TaskRow } from "@/repositories/planning";
@@ -196,8 +198,19 @@ export default function SettingsView() {
         <h2 className={styles.sectionTitle}>集成状态</h2>
         <IntegrationStatus integrations={integrations} />
         <p className={styles.muted}>
-          SMTP 未配置时提醒任务会标记失败并注明 INTEGRATION_UNAVAILABLE，不冒充已发送。
+          密钥只在部署环境的 <code>.env</code> 里配置，这里不显示也不能填写。SMTP 未配置时提醒任务会标记失败并注明
+          INTEGRATION_UNAVAILABLE，不冒充已发送。
         </p>
+      </div>
+
+      <div className={styles.card}>
+        <div className={styles.cardHeader}>
+          <h2>外观</h2>
+          <div className={styles.themeSlot}>
+            <ThemeToggle />
+          </div>
+        </div>
+        <p className={styles.muted}>亮色、跟随系统或暗色。选择只保存在这台设备的浏览器里。</p>
       </div>
 
       <AiBudgetCard />
@@ -267,21 +280,31 @@ export default function SettingsView() {
           <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={busy} onClick={saveSettings}>
             保存设置
           </button>
-          <label className={styles.muted}>
-            预览用任务{" "}
-            <select value={previewTaskId} onChange={(e) => setPreviewTaskId(e.target.value)}>
-              <option value="">合成示例</option>
-              {previewTasks.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.title}
-                </option>
-              ))}
-            </select>
-          </label>
+        </div>
+        <hr className={styles.divider} />
+        <h3 className={styles.sectionTitle}>预览与测试</h3>
+        <label className={styles.label} htmlFor="mail-preview-task">
+          预览用任务
+        </label>
+        <div className={styles.fieldRow}>
+          <select
+            id="mail-preview-task"
+            className={styles.field}
+            value={previewTaskId}
+            onChange={(e) => setPreviewTaskId(e.target.value)}
+          >
+            <option value="">合成示例</option>
+            {previewTasks.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.title}
+              </option>
+            ))}
+          </select>
           <button className={styles.btn} disabled={busy} onClick={doPreview}>
             预览邮件（不发送）
           </button>
           <button className={styles.btn} disabled={busy} onClick={doTest}>
+            <Icon name="mail" size={16} />
             发送测试邮件
           </button>
         </div>
@@ -290,35 +313,43 @@ export default function SettingsView() {
             <div className={styles.muted}>
               {preview.sample ? "（合成示例）" : ""}主题：{preview.subject}
             </div>
-            <pre style={{ whiteSpace: "pre-wrap", margin: "8px 0", fontSize: 13 }}>{preview.text}</pre>
-            <iframe
-              title="邮件 HTML 预览"
-              srcDoc={preview.html}
-              style={{ width: "100%", height: 320, border: "1px solid #ccc", borderRadius: 8 }}
-            />
+            <pre className={styles.previewText}>{preview.text}</pre>
+            <iframe title="邮件 HTML 预览" srcDoc={preview.html} className={styles.previewFrame} />
           </div>
         )}
       </div>
 
       <div className={styles.card}>
         <h2 className={styles.sectionTitle}>提醒与投递</h2>
-        <h3 className={styles.muted}>待处理提醒（触发点已到）</h3>
+        <h3 className={styles.sectionTitle}>待处理提醒（触发点已到）</h3>
         {notifs && notifs.pendingReminders.length === 0 && <p className={styles.muted}>无</p>}
         {notifs?.pendingReminders.map((r) => (
           <div key={r.taskId} className={styles.logItem}>
-            {r.title}（触发 {formatTime(r.triggerAt)}）
+            <div>{r.title}</div>
+            <span className={styles.metaRow}>
+              <span className={styles.metaItem}>
+                <Icon name="clock" size={14} />
+                触发于 {formatTime(r.triggerAt)}
+              </span>
+            </span>
           </div>
         ))}
-        <h3 className={styles.muted}>未来提醒</h3>
+        <h3 className={styles.sectionTitle}>未来提醒</h3>
         {notifs && notifs.upcomingReminders.length === 0 && <p className={styles.muted}>无</p>}
         {notifs?.upcomingReminders.map((r) => (
           <div key={r.jobId} className={styles.logItem}>
-            {r.title}（{formatTime(r.runAt)} 发送）
+            <div>{r.title}</div>
+            <span className={styles.metaRow}>
+              <span className={styles.metaItem}>
+                <Icon name="mail" size={14} />
+                {formatTime(r.runAt)} 发送
+              </span>
+            </span>
           </div>
         ))}
         {notifs && notifs.inFlightOldReminders.length > 0 && (
           <>
-            <h3 className={styles.muted}>存在发送中的旧提醒</h3>
+            <h3 className={styles.sectionTitle}>存在发送中的旧提醒</h3>
             <p className={styles.muted}>
               这些任务改期前的提醒已经交给发送服务，可能仍会到达，按新时间的提醒另行发送。
             </p>
@@ -330,7 +361,7 @@ export default function SettingsView() {
             ))}
           </>
         )}
-        <h3 className={styles.muted}>投递记录</h3>
+        <h3 className={styles.sectionTitle}>投递记录</h3>
         {notifs && notifs.recentDeliveries.length === 0 && <p className={styles.muted}>无</p>}
         {notifs?.recentDeliveries.map((d) => {
           const resent = notifs.recentDeliveries.some((x) => x.resentFrom === d.id);

@@ -64,9 +64,9 @@ export default function TaskList({
                 />
                 <div className={styles.taskBody}>
                   <span className={styles.taskTitle}>
+                    {task.title}{" "}
                     {section.key === "overdue" && <span className={`${styles.badge} ${styles.badgeOverdue}`}>逾期</span>}{" "}
-                    {task.priority === "high" && <span className={`${styles.badge} ${styles.badgeHigh}`}>高优先</span>}{" "}
-                    {task.title}
+                    {task.priority === "high" && <span className={`${styles.badge} ${styles.badgeHigh}`}>高优先</span>}
                     {pendingId === task.id && <span className={styles.muted}>（提交中…）</span>}
                   </span>
                   <TaskMeta task={task} overdue={section.key === "overdue"} />

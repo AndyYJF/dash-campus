@@ -1,5 +1,16 @@
 import type { Metadata, Viewport } from "next";
+import localFont from "next/font/local";
 import "./globals.css";
+
+// 拉丁字母与数字用 Geist（OFL 许可，字体文件随仓库，本机提供，不发外部字体请求）；中文仍用系统无衬线（globals.css）
+const geist = localFont({ src: "./fonts/Geist-Variable.woff2", variable: "--font-geist", weight: "100 900", display: "swap" });
+const geistMono = localFont({
+  src: "./fonts/GeistMono-Variable.woff2",
+  variable: "--font-geist-mono",
+  weight: "100 900",
+  display: "swap",
+  preload: false,
+});
 
 export const metadata: Metadata = {
   title: "Dash Campus",
@@ -11,8 +22,8 @@ export const viewport: Viewport = {
   initialScale: 1,
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f6f5f1" },
-    { media: "(prefers-color-scheme: dark)", color: "#101413" },
+    { media: "(prefers-color-scheme: light)", color: "#f4f4f5" },
+    { media: "(prefers-color-scheme: dark)", color: "#09090a" },
   ],
 };
 
@@ -22,11 +33,10 @@ export const viewport: Viewport = {
  */
 const THEME_SCRIPT = `try{var t=localStorage.getItem("theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}`;
 
-// 字体用系统中文无衬线（globals.css），不发外部字体请求
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     // data-theme 由上面的内联脚本在水合前写入，服务端渲染结果里没有
-    <html lang="zh-CN" suppressHydrationWarning>
+    <html lang="zh-CN" className={`${geist.variable} ${geistMono.variable}`} suppressHydrationWarning>
       <body>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         {children}

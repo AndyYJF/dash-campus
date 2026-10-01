@@ -1,100 +1,165 @@
-/* 登录与初始化页：居中面板 + 品牌色光晕背景 */
+/* 登录与初始化页：左侧墨色品牌面板（一角荧光），右侧表单；窄屏只留表单，品牌缩成一行 */
 .wrap {
-  position: relative;
   min-height: 100vh;
   min-height: 100dvh;
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  background: var(--color-surface);
+}
+
+.aside {
+  position: relative;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-5);
-  padding: var(--space-6) var(--space-4);
+  justify-content: space-between;
+  gap: var(--space-8);
+  margin: var(--space-2);
+  padding: var(--space-8) var(--space-10) var(--space-10);
+  border-radius: var(--radius-xl);
+  color: var(--hero-text);
+  background:
+    radial-gradient(90% 70% at 100% 0%, var(--hero-glow), transparent 60%),
+    radial-gradient(70% 50% at 0% 100%, color-mix(in srgb, var(--hero-glow) 50%, transparent), transparent 65%),
+    var(--hero-bg);
+  box-shadow: inset 0 0 0 1px var(--hero-line);
   overflow: hidden;
-  isolation: isolate;
-}
-
-/* 背景光晕：两团柔和的品牌色，不抢内容 */
-.wrap::before,
-.wrap::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  border-radius: 50%;
-  filter: blur(80px);
-  opacity: 0.35;
-  pointer-events: none;
-}
-
-.wrap::before {
-  width: 460px;
-  height: 460px;
-  left: calc(50% - 420px);
-  top: -160px;
-  background: var(--brand-from);
-}
-
-.wrap::after {
-  width: 380px;
-  height: 380px;
-  left: calc(50% + 40px);
-  bottom: -160px;
-  background: var(--brand-to);
-}
-
-.panel {
-  width: 100%;
-  max-width: 400px;
-  padding: var(--space-8) var(--space-6) var(--space-6);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 20px;
-  box-shadow: var(--shadow-lg);
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-6);
-  font-weight: 700;
-  font-size: 17px;
-  letter-spacing: -0.01em;
+  gap: 10px;
+  font-weight: 650;
+  font-size: 16px;
+  letter-spacing: -0.015em;
 }
 
-.mark {
-  flex: 0 0 auto;
+.tagline {
+  margin: 0;
+  font-size: clamp(34px, 4.2vw, 56px);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+}
+
+/* 荧光笔划过的那半句 */
+.tagline em {
+  display: inline-block;
+  font-style: normal;
+  margin: 6px 0 0 -4px;
+  padding: 0 10px 2px;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  transform: rotate(-1.2deg);
+}
+
+.points {
   display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, var(--brand-from), var(--brand-to));
-  color: #ffffff;
-  font-weight: 800;
-  font-size: 21px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), var(--shadow-sm);
+  gap: var(--space-2);
+  margin: var(--space-6) 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--hero-muted);
+  font-size: 14px;
+}
+
+.points li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.points li::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--color-primary);
+}
+
+.asideFoot {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--hero-muted);
+}
+
+.formSide {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-6);
+  padding: var(--space-8) var(--space-5);
+}
+
+.panel {
+  width: 100%;
+  max-width: 360px;
+}
+
+/* 窄屏才出现的品牌行 */
+.mobileBrand {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: var(--space-8);
+  font-weight: 650;
+  font-size: 16px;
+  letter-spacing: -0.015em;
 }
 
 .panel h1 {
-  margin-bottom: var(--space-1);
+  margin-bottom: var(--space-2);
+  font-size: 28px;
 }
 
 .lead {
-  margin: 0 0 var(--space-5);
+  margin: 0 0 var(--space-6);
   color: var(--color-text-muted);
 }
 
+.panel input {
+  height: 46px;
+  font-size: 16px;
+}
+
+.panel button[type="submit"] {
+  min-height: 46px;
+  margin-top: var(--space-2);
+  font-size: 15px;
+}
+
 .foot {
-  max-width: 400px;
+  width: 100%;
+  max-width: 360px;
   margin: 0;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-2);
   color: var(--color-text-muted);
   font-size: var(--text-small);
-  text-align: center;
 }
 
 .foot svg {
   flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+@media (max-width: 859px) {
+  .wrap {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .aside {
+    display: none;
+  }
+
+  .mobileBrand {
+    display: flex;
+  }
 }

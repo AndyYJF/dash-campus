@@ -98,61 +98,65 @@ export default function QuickLogForm({
     <section className={styles.card} aria-labelledby="quick-log-title">
       <div className={styles.cardHeader}>
         <h2 id="quick-log-title">写记录</h2>
-        <span className={styles.muted} role="status" aria-live="polite">
+        <span
+          className={`${styles.statusPill} ${state === "saved" ? styles.statusOk : state === "failed" ? styles.statusDanger : ""}`}
+          role="status"
+          aria-live="polite"
+        >
           {state === "submitting" && "提交中…"}
           {state === "failed" && "未保存，内容在本机"}
           {state === "draft" && (restored ? "已恢复本机草稿" : "草稿已存本机")}
           {state === "saved" && `已保存 ${savedAt}`}
         </span>
       </div>
+      {/* 两段正文 + 底部工具条（日期、关联、保存）合成一个输入框 */}
       <form
+        className={styles.composer}
         onSubmit={(e) => {
           e.preventDefault();
           void save();
         }}
       >
-        <div className={styles.formGrid}>
-          <div>
-            <label className={styles.label} htmlFor="log-date">
-              日期
-            </label>
-            <input id="log-date" type="date" className={styles.field} value={d.occurredOn} onChange={(e) => update({ occurredOn: e.target.value })} />
-          </div>
-          <div>
-            <label className={styles.label} htmlFor="log-task">
-              关联
-            </label>
-            <select id="log-task" className={styles.field} value={d.taskId} onChange={(e) => update({ taskId: e.target.value })}>
-              <option value="">日常记录（不关联任务）</option>
-              {tasks.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.title}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div className={styles.composerPart}>
+          <label className={styles.composerLabel} htmlFor="log-progress">
+            进展
+          </label>
+          <textarea id="log-progress" placeholder="今天推进了什么" rows={2} value={d.progress} onKeyDown={submitOnCtrlEnter} onChange={(e) => update({ progress: e.target.value })} />
         </div>
-        <p className={styles.muted} style={{ marginTop: 0 }}>
-          {linked ? `记在任务「${linked.title}」${linked.projectId ? "及其项目" : ""}下` : "记为日常记录"}
-        </p>
-        <label className={styles.label} htmlFor="log-progress">
-          进展
-        </label>
-        <textarea id="log-progress" className={styles.field} placeholder="今天推进了什么" rows={2} value={d.progress} onKeyDown={submitOnCtrlEnter} onChange={(e) => update({ progress: e.target.value })} />
-        <label className={styles.label} htmlFor="log-blocker">
-          卡点（可留空）
-        </label>
-        <textarea id="log-blocker" className={styles.field} placeholder="卡在哪里" rows={2} value={d.blocker} onKeyDown={submitOnCtrlEnter} onChange={(e) => update({ blocker: e.target.value })} />
-        <div className={styles.actionsRow}>
+        <div className={styles.composerPart}>
+          <label className={styles.composerLabel} htmlFor="log-blocker">
+            卡点（可留空）
+          </label>
+          <textarea id="log-blocker" placeholder="卡在哪里" rows={2} value={d.blocker} onKeyDown={submitOnCtrlEnter} onChange={(e) => update({ blocker: e.target.value })} />
+        </div>
+        <div className={styles.composerBar}>
+          <label className="visually-hidden" htmlFor="log-date">
+            日期
+          </label>
+          <input id="log-date" type="date" value={d.occurredOn} onChange={(e) => update({ occurredOn: e.target.value })} />
+          <label className="visually-hidden" htmlFor="log-task">
+            关联
+          </label>
+          <select id="log-task" value={d.taskId} onChange={(e) => update({ taskId: e.target.value })}>
+            <option value="">日常记录（不关联任务）</option>
+            {tasks.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.title}
+              </option>
+            ))}
+          </select>
           <button type="submit" className={`${styles.btn} ${styles.btnPrimary}`} disabled={busy}>
             {busy ? "保存中…" : "保存记录"}
           </button>
-          <span className={styles.muted}>
-            进展和卡点至少填一项；<span className={styles.kbd}>Ctrl</span> + <span className={styles.kbd}>Enter</span> 也可提交
-          </span>
         </div>
-        <ErrorNote error={error} />
       </form>
+      <p className={styles.composerHint}>
+        <span>{linked ? `记在任务「${linked.title}」${linked.projectId ? "及其项目" : ""}下` : "记为日常记录"}</span>
+        <span>
+          进展和卡点至少填一项；<span className={styles.kbd}>Ctrl</span> + <span className={styles.kbd}>Enter</span> 也可提交
+        </span>
+      </p>
+      <ErrorNote error={error} />
       <h3 className={styles.sectionTitle}>最近记录</h3>
       {recentLogs.length === 0 && <p className={styles.empty}>还没有记录。写一条今天的进展或卡点吧。</p>}
       {recentLogs.length > 0 && (

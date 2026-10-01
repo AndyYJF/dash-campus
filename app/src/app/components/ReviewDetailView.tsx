@@ -216,7 +216,7 @@ export default function ReviewDetailView() {
             )}
           </section>
 
-          {proposals.length > 0 && <h2 style={{ fontSize: 16 }}>建议（{proposals.length}）</h2>}
+          {proposals.length > 0 && <h2 className={ex.heading}>建议（{proposals.length}）</h2>}
           {proposals.map((p) => (
             <ProposalCard key={p.id} proposal={p} tasks={taskMap} evidenceLabels={labels} onChanged={refresh} />
           ))}

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
+import TodayHeader from "./TodayHeader";
 import WeekStatusStrip from "./WeekStatusStrip";
 import TaskList from "./TaskList";
 import QuickLogForm from "./QuickLogForm";
@@ -12,7 +13,7 @@ import styles from "./dash.module.css";
 import type { TodaySummary } from "@/contracts/today";
 import type { TaskRow } from "@/repositories/planning";
 
-/** 今日页主体：单快照渲染，刷新拉取新的 /api/v1/today */
+/** 今日页：页头 + 主体。单快照渲染，刷新拉取新的 /api/v1/today */
 export default function TodayView() {
   const [summary, setSummary] = useState<TodaySummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -37,16 +38,27 @@ export default function TodayView() {
 
   if (error) {
     return (
-      <p className={styles.error} role="alert">
-        {error}
-      </p>
+      <>
+        <TodayHeader />
+        <p className={styles.error} role="alert">
+          {error}
+        </p>
+      </>
     );
   }
-  if (!summary) return <p className={styles.muted}>加载中…</p>;
+  if (!summary) {
+    return (
+      <>
+        <TodayHeader />
+        <p className={styles.muted}>加载中…</p>
+      </>
+    );
+  }
   const logTasks = allTasks ?? summary.actions.map((a) => a.task);
 
   return (
     <div>
+      <TodayHeader localDate={summary.localDate} localMonday={summary.week.localMonday} />
       <WeekStatusStrip summary={summary} />
       {/* 桌面：行动 + 最近记录（约 2/3）｜需要你决定（约 1/3）；手机：行动 → 待决定 → 记录 */}
       <div className={styles.todayGrid}>

@@ -120,10 +120,10 @@ export default function ProjectView({ projectId }: { projectId: string }) {
               <div key={t.id} className={styles.taskRow}>
                 <div className={styles.taskBody}>
                   <span className={styles.taskTitle}>
+                    {t.title}{" "}
                     <span className={`${styles.badge} ${t.status === "done" ? styles.badgeOk : t.status === "blocked" ? styles.badgeHigh : t.status === "doing" ? styles.badgeAccent : ""}`}>
                       {TASK_STATUS[t.status]}
-                    </span>{" "}
-                    {t.title}
+                    </span>
                   </span>
                   <TaskMeta task={t} />
                 </div>

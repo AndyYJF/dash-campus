@@ -193,7 +193,7 @@ export default function SettingsView() {
   }
 
   return (
-    <div>
+    <div className={styles.narrow}>
       <div className={styles.card}>
         <h2 className={styles.sectionTitle}>集成状态</h2>
         <IntegrationStatus integrations={integrations} />
@@ -376,7 +376,7 @@ export default function SettingsView() {
               </span>
               {d.error && <span className={styles.muted}>（{d.error}）</span>}
               {RESENDABLE.has(d.status) && !resent && confirmResendId !== d.id && (
-                <button className={styles.btn} disabled={busy} onClick={() => setConfirmResendId(d.id)}>
+                <button className={`${styles.btn} ${styles.btnGhost}`} disabled={busy} onClick={() => setConfirmResendId(d.id)}>
                   重发…
                 </button>
               )}
@@ -401,7 +401,11 @@ export default function SettingsView() {
         })}
       </div>
 
-      {message && <p className={styles.muted}>{message}</p>}
+      {message && (
+        <p className={styles.notice} role="status">
+          {message}
+        </p>
+      )}
     </div>
   );
 }

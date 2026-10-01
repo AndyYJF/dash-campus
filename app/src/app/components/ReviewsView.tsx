@@ -90,10 +90,10 @@ export default function ReviewsView() {
   return (
     <div className={styles.columns}>
       <div>
-        <div className={styles.card}>
-          <h2>待处理的建议（{pending.length}）</h2>
-          <p className={styles.muted}>每份建议独立处理，只能整体应用、拒绝或暂缓。</p>
-        </div>
+        <h2 className={ex.heading}>待处理的建议（{pending.length}）</h2>
+        <p className={styles.muted} style={{ marginBottom: 16 }}>
+          每份建议独立处理，只能整体应用、拒绝或暂缓。
+        </p>
         {pending.length === 0 && <p className={styles.empty}>没有待处理的建议。生成一次周复盘，或在记录旁点「分析这个卡点」，这里就会出现建议。</p>}
         {pending.map((p) => (
           <ProposalCard key={p.id} proposal={p} tasks={taskMap} onChanged={refresh} />

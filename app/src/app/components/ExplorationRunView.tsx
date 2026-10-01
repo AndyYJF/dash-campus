@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import BackLink from "./BackLink";
+import Icon from "./Icon";
 import { api, ApiError } from "./api";
 import styles from "./dash.module.css";
 import ex from "./explore.module.css";
@@ -104,7 +105,7 @@ export default function ExplorationRunView() {
                 className={i < stageIndex ? ex.stageDone : i === stageIndex ? ex.stageActive : ex.stage}
                 aria-current={i === stageIndex ? "step" : undefined}
               >
-                {i < stageIndex ? "✓ " : ""}
+                {i < stageIndex && <Icon name="check" size={14} />}
                 {STATUS_LABEL[s]}
               </li>
             ))}
@@ -132,7 +133,7 @@ export default function ExplorationRunView() {
 
       {candidates.length > 0 && (
         <>
-          <h2 style={{ fontSize: 16 }}>候选实践（{candidates.length}）</h2>
+          <h2 className={ex.heading}>候选实践（{candidates.length}）</h2>
           <p className={styles.muted}>
             候选只说明与问题的关联，不代表适合你。前置条件默认「未知」，只有你确认后才算具备。
           </p>

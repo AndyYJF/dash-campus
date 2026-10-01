@@ -3,8 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import styles from "@/app/components/dash.module.css";
-import auth from "@/app/components/auth.module.css";
-import Icon from "@/app/components/Icon";
+import AuthLayout from "@/app/components/AuthLayout";
 
 export default function SetupPage() {
   const router = useRouter();
@@ -37,56 +36,42 @@ export default function SetupPage() {
   }
 
   return (
-    <main className={auth.wrap}>
-      <div className={auth.panel}>
-        <div className={auth.brand}>
-          <span className={auth.mark} aria-hidden="true">
-            D
-          </span>
-          Dash Campus
-        </div>
-        <h1>初始化实例</h1>
-        <p className={auth.lead}>只需做一次：验证部署时设置的 Token，并设定主人密码。</p>
-        <form onSubmit={submit}>
-          <label className={styles.label}>
-            初始化 Token
-            <input
-              className={styles.field}
-              type="password"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              required
-            />
-          </label>
-          <label className={styles.label}>
-            主人密码（至少 8 位）
-            <input
-              className={styles.field}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              minLength={8}
-              required
-            />
-          </label>
-          <button
-            type="submit"
-            className={`${styles.btn} ${styles.btnPrimary} ${styles.btnBlock}`}
-            disabled={busy}
-          >
-            {busy ? "初始化中…" : "初始化"}
-          </button>
-        </form>
-        {error && (
-          <p className={styles.error} role="alert">
-            {error}
-          </p>
-        )}
-      </div>
-      <p className={auth.foot}>
-        <Icon name="lock" size={14} />
-        Token 在部署目录的 .env 里（SETUP_TOKEN），初始化完成后即失效。
-      </p>
-    </main>
+    <AuthLayout title="初始化实例" lead="只需做一次：验证部署时设置的 Token，并设定主人密码。" foot="Token 在部署目录的 .env 里（SETUP_TOKEN），初始化完成后即失效。">
+      <form onSubmit={submit}>
+        <label className={styles.label}>
+          初始化 Token
+          <input
+            className={styles.field}
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            required
+          />
+        </label>
+        <label className={styles.label}>
+          主人密码（至少 8 位）
+          <input
+            className={styles.field}
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            minLength={8}
+            required
+          />
+        </label>
+        <button
+          type="submit"
+          className={`${styles.btn} ${styles.btnPrimary} ${styles.btnBlock}`}
+          disabled={busy}
+        >
+          {busy ? "初始化中…" : "初始化"}
+        </button>
+      </form>
+      {error && (
+        <p className={styles.error} role="alert">
+          {error}
+        </p>
+      )}
+    </AuthLayout>
   );
 }

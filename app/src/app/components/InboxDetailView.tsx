@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { api, ApiError } from "./api";
 import styles from "./dash.module.css";
+import ex from "./explore.module.css";
 
 /**
  * 收件箱详情（T4）：原文与条件引用、三种纠正作用域（默认仅本条）、
@@ -92,7 +93,7 @@ export default function InboxDetailView() {
   const factVersion = facts.find((f) => f.field === factField)?.version ?? 0;
 
   return (
-    <div>
+    <div className={styles.narrow}>
       <div className={styles.card}>
         <h2 className={styles.sectionTitle}>通知原文</h2>
         <p style={{ whiteSpace: "pre-wrap" }}>{current?.text ?? "（无当前版本）"}</p>
@@ -189,8 +190,8 @@ export default function InboxDetailView() {
 
       <div className={styles.card}>
         <h2 className={styles.sectionTitle}>纠正（默认：仅本条）</h2>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <select value={partition} onChange={(e) => setPartition(e.target.value)}>
+        <div className={ex.row}>
+          <select aria-label="本条改放到的分区" value={partition} onChange={(e) => setPartition(e.target.value)}>
             {PARTITIONS.map((p) => (
               <option key={p} value={p}>
                 {PARTITION_LABEL[p]}
@@ -211,14 +212,15 @@ export default function InboxDetailView() {
             仅本条
           </button>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-          <select value={factField} onChange={(e) => setFactField(e.target.value)}>
+        <div className={ex.row} style={{ marginTop: 8 }}>
+          <select aria-label="要更正的身份字段" value={factField} onChange={(e) => setFactField(e.target.value)}>
             <option value="education_level">education_level</option>
             <option value="program">program</option>
             <option value="campus">campus</option>
             <option value="grade_year">grade_year</option>
           </select>
           <input
+            aria-label="更正后的身份值"
             placeholder="更正后的身份值"
             value={factValue}
             onChange={(e) => setFactValue(e.target.value)}
@@ -240,8 +242,8 @@ export default function InboxDetailView() {
             更正身份
           </button>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-          <select value={rulePartition} onChange={(e) => setRulePartition(e.target.value)}>
+        <div className={ex.row} style={{ marginTop: 8 }}>
+          <select aria-label="同类通知改放到的分区" value={rulePartition} onChange={(e) => setRulePartition(e.target.value)}>
             {PARTITIONS.map((p) => (
               <option key={p} value={p}>
                 {PARTITION_LABEL[p]}
@@ -300,7 +302,11 @@ export default function InboxDetailView() {
         ))}
       </div>
 
-      {message && <p className={styles.muted}>{message}</p>}
+      {message && (
+        <p className={styles.notice} role="status">
+          {message}
+        </p>
+      )}
     </div>
   );
 }

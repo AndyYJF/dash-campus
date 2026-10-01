@@ -1,44 +1,61 @@
 /* ===== 设计变量 =====
+   方向：墨色 + 荧光笔。界面本身只有黑白灰，唯一的彩色是荧光绿（主按钮、当前位置、划重点）。
    亮色是默认值；暗色在两种情况下生效：系统为暗色且没有手动选亮色，或手动选了暗色（html[data-theme]）。
    scripts/ui-check.mts 直接读取 --color-* 计算对比度，这几个变量保持十六进制写法。 */
 :root {
-  /* 系统中文无衬线字体，不发外部字体请求 */
-  --font-sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI",
-    "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
-  --font-mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  /* 拉丁字母与数字用自带的 Geist（layout.tsx 本地加载，不发外部请求），中文落到系统无衬线 */
+  --font-sans: var(--font-geist), system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, "PingFang SC",
+    "Microsoft YaHei UI", "Noto Sans CJK SC", monospace;
 
-  --color-bg: #f6f5f1;
+  --color-bg: #f4f4f5;
   --color-surface: #ffffff;
-  --color-surface-muted: #f1efe9;
-  --color-surface-hover: #f8f7f3;
-  --color-text: #1b1d1c;
-  --color-text-muted: #5c6562;
-  --color-border: #e4e1d9;
-  --color-border-strong: #cdc9be;
-  --color-accent: #0f6e63;
-  --color-accent-hover: #0b574e;
-  --color-accent-soft: #dff1ed;
+  --color-surface-muted: #f4f4f5;
+  --color-surface-hover: #fafafa;
+  --color-text: #0b0b0c;
+  --color-text-muted: #5d5d66;
+  --color-border: #e7e7ea;
+  --color-border-strong: #d1d1d6;
+  /* accent：彩色文字（链接、选中态）；primary：荧光笔底色（主按钮、标记） */
+  --color-accent: #3d6608;
+  --color-accent-hover: #2b4a04;
+  --color-accent-soft: #edf9d0;
   --color-accent-text: #ffffff;
-  --color-danger: #b3261e;
-  --color-danger-soft: #fce8e6;
-  --color-warning-bg: #fbefcf;
-  --color-warning-text: #744700;
-  --color-ok: #1a7a45;
-  --color-ok-soft: #e1f4e8;
-  --color-info: #4350b8;
-  --color-info-soft: #e9ebfb;
+  --color-primary: #c9f651;
+  --color-primary-hover: #baea36;
+  --color-primary-text: #111a00;
+  --color-danger: #c0261c;
+  --color-danger-soft: #fdebe9;
+  --color-warning-bg: #fdf1cf;
+  --color-warning-text: #7a4b00;
+  --color-ok: #1f7a3d;
+  --color-ok-soft: #e3f5e6;
+  --color-info: #3b4cc0;
+  --color-info-soft: #eaedfc;
 
-  --brand-from: #14857a;
-  --brand-to: #0b4f66;
-  --shadow-sm: 0 1px 2px rgba(27, 29, 28, 0.05), 0 1px 1px rgba(27, 29, 28, 0.03);
-  --shadow-md: 0 10px 28px -14px rgba(27, 29, 28, 0.22), 0 2px 6px -2px rgba(27, 29, 28, 0.06);
-  --shadow-lg: 0 24px 48px -20px rgba(27, 29, 28, 0.28);
-  --ring: 0 0 0 3px rgba(15, 110, 99, 0.22);
-  --backdrop: rgba(246, 245, 241, 0.86);
+  /* 反色块（本周重点、登录页品牌面板）：亮色主题下是墨色底 */
+  --hero-bg: #0e0e10;
+  --hero-text: #fafafa;
+  --hero-muted: #a3a3ad;
+  --hero-line: rgba(255, 255, 255, 0.12);
+  --hero-field: rgba(255, 255, 255, 0.08);
+  --hero-glow: rgba(201, 246, 81, 0.22);
 
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
+  --color-focus: #0b0b0c;
+  --color-meter: #0b0b0c;
+  --shadow-xs: 0 1px 2px rgba(11, 11, 12, 0.05);
+  --shadow-sm: 0 1px 2px rgba(11, 11, 12, 0.06), 0 1px 1px rgba(11, 11, 12, 0.03);
+  --shadow-md: 0 12px 32px -16px rgba(11, 11, 12, 0.22), 0 2px 6px -2px rgba(11, 11, 12, 0.06);
+  --shadow-lg: 0 28px 56px -24px rgba(11, 11, 12, 0.32), 0 4px 12px -4px rgba(11, 11, 12, 0.08);
+  --ring: 0 0 0 3px rgba(168, 224, 40, 0.45);
+  --backdrop: rgba(255, 255, 255, 0.82);
+
+  --radius-xs: 6px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
   --radius-pill: 999px;
   --space-1: 4px;
   --space-2: 8px;
@@ -47,87 +64,113 @@
   --space-5: 20px;
   --space-6: 24px;
   --space-8: 32px;
+  --space-10: 40px;
 
-  --text-title: 26px;
-  --text-section: 17px;
+  --text-title: 32px;
+  --text-section: 16px;
   --text-body: 15px;
   --text-small: 13px;
-  --text-number: 28px;
+  --text-micro: 12px;
+  --text-number: 34px;
 
   --tap: 44px;
-  --control: 40px;
-  --sidebar-width: 244px;
+  --control: 38px;
+  --sidebar-width: 248px;
+  --rail-width: 84px;
   --content-max: 1120px;
-  --tabbar-height: 60px;
-  --transition: 160ms cubic-bezier(0.2, 0.7, 0.3, 1);
+  --dock-height: 64px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --transition: 160ms var(--ease);
 
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --color-bg: #101413;
-    --color-surface: #181d1c;
-    --color-surface-muted: #222928;
-    --color-surface-hover: #1e2423;
-    --color-text: #e8eeec;
-    --color-text-muted: #a3b1ad;
-    --color-border: #2a3331;
-    --color-border-strong: #3c4744;
-    --color-accent: #6fd9c6;
-    --color-accent-hover: #93e6d7;
-    --color-accent-soft: #17332f;
-    --color-accent-text: #06231f;
-    --color-danger: #ff9f94;
-    --color-danger-soft: #3a211e;
-    --color-warning-bg: #37290f;
-    --color-warning-text: #f3cd72;
-    --color-ok: #86dba6;
-    --color-ok-soft: #17301f;
-    --color-info: #a8b1ff;
-    --color-info-soft: #232847;
+    --color-bg: #09090a;
+    --color-surface: #121214;
+    --color-surface-muted: #1b1b1f;
+    --color-surface-hover: #17171a;
+    --color-text: #f1f1f3;
+    --color-text-muted: #a0a0aa;
+    --color-border: #26262b;
+    --color-border-strong: #3a3a41;
+    --color-accent: #c9f651;
+    --color-accent-hover: #dcfb8a;
+    --color-accent-soft: #212c0a;
+    --color-accent-text: #111a00;
+    --color-primary: #c9f651;
+    --color-primary-hover: #dcfb8a;
+    --color-primary-text: #111a00;
+    --color-danger: #ff9a8f;
+    --color-danger-soft: #3b1c19;
+    --color-warning-bg: #33270b;
+    --color-warning-text: #f5cd6b;
+    --color-ok: #7fdc9a;
+    --color-ok-soft: #14301d;
+    --color-info: #a9b4ff;
+    --color-info-soft: #20254a;
 
-    --brand-from: #3fc0ad;
-    --brand-to: #2a7fa3;
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --shadow-md: 0 12px 28px -14px rgba(0, 0, 0, 0.6);
-    --shadow-lg: 0 24px 48px -20px rgba(0, 0, 0, 0.7);
-    --ring: 0 0 0 3px rgba(111, 217, 198, 0.28);
-    --backdrop: rgba(16, 20, 19, 0.86);
+    --hero-bg: #1a1a1e;
+    --hero-text: #f6f6f7;
+    --hero-muted: #a0a0aa;
+    --hero-line: rgba(255, 255, 255, 0.1);
+    --hero-field: rgba(255, 255, 255, 0.07);
+    --hero-glow: rgba(201, 246, 81, 0.16);
+
+    --color-focus: #c9f651;
+    --color-meter: #c9f651;
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+    --shadow-md: 0 14px 32px -16px rgba(0, 0, 0, 0.7);
+    --shadow-lg: 0 28px 56px -24px rgba(0, 0, 0, 0.8);
+    --ring: 0 0 0 3px rgba(201, 246, 81, 0.3);
+    --backdrop: rgba(18, 18, 20, 0.8);
 
     color-scheme: dark;
   }
 }
 
 :root[data-theme="dark"] {
-  --color-bg: #101413;
-  --color-surface: #181d1c;
-  --color-surface-muted: #222928;
-  --color-surface-hover: #1e2423;
-  --color-text: #e8eeec;
-  --color-text-muted: #a3b1ad;
-  --color-border: #2a3331;
-  --color-border-strong: #3c4744;
-  --color-accent: #6fd9c6;
-  --color-accent-hover: #93e6d7;
-  --color-accent-soft: #17332f;
-  --color-accent-text: #06231f;
-  --color-danger: #ff9f94;
-  --color-danger-soft: #3a211e;
-  --color-warning-bg: #37290f;
-  --color-warning-text: #f3cd72;
-  --color-ok: #86dba6;
-  --color-ok-soft: #17301f;
-  --color-info: #a8b1ff;
-  --color-info-soft: #232847;
+  --color-bg: #09090a;
+  --color-surface: #121214;
+  --color-surface-muted: #1b1b1f;
+  --color-surface-hover: #17171a;
+  --color-text: #f1f1f3;
+  --color-text-muted: #a0a0aa;
+  --color-border: #26262b;
+  --color-border-strong: #3a3a41;
+  --color-accent: #c9f651;
+  --color-accent-hover: #dcfb8a;
+  --color-accent-soft: #212c0a;
+  --color-accent-text: #111a00;
+  --color-primary: #c9f651;
+  --color-primary-hover: #dcfb8a;
+  --color-primary-text: #111a00;
+  --color-danger: #ff9a8f;
+  --color-danger-soft: #3b1c19;
+  --color-warning-bg: #33270b;
+  --color-warning-text: #f5cd6b;
+  --color-ok: #7fdc9a;
+  --color-ok-soft: #14301d;
+  --color-info: #a9b4ff;
+  --color-info-soft: #20254a;
 
-  --brand-from: #3fc0ad;
-  --brand-to: #2a7fa3;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 12px 28px -14px rgba(0, 0, 0, 0.6);
-  --shadow-lg: 0 24px 48px -20px rgba(0, 0, 0, 0.7);
-  --ring: 0 0 0 3px rgba(111, 217, 198, 0.28);
-  --backdrop: rgba(16, 20, 19, 0.86);
+  --hero-bg: #1a1a1e;
+  --hero-text: #f6f6f7;
+  --hero-muted: #a0a0aa;
+  --hero-line: rgba(255, 255, 255, 0.1);
+  --hero-field: rgba(255, 255, 255, 0.07);
+  --hero-glow: rgba(201, 246, 81, 0.16);
+
+  --color-focus: #c9f651;
+  --color-meter: #c9f651;
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.45);
+  --shadow-md: 0 14px 32px -16px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 28px 56px -24px rgba(0, 0, 0, 0.8);
+  --ring: 0 0 0 3px rgba(201, 246, 81, 0.3);
+  --backdrop: rgba(18, 18, 20, 0.8);
 
   color-scheme: dark;
 }
@@ -147,19 +190,20 @@ body {
   line-height: 1.6;
   -webkit-text-size-adjust: 100%;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
 ::selection {
-  background: var(--color-accent-soft);
-  color: var(--color-text);
+  background: var(--color-primary);
+  color: var(--color-primary-text);
 }
 
 h1 {
   font-size: var(--text-title);
-  line-height: 1.25;
+  line-height: 1.2;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
   margin: 0 0 var(--space-4);
 }
 
@@ -167,6 +211,7 @@ h2 {
   font-size: var(--text-section);
   line-height: 1.4;
   font-weight: 650;
+  letter-spacing: -0.005em;
 }
 
 h3 {
@@ -209,17 +254,19 @@ pre {
 
 code {
   font-family: var(--font-mono);
-  font-size: 0.9em;
-  padding: 1px 5px;
-  border-radius: 5px;
+  font-size: 0.88em;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
   background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
 }
 
 a {
   color: var(--color-accent);
-  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-decoration-thickness: 1px;
   text-underline-offset: 3px;
-  transition: color var(--transition);
+  transition: color var(--transition), text-decoration-color var(--transition);
 }
 
 a:hover {
@@ -228,7 +275,7 @@ a:hover {
 }
 
 :focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }
 
@@ -240,26 +287,27 @@ textarea {
   color: inherit;
 }
 
-/* 所有输入控件的基础外观（:where 不增加优先级，组件类可以覆盖） */
+/* 所有输入控件的基础外观（:where 不增加优先级，组件类可以覆盖）：浅底填充 + 细描边 */
 :where(input:not([type="checkbox"], [type="radio"], [type="color"], [type="range"], [type="file"]), select, textarea) {
   min-height: var(--control);
   max-width: 100%;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border-strong);
+  padding: 7px var(--space-3);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  background: var(--color-surface);
+  background: var(--color-field, var(--color-surface-muted));
   color: var(--color-text);
   line-height: 1.5;
-  transition: border-color var(--transition), box-shadow var(--transition);
+  transition: border-color var(--transition), box-shadow var(--transition), background var(--transition);
 }
 
 :where(input:not([type="checkbox"], [type="radio"], [type="color"], [type="range"], [type="file"]), select, textarea):hover {
-  border-color: var(--color-text-muted);
+  border-color: var(--color-border-strong);
 }
 
 :where(input:not([type="checkbox"], [type="radio"], [type="color"], [type="range"], [type="file"]), select, textarea):focus {
   outline: none;
-  border-color: var(--color-accent);
+  border-color: var(--color-focus);
+  background: var(--color-surface);
   box-shadow: var(--ring);
 }
 
@@ -268,32 +316,72 @@ textarea {
   height: var(--control);
 }
 
-:where(select) {
+:where(select:not([multiple])) {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 34px;
   text-overflow: ellipsis;
+  /* 下拉箭头：中性灰，亮暗主题都看得清 */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238a8a94' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
 }
 
 :where(textarea) {
   resize: vertical;
-  min-height: 72px;
+  min-height: 76px;
 }
 
 ::placeholder {
   color: var(--color-text-muted);
-  opacity: 0.75;
+  opacity: 0.7;
 }
 
-:where(input[type="checkbox"], input[type="radio"]) {
+:where(input[type="radio"]) {
   width: 18px;
   height: 18px;
   accent-color: var(--color-accent);
 }
 
+/* 复选框：圆角小方框，勾选后涂荧光色（勾是墨色，亮暗主题通用） */
+:where(input[type="checkbox"]) {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  border: 1.5px solid var(--color-border-strong);
+  border-radius: 5px;
+  background-color: var(--color-surface);
+  background-repeat: no-repeat;
+  background-position: center;
+  vertical-align: -3px;
+  cursor: pointer;
+  transition: background-color var(--transition), border-color var(--transition);
+}
+
+:where(input[type="checkbox"]):hover {
+  border-color: var(--color-text-muted);
+}
+
+:where(input[type="checkbox"]):checked {
+  border-color: color-mix(in srgb, var(--color-primary-text) 55%, var(--color-primary));
+  background-color: var(--color-primary);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23111a00' stroke-width='3.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
+}
+
+:where(input[type="checkbox"]):disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 :where(input[type="color"]) {
   min-height: var(--control);
   padding: 4px;
-  border: 1px solid var(--color-border-strong);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
-  background: var(--color-surface);
+  background: var(--color-field, var(--color-surface-muted));
 }
 
 /* 可展开区域的标题行 */
@@ -302,6 +390,7 @@ summary {
   font-weight: 600;
   color: var(--color-text-muted);
   padding: var(--space-2) 0;
+  transition: color var(--transition);
 }
 
 summary:hover {
@@ -325,6 +414,10 @@ hr {
     min-height: var(--tap);
     height: var(--tap);
   }
+
+  :where(input[type="color"]) {
+    min-height: var(--tap);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -332,6 +425,7 @@ hr {
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
     transition-duration: 0.01ms !important;
   }
 }

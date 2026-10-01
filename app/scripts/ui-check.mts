@@ -139,6 +139,8 @@ async function main() {
         "次要/背景": ratio(v("--color-text-muted"), v("--color-bg")),
         "强调/表面": ratio(v("--color-accent"), v("--color-surface")),
         "按钮文字/强调": ratio(v("--color-accent-text"), v("--color-accent")),
+        "主按钮文字/主按钮底": ratio(v("--color-primary-text"), v("--color-primary")),
+        "强调/强调浅底": ratio(v("--color-accent"), v("--color-accent-soft")),
         "危险/表面": ratio(v("--color-danger"), v("--color-surface")),
         "警告文字/警告底": ratio(v("--color-warning-text"), v("--color-warning-bg")),
       };

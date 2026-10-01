@@ -65,10 +65,10 @@ export default function InboxView() {
   const visible = normal.filter((i) => showFolded || i.partition !== "folded");
 
   return (
-    <div>
+    <div className={styles.narrow}>
       {conflicts.length > 0 && (
         <div className={styles.card}>
-          <h2 className={styles.error}>有 {conflicts.length} 条通知的修订顺序无法确定，需要你选择当前版本。</h2>
+          <h2 className={`${styles.sectionTitle} ${styles.sectionDanger}`}>有 {conflicts.length} 条通知的修订顺序无法确定，需要你选择当前版本。</h2>
           {conflicts.map((c) => (
             <div key={c.id} className={`${styles.taskRow} ${styles.taskRowCenter}`}>
               <span className={styles.taskTitle}>{c.title}</span>
@@ -117,7 +117,7 @@ export default function InboxView() {
 
       {normal.some((i) => i.partition === "folded") && (
         <p>
-          <button className={styles.btn} onClick={() => setShowFolded((s) => !s)}>
+          <button className={`${styles.btn} ${styles.btnGhost}`} onClick={() => setShowFolded((s) => !s)}>
             {showFolded ? "隐藏" : "显示"}已折叠的通知（可找回）
           </button>
         </p>

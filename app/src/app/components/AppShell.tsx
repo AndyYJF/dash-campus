@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import styles from "./AppShell.module.css";
+import BrandMark from "./BrandMark";
 import Icon, { type IconName } from "./Icon";
 import SessionGuard from "./SessionGuard";
 import ShellExtras, { RestoreHoldBanner } from "./ShellExtras";
@@ -16,8 +17,9 @@ const NAV_ITEMS: Array<{ href: string; label: string; icon: IconName }> = [
 
 /**
  * AppShell：
- * - ≥768px：左侧栏（品牌、写记录、五项主导航、近期项目、主题与设置）；768–1099px 侧栏收窄。
- * - <768px：顶部一行（品牌、设置、写记录）+ 底部固定标签栏放五项主导航，拇指够得到。
+ * - ≥1100px：左侧栏（品牌、写记录、五项主导航、近期项目、设置与主题）+ 右侧圆角"纸面"放内容。
+ * - 768–1099px：侧栏收成图标栏（图标 + 小字）。
+ * - <768px：顶部一行（品牌、设置、写记录）+ 底部悬浮标签栏放五项主导航，拇指够得到。
  * 五项主导航固定；近期项目最多三个；"写记录"入口在任何宽度都看得见。
  */
 export default function AppShell({
@@ -36,9 +38,7 @@ export default function AppShell({
       <aside className={styles.sidebar}>
         <div className={styles.brandRow}>
           <Link href="/today" className={styles.brand}>
-            <span className={styles.brandMark} aria-hidden="true">
-              D
-            </span>
+            <BrandMark />
             <span className={styles.brandName}>Dash Campus</span>
           </Link>
           <div className={styles.topActions}>
@@ -52,7 +52,7 @@ export default function AppShell({
             </Link>
             <Link href="/today#quick-log" className={styles.quickLog}>
               <Icon name="pencil" size={16} />
-              写记录
+              <span>写记录</span>
             </Link>
           </div>
         </div>
@@ -66,7 +66,9 @@ export default function AppShell({
                 className={active ? `${styles.navLink} ${styles.navActive}` : styles.navLink}
                 aria-current={active ? "page" : undefined}
               >
-                <Icon name={item.icon} size={20} className={styles.navIcon} />
+                <span className={styles.navIcon}>
+                  <Icon name={item.icon} size={18} />
+                </span>
                 <span>{item.label}</span>
               </Link>
             );
@@ -79,7 +81,9 @@ export default function AppShell({
             className={settingsActive ? `${styles.settingsLink} ${styles.navActive}` : styles.settingsLink}
             aria-current={settingsActive ? "page" : undefined}
           >
-            <Icon name="settings" size={20} className={styles.navIcon} />
+            <span className={styles.navIcon}>
+              <Icon name="settings" size={18} />
+            </span>
             <span>设置</span>
           </Link>
           <ThemeToggle />
@@ -87,8 +91,10 @@ export default function AppShell({
       </aside>
       <SessionGuard />
       <main id="main" className={styles.main} tabIndex={-1}>
-        <RestoreHoldBanner />
-        {children}
+        <div className={styles.content}>
+          <RestoreHoldBanner />
+          {children}
+        </div>
       </main>
     </div>
   );

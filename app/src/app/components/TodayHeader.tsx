@@ -17,15 +17,44 @@ function clientText(): string {
   return `${greeting}，今天是 ${date}`;
 }
 
-/** 今天页页头：问候语与日期按浏览器本地时间显示；服务端渲染时留空，水合后填入，不产生不一致。 */
-export default function TodayHeader() {
+const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
+
+/** 从周一起的七天（纯日期运算，用 UTC 避开时区） */
+function weekDates(localMonday: string): string[] {
+  const d = new Date(`${localMonday}T00:00:00Z`);
+  return WEEKDAYS.map(() => {
+    const iso = d.toISOString().slice(0, 10);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return iso;
+  });
+}
+
+/**
+ * 今天页页头：问候语按浏览器本地时间显示（服务端渲染时留空，水合后填入，不产生不一致）；
+ * 右侧的本周七天用 /today 快照里的实例时区日期，快照到达前不显示。
+ */
+export default function TodayHeader({ localDate, localMonday }: { localDate?: string; localMonday?: string }) {
   const text = useSyncExternalStore(subscribe, clientText, () => "");
   return (
     <div className={styles.pageHeader}>
       <div>
+        <div className={styles.overline}>Today</div>
         <h1>今天</h1>
-        <p className={styles.pageSub}>{text || " "}</p>
+        <p className={styles.pageSub}>{text || " "}</p>
       </div>
+      {localDate && localMonday && (
+        <ol className={styles.week} aria-label="本周日期">
+          {weekDates(localMonday).map((iso, i) => {
+            const state = iso === localDate ? styles.weekToday : iso < localDate ? styles.weekPast : "";
+            return (
+              <li key={iso} className={`${styles.weekDay} ${state}`} aria-current={iso === localDate ? "date" : undefined}>
+                <span>{WEEKDAYS[i]}</span>
+                <span className={styles.weekNum}>{Number(iso.slice(8))}</span>
+              </li>
+            );
+          })}
+        </ol>
+      )}
     </div>
   );
 }

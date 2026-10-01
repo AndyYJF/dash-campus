@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, newIdempotencyKey } from "./api";
 import ErrorNote, { toErrorState } from "./ErrorNote";
+import Icon from "./Icon";
 import ProposalCard from "./ProposalCard";
 import styles from "./dash.module.css";
 import ex from "./explore.module.css";
@@ -95,16 +96,17 @@ export default function BlockerAssist({ log }: { log: { id: string; projectId: s
   const res = req?.result;
 
   return (
-    <div style={{ marginTop: 4 }}>
+    <div style={{ marginTop: 6 }}>
       {!open ? (
-        <button className={styles.btn} onClick={() => setOpen(true)} aria-expanded={false}>
+        <button className={`${styles.btn} ${styles.btnGhost}`} onClick={() => setOpen(true)} aria-expanded={false}>
+          <Icon name="sparkles" size={15} />
           分析这个卡点
         </button>
       ) : (
         <div className={ex.draft}>
           <div className={ex.row}>
             <strong style={{ flex: 1 }}>卡点分析</strong>
-            <button className={styles.btn} onClick={() => setOpen(false)} aria-label="收起卡点分析">
+            <button className={`${styles.btn} ${styles.btnGhost}`} onClick={() => setOpen(false)} aria-label="收起卡点分析">
               收起
             </button>
           </div>

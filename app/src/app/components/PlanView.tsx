@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, newIdempotencyKey } from "./api";
 import TaskForm, { mondaysFrom } from "./TaskForm";
 import { TaskMeta } from "./TaskList";
+import Duration from "./Duration";
 import { formatMinutes } from "./WeekStatusStrip";
 import styles from "./dash.module.css";
 import type { WeekPlan } from "@/contracts/today";
@@ -38,7 +39,6 @@ export default function PlanView() {
   if (!plan) return <p className={styles.muted}>加载中…</p>;
 
   const w = plan.workload;
-  const capacityText = w.weekCapacityMinutes === null ? "尚未设置可用时间" : formatMinutes(w.weekCapacityMinutes);
   const over = w.weekCapacityMinutes !== null && w.committedMinutes > w.weekCapacityMinutes;
 
   async function saveFocus() {
@@ -88,7 +88,7 @@ export default function PlanView() {
   return (
     <div>
       <section className={`${styles.card} ${styles.cardFeature}`} aria-labelledby="focus-title">
-        <h2 id="focus-title">本周重点（{plan.week.localMonday} 起）</h2>
+        <h2 id="focus-title">本周重点 · {plan.week.localMonday} 起的一周</h2>
         <form
           className={styles.inlineForm}
           onSubmit={(e) => {
@@ -118,17 +118,27 @@ export default function PlanView() {
         <div className={styles.strip}>
           <div className={styles.stripItem}>
             <span className={styles.stripLabel}>整周承诺（含已完成）</span>
-            <span className={styles.stripValue}>{formatMinutes(w.committedMinutes)}</span>
+            <span className={styles.stripValue}>
+              <Duration minutes={w.committedMinutes} />
+            </span>
             {w.committedUnknownCount > 0 && <span className={styles.stripNote}>另有 {w.committedUnknownCount} 项估时未知</span>}
           </div>
           <div className={styles.stripItem}>
             <span className={styles.stripLabel}>剩余未完成</span>
-            <span className={styles.stripValue}>{formatMinutes(w.remainingKnownMinutes)}</span>
+            <span className={styles.stripValue}>
+              <Duration minutes={w.remainingKnownMinutes} />
+            </span>
             {w.remainingUnknownCount > 0 && <span className={styles.stripNote}>另有 {w.remainingUnknownCount} 项估时未知</span>}
           </div>
           <div className={styles.stripItem}>
             <span className={styles.stripLabel}>整周可用时间</span>
-            <span className={w.weekCapacityMinutes === null ? styles.stripValueText : styles.stripValue}>{capacityText}</span>
+            {w.weekCapacityMinutes === null ? (
+              <span className={styles.stripValueText}>尚未设置可用时间</span>
+            ) : (
+              <span className={styles.stripValue}>
+                <Duration minutes={w.weekCapacityMinutes} />
+              </span>
+            )}
             <span className={styles.stripNote}>已预留 {w.bufferPercent}% 缓冲</span>
           </div>
         </div>
@@ -147,17 +157,17 @@ export default function PlanView() {
           <div key={t.id} className={`${styles.taskRow} ${styles.taskRowWrap}`}>
             <div className={styles.taskBody}>
               <span className={styles.taskTitle}>
+                {t.title}{" "}
                 <span
                   className={`${styles.badge} ${t.status === "done" ? styles.badgeOk : t.status === "blocked" ? styles.badgeHigh : t.status === "doing" ? styles.badgeAccent : ""}`}
                 >
                   {TASK_STATUS[t.status]}
-                </span>{" "}
-                {t.title}
+                </span>
               </span>
               <TaskMeta task={t} />
             </div>
             {t.status !== "done" && t.status !== "cancelled" && editing !== t.id && (
-              <button className={styles.btn} onClick={() => setEditing(t.id)}>
+              <button className={`${styles.btn} ${styles.btnGhost}`} onClick={() => setEditing(t.id)}>
                 改期
               </button>
             )}

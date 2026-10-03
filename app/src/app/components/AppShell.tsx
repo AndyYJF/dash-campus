@@ -6,6 +6,7 @@ import Icon, { type IconName } from "./Icon";
 import SessionGuard from "./SessionGuard";
 import ShellExtras, { RestoreHoldBanner } from "./ShellExtras";
 import ThemeToggle from "./ThemeToggle";
+import UniversalIntake from "./UniversalIntake";
 
 const NAV_ITEMS: Array<{ href: string; label: string; icon: IconName }> = [
   { href: "/today", label: "今天", icon: "today" },
@@ -93,6 +94,7 @@ export default function AppShell({
       <main id="main" className={styles.main} tabIndex={-1}>
         <div className={styles.content}>
           <RestoreHoldBanner />
+          <UniversalIntake />
           {children}
         </div>
       </main>

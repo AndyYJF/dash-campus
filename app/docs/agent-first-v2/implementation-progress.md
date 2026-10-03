@@ -1,0 +1,61 @@
+# Agent-first V2 实施进度
+
+本页按阶段记录事实、缺口和下一步。开工指令见 [CODING-AGENT.md](./CODING-AGENT.md)，完整契约见 [MASTER-PLAN.md](./MASTER-PLAN.md)。每条结论注明验证方式；无证据的能力标为缺口。
+
+## P1 统一接收、证据和主动问答（已完成，2026-10-03）
+
+### 交付
+
+- 迁移 `0017_intake_clarify.sql`：intakes / extracted_documents / intake_items / clarification_questions(+answers)；同一缺口仅 1 个 open 问题由部分唯一索引保证；`EXPECTED_SCHEMA_VERSION=17`；5 张新表已加入 full_json 导出白名单。
+- 契约 `src/contracts/intake.ts`；仓储 `src/repositories/intakes.ts`、`questions.ts`；管线 `src/workflows/intake.ts`；job 类型 `intake_process` 已注册进 worker runner。
+- API：`POST/GET /api/v2/intakes(/:id)`、`GET /api/v2/questions`、`POST /api/v2/questions/:id/answers`（幂等 + expectedVersion）。
+- UI：`UniversalIntake` 挂入 AppShell 全局外壳；提交→轮询状态→事项结果→问题卡回答。
+
+### 验证证据
+
+- 自动测试：新增 `test/intake-v2.test.ts` 8 项（混合拆分、共享问题、不可解析回答 422、过时答案 409、回答后恢复且不重复调模型、幂等重放/冲突、模型失败原文保留、GET 不暴露实现细节）；全套 **162/162 通过**，typecheck、lint、build 通过。
+- 真实端到端（`scripts/dev/p1-e2e-evidence.sh`，真实 next dev + worker + 真实模型 gemini-3.8-flash-high）：混合材料拆出课表+实践+资料 3 个事项 → 课表缺首周只问 1 个问题 → 回答「第5周」→ 恢复后课表候选 firstMonday=2026-08-31（正确推算）、16 次课时 → intake completed。
+- 证据校验真实生效：模型两次返回非逐字 excerpt（字段名漂移/文本被搞坏），被 excerpt 校验拒绝并按原始资料保留——A10 路径在真实模型下验证过。
+
+### 本阶段决策（最小一致选择）
+
+- 课表锚点回答支持「第N周」（以回答提交日本周周一回推）与显式日期（归一到所在周周一）；其他自由文本 422 不吞掉。
+- 模型不可用/分类失败：原文保留为 failed note 事项，intake 落 failed/partially_applied；显式重试端点留到 P2 与命令层一起做。
+- excerpt 校验容忍空白差异（折行/多空格），其余必须逐字。
+- 已提交 id 存本机 localStorage 实现“重新打开可看到同一条记录”；列表端点待 P2+。
+
+### 已知限制（不掩盖）
+
+- P1 只生成核对后的事实/候选：课表候选尚未写入课程模型/固定事件（P2 `upsert_course_set`），今天/本周页面还不受 intake 结果驱动（P3）。
+- 浏览器端到端（真实点击）未做，本轮证据为 HTTP 级真实服务器 + 真实模型；A20 窄屏验收在后续阶段。
+- `POST /api/v2/intakes/:id/retry` 与 cancel 端点未实现（§8 已列，P2 补）。
+
+### 下一步
+
+进入 P2：policy 白名单 + entity_source_links + journal/revision + 原子 bundle/undo；课表候选经命令层写入课程模型与投影；practice/task/notice 事项落领域记录。
+
+## P0 基线、运行边界与迁移准备（已完成，2026-10-03）
+
+### 已核对事实（2026-10-03）
+
+| 项 | 事实 | 验证方式 |
+|---|---|---|
+| 工作仓库 | `~/pi/Dash-campus`，main @ `7f1e85c`（与 origin/main 一致），工作区干净 | `git pull --ff-only` + `git status` |
+| 测试基线 | `npm test` 154/154 通过 | 本机实际运行 |
+| 迁移最大编号 | 17（P1 新增 `0017_intake_clarify.sql`），`EXPECTED_SCHEMA_VERSION = 17` | `migrations/` 与 `src/repositories/db.ts` |
+| 旧本地开发库 | `app/data/dash-campus.db` 停留 schema 10，无生产意义；不迁移、不重建，留作历史 | 只读打开核对版本 |
+| V2 独立开发库 | `app/data/v2/dash-campus.db`，从零跑全迁移，schema 17、deployment_epoch 0；由 `scripts/dev/v2-dev-db.sh` 创建 | 实际执行迁移并核对 |
+| 模型文本能力 | `gemini-3.8-flash-high`（openai-chat，`api.fei.cx`）文本请求 HTTP 200 | `scripts/dev/probe-model-vision.mjs` 实测 |
+| 模型图片能力 | **支持**：同一端点接受 `image_url`（data URL）消息并正确描述 1×1 测试图颜色 | 同一脚本实测，非从文档推断 |
+
+### 关键结论
+
+- 图片输入走已配置模型的图片消息扩展即可，**P4 不需要本地 OCR 容器**；VPS 磁盘压力因此减轻。A14 的真实截图/扫描 PDF 验收仍在 P4 执行。
+- 已配置的 `.env` 含模型/搜索/SMTP 真实密钥，只在本地与服务器，不入库。
+- 本机不存在旧 Todo 数据库、附件或服务（旧 Todo 只在生产服务器）；本机开发不存在误写 Todo 的路径。生产侧只读保护清单沿用 [legacy-compatibility-2026-10-03.md](../legacy-compatibility-2026-10-03.md) §3–5：只读连接/快照、禁止 UPDATE/DELETE/DDL/VACUUM、桥接只 GET。
+
+### 缺口 / 待办
+
+- VPS 磁盘余量未在本次复核（主机信息不入库，本机无 SSH 配置）；最近观测 2026-10-03 约 208 MiB（[STATUS](../STATUS.md) §3）。上线/加 OCR 前的容量方案已定：离机构建、仅清 Dash 旧构建缓存、禁止全局 `docker prune`、预留 ≥1 GiB。执行时需主人提供服务器访问方式。
+- 真实邮件到达仍未验收（沿用 STATUS §4，非本轮阻塞项）。
+

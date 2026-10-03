@@ -83,6 +83,12 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   reviews: { omit: ["job_id"] },
   review_edits: {},
   assistant_requests: { omit: ["job_id"] },
+  // Agent-first V2（迁移 0017）：统一输入与问答；原文与结构值是业务数据，全部导出
+  intakes: {},
+  extracted_documents: {},
+  intake_items: {},
+  clarification_questions: {},
+  clarification_answers: {},
   // 非敏感设置（邮件模板、预算）；调度内部状态不导出
   settings: {},
 };

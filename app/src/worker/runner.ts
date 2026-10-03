@@ -16,6 +16,8 @@ import { sweepExpiredExports } from "@/workflows/exports";
 
 import { NOTICE_EXTRACTION_JOB_TYPE } from "@/contracts/notice-extraction";
 import { runNoticeExtractionJob } from "@/workflows/notice-extraction";
+import { INTAKE_JOB_TYPE } from "@/contracts/intake";
+import { runIntakeProcessJob } from "@/workflows/intake";
 
 import { DIGEST_JOB_TYPE } from "@/contracts/digests";
 import { runDigestJob, scheduleDigests } from "@/workflows/digests";
@@ -24,6 +26,7 @@ const HANDLERS: Record<string, (job: JobRow) => Promise<{ kind: string }>> = {
   [REMINDER_JOB_TYPE]: runReminderJob,
   [DIGEST_JOB_TYPE]: runDigestJob,
   [NOTICE_EXTRACTION_JOB_TYPE]: runNoticeExtractionJob,
+  [INTAKE_JOB_TYPE]: runIntakeProcessJob,
   [EXPLORATION_JOB_TYPE]: runExplorationJob,
   [REVIEW_JOB_TYPE]: runReviewJob,
   [ASSISTANT_JOB_TYPE]: runAssistantJob,

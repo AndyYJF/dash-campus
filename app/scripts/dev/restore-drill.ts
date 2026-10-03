@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 
 const src = process.argv[2] ?? process.env.DATABASE_PATH ?? "./data/v2/dash-campus.db";
 if (!fs.existsSync(src)) {
@@ -16,8 +17,6 @@ if (!fs.existsSync(src)) {
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-restore-drill-"));
 const dst = path.join(dir, "restored.db");
-const Database = require("better-sqlite3") as typeof import("better-sqlite3");
-// WAL 模式：先 checkpoint 合并 -wal，否则拷贝的主文件缺最近事务
 const srcDb = new Database(src);
 srcDb.pragma("wal_checkpoint(TRUNCATE)");
 srcDb.close();

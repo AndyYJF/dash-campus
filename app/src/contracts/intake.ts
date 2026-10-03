@@ -30,12 +30,13 @@ export const INTAKE_ITEM_STATES = [
 ] as const;
 export type IntakeItemState = (typeof INTAKE_ITEM_STATES)[number];
 
-export const INTAKE_ITEM_KINDS = ["timetable", "notice", "practice", "task", "note"] as const;
+export const INTAKE_ITEM_KINDS = ["timetable", "notice", "practice", "task", "note", "ics"] as const;
 export type IntakeItemKind = (typeof INTAKE_ITEM_KINDS)[number];
 
-/** POST /api/v2/intakes 请求体；multipart 与附件在 P4 */
+/** POST /api/v2/intakes JSON 请求体；multipart（附件）由路由解析后走同一 envelope */
 export const intakeCreateSchema = z.object({
-  text: z.string().min(1, "内容不能为空").max(100_000, "文字最多 100k 字符"),
+  text: z.string().max(100_000, "文字最多 100k 字符").default(""),
+  urls: z.array(z.string().max(2048)).max(2, "一次最多 2 个链接").default([]),
   /** 显式参照日期（默认取提交日）；旧截图/引用由前端提示确认 */
   referenceDate: z
     .string()

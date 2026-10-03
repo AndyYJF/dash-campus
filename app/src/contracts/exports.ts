@@ -102,6 +102,8 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   // Agent-first V2（迁移 0019）：规划偏好与学习块排程
   planning_preferences: {},
   plan_sessions: {},
+  // Agent-first V2（迁移 0020）：附件元数据导出；blob 二进制原件列入排除
+  intake_attachments: {},
   // 非敏感设置（邮件模板、预算）；调度内部状态不导出
   settings: {},
 };
@@ -121,4 +123,5 @@ export const FULL_JSON_EXCLUDED = [
   "instance_state",
   "planning_state",
   "schema_version",
+  "intake_blobs",
 ] as const;

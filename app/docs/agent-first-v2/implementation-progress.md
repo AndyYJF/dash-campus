@@ -2,6 +2,32 @@
 
 本页按阶段记录事实、缺口和下一步。开工指令见 [CODING-AGENT.md](./CODING-AGENT.md)，完整契约见 [MASTER-PLAN.md](./MASTER-PLAN.md)。每条结论注明验证方式；无证据的能力标为缺口。
 
+## P4 文件理解与只读来源接入（部分完成，2026-10-03）
+
+### 交付
+
+- 迁移 `0020_attachments.sql`：intake_blobs（hash 去重，二进制原件，列入导出排除）+ intake_attachments（同 intake/hash 唯一）；`0021_extend_item_kind.sql`：intake_items 重建，kind 增加 `ics`。schema 21。
+- POST /api/v2/intakes 支持 multipart：text/urls/files/referenceDate；限额 10 文件 / 单件 10MiB / 共 30MiB（413 报尺寸、422 报数量）；multipart 幂等摘要用规范化字段（boundary 随机不能直接比对）。
+- ICS 子集（`domain/ics.ts` 确定性解析，一次性 VEVENT；RRULE 跳过计数）→ 新白名单命令 `import_fixed_events` 落固定事件 + journal，可 undo。
+- CSV/TXT/MD 附件并入分类文本；图片附件走模型 vision（`buildMessages` 支持 image_url parts，端点已实测可用）；URL 最多 2 个，worker 内抓取（data:/http(s)，10s 超时、1MiB 上限、去标签），抓过一次不重抓。
+- PDF/XLSX 明确失败：原文保留为失败事项，提示可复制文字投递（不静默丢）。
+
+### 验证证据
+
+- 新增 `test/intake-files-v2.test.ts` 6 项：超限 413/422；ICS 入库+undo 清空；CSV 两份不同日期投递各自落实践记录（不按文字 hash 去重）且 blob 只存一份；图片触发 1 次 vision；data: URL 提取入证据；PDF 明确失败含“PDF/不支持”提示。
+- 全套 **183/183 通过**，typecheck/lint/build 无错。
+
+### 本阶段决策（最小一致选择）
+
+- PDF/扫描件/XLSX 需要解析库（unpdf/exceljs 属新 npm 依赖），本阶段先明确失败；是否加依赖待主人批准后在后续切片补。
+- vision 分类产物不做 excerpt 逐字校验（无原文可对），证据即图片本身；文本类仍强制逐字。
+- 校园/Todo 来源适配器沿用 v1 桥接（只读），V2 未新增写路径；Todo 写操作拒绝由既有只读约束覆盖。
+
+### 已知限制
+
+- ICS 只支持一次性事件（RRULE 跳过计数，不半解析）。
+- 重建后“不灌回全部历史”沿用既有桥接游标语义，V2 未新增回灌路径。
+
 ## P3 课表、生活预算与学习行动闭环（已完成，2026-10-03）
 
 ### 交付

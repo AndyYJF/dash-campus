@@ -28,6 +28,7 @@ import { instanceTimezone, localDateInTz, mondayOf, addDays } from "@/domain/tim
 import { parseTimetable, TimetableError } from "@/domain/timetable";
 import { executeCommand } from "@/workflows/commands";
 import { rebuildPlan } from "@/workflows/plan";
+import { extractAttachment, fetchUrlText, listAttachments, materializeAttachment, recordUrlDocument } from "@/workflows/intake-files";
 import {
   INTAKE_JOB_TYPE,
   SEMESTER_FIRST_MONDAY_KEY,
@@ -46,7 +47,7 @@ import { JOB_EXTERNAL_TIMEOUT_MS, JOB_RENEW_INTERVAL_MS, type JobRow } from "@/c
 const EXTRACTOR_VERSION = "text-v1";
 
 /** 接收：持久化原文 + 证据 + 入队。必须在调用方的幂等事务里执行（路由负责） */
-export function receiveIntake(input: { channel: string; text: string; referenceDate?: string }): { intakeId: string; status: string } {
+export function receiveIntake(input: { channel: string; text: string; referenceDate?: string; urls?: string[] }): { intakeId: string; status: string } {
   const tz = instanceTimezone();
   const intake = createIntake({
     channel: input.channel,
@@ -56,6 +57,9 @@ export function receiveIntake(input: { channel: string; text: string; referenceD
     instanceEpoch: getInstanceState().deploymentEpoch,
   });
   createExtractedDocument({ intakeId: intake.id, sourceKind: "text", extractorVersion: EXTRACTOR_VERSION, contentText: input.text });
+  if (input.urls?.length) {
+    createExtractedDocument({ intakeId: intake.id, sourceKind: "url-list", extractorVersion: "url-v1", contentText: JSON.stringify(input.urls) });
+  }
   createJob({
     type: INTAKE_JOB_TYPE,
     dedupeKey: `intake:${intake.id}:initial`,
@@ -75,6 +79,40 @@ export function splitSdct1(text: string): { sdct: string | null; rest: string } 
   const sdct = lines.slice(start, end + 1).join("\n");
   const rest = [...lines.slice(0, start), ...lines.slice(end + 1)].join("\n").trim();
   return { sdct, rest };
+}
+
+/** 收集 URL 与附件输入：URL 抓过一次就不重抓（证据复用）；附件按类型分发 */
+async function collectExtraInputs(intakeId: string, intake: IntakeRow): Promise<{ texts: string[]; images: string[] }> {
+  void intake;
+  const texts: string[] = [];
+  const images: string[] = [];
+  const db = getDb();
+  const urlListRow = db.prepare(`SELECT content_text FROM extracted_documents WHERE intake_id = ? AND source_kind = 'url-list'`).get(intakeId) as { content_text: string } | undefined;
+  const urls: string[] = urlListRow ? (JSON.parse(urlListRow.content_text) as string[]) : [];
+  const doneUrls = new Set(
+    (db.prepare(`SELECT locator FROM extracted_documents WHERE intake_id = ? AND source_kind = 'url'`).all(intakeId) as Array<{ locator: string }>).map((r) => r.locator),
+  );
+  for (const r of db.prepare(`SELECT content_text FROM extracted_documents WHERE intake_id = ? AND source_kind = 'url'`).all(intakeId) as Array<{ content_text: string }>) {
+    if (!r.content_text.startsWith("（抓取失败")) texts.push(r.content_text);
+  }
+  for (const url of urls) {
+    if (doneUrls.has(url)) continue;
+    const r = await fetchUrlText(url);
+    if (r.ok) {
+      recordUrlDocument(intakeId, url, r.text);
+      texts.push(r.text);
+    } else {
+      recordUrlDocument(intakeId, url, `（抓取失败：${r.error}）`);
+    }
+  }
+  for (const att of listAttachments(intakeId)) {
+    if (att.extractionState === "unsupported") continue;
+    const outcome = extractAttachment(att);
+    if (outcome.kind === "text") texts.push(outcome.text);
+    else if (outcome.kind === "image") images.push(outcome.dataUrl);
+    else materializeAttachment(intakeId, att, outcome);
+  }
+  return { texts, images };
 }
 
 /** 学期首周锚点：「第N周」（以参照日期的本周推算）或显式日期（归一到所在周周一） */
@@ -150,15 +188,16 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
   if (getJob(job.id)?.cancelRequested) return cancel();
   db.prepare(`UPDATE intakes SET status = 'processing', updated_at = ? WHERE id = ?`).run(now(), intakeId);
 
-  // 第一阶段：拆分。课表块确定性切出；剩余文本在无分类结果时走模型分类。
-  // 条件独立于事项总数：retry 删掉失败占位后只重跑分类，不重建课表事项、不重复调模型。
+  // 第一阶段：拆分。课表块确定性切出；URL/附件并入分类输入；无分类结果时走一次模型分类。
   let items = listItems(intakeId);
-  const { sdct, rest } = splitSdct1(intake.text);
+  const { sdct, rest: textRest } = splitSdct1(intake.text);
   if (sdct && !items.some((i) => i.stableItemKey === "timetable")) {
     createItem({ intakeId, stableItemKey: "timetable", kind: "timetable", payload: { sdctText: sdct } });
     items = listItems(intakeId);
   }
-  if (rest && !items.some((i) => i.stableItemKey !== "timetable")) {
+  const extra = await collectExtraInputs(intakeId, intake);
+  const rest = [textRest, ...extra.texts].filter(Boolean).join("\n\n");
+  if ((rest || extra.images.length) && !items.some((i) => !["timetable", "ics"].includes(i.kind) && !i.stableItemKey.startsWith("file-"))) {
       const model = resolveModelProvider();
       const budget = budgetCheck({ model: 1 });
       const unavailable = !model ? "模型未配置，原文已保留" : !budget.ok ? `BUDGET_EXCEEDED：${budget.message}` : null;
@@ -173,7 +212,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
         try {
           const result = await meteredModel(model!.provider, { type: "intake", id: intakeId }).call({
             workflow: INTAKE_JOB_TYPE,
-            context: { text: rest, referenceDate: intake.referenceDate, timezone: intake.timezone },
+            context: { text: rest, images: extra.images, referenceDate: intake.referenceDate, timezone: intake.timezone },
             outputSchemaVersion: 1,
             timeoutMs: JOB_EXTERNAL_TIMEOUT_MS,
             instructions: CLASSIFY_INSTRUCTIONS,
@@ -186,7 +225,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
           } else {
             const out = result.validatedResult as { items: Array<{ itemKey: string; kind: IntakeItemRow["kind"]; summary: string; excerpt: string }> };
             const used = new Set<string>(sdct ? ["timetable"] : []);
-            const invalid = out.items.find((i) => !excerptInText(i.excerpt, rest));
+            const invalid = rest ? out.items.find((i) => !excerptInText(i.excerpt, rest)) : undefined;
             if (invalid) {
               failNoteItem(intakeId, rest, `分类结果引用不在原文中（${invalid.itemKey}），按原始资料保留`);
             } else {
@@ -272,6 +311,15 @@ function commandForItem(intake: IntakeRow, item: IntakeItemRow): unknown | null 
     const summary = ((item.payload.summary as string) ?? "未命名事项").slice(0, 200);
     const text = `${summary} ${(item.evidence?.excerpt as string) ?? ""}`;
     return { command: "create_or_update_task", title: summary, estimateMinutes: estimateFromText(text), dueLocalDate: dueFromText(text, intake.referenceDate) };
+  }
+  if (item.kind === "ics") {
+    const events = (item.payload.events as Array<{ title: string; date: string; localStart: string; localEnd: string }>) ?? [];
+    if (!events.length) return null;
+    return {
+      command: "import_fixed_events",
+      timezone: intake.timezone,
+      events: events.map((e) => ({ title: e.title, eventDate: e.date, localStart: e.localStart, localEnd: e.localEnd })),
+    };
   }
   return null;
 }

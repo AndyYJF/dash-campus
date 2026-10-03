@@ -59,7 +59,29 @@ export function executeCommand(raw: unknown, ctx: CommandContext): CommandResult
 function applyCommand(cmd: Command, ctx: CommandContext, changes: ChangeInput[]): string {
   if (cmd.command === "upsert_course_set") return applyCourseSet(cmd, ctx, changes);
   if (cmd.command === "record_practice") return applyPractice(cmd, ctx, changes);
+  if (cmd.command === "import_fixed_events") return applyFixedEvents(cmd, ctx, changes);
   return applyTask(cmd, ctx, changes);
+}
+
+/** ICS 等文件来源的一次性固定事件（确定性解析结果，weekday 取当日） */
+function applyFixedEvents(cmd: Extract<Command, { command: "import_fixed_events" }>, ctx: CommandContext, changes: ChangeInput[]): string {
+  for (const e of cmd.events) {
+    const weekday = new Date(`${e.eventDate}T12:00:00Z`).getUTCDay() || 7;
+    const id = insertFixedEvent({
+      title: e.title,
+      weekday,
+      localStart: e.localStart,
+      localEnd: e.localEnd,
+      timezone: cmd.timezone,
+      validFrom: null,
+      validUntil: null,
+      eventDate: e.eventDate,
+    });
+    changes.push({ entityKind: "fixed_event", entityId: id, action: "create", after: { ...e }, afterVersion: null });
+    linkSource({ entityKind: "fixed_event", entityId: id, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
+  }
+  bumpPlanningRevision();
+  return `固定事件入库：${cmd.events.length} 条`;
 }
 
 function applyCourseSet(cmd: Extract<Command, { command: "upsert_course_set" }>, ctx: CommandContext, changes: ChangeInput[]): string {

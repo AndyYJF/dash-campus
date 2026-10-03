@@ -31,15 +31,32 @@ export const createOrUpdateTaskSchema = z.object({
   dueLocalDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().default(null),
 });
 
+export const importFixedEventsSchema = z.object({
+  command: z.literal("import_fixed_events"),
+  events: z
+    .array(
+      z.object({
+        title: z.string().min(1).max(200),
+        eventDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        localStart: z.string().regex(/^\d{2}:\d{2}$/),
+        localEnd: z.string().regex(/^\d{2}:\d{2}$/),
+      }),
+    )
+    .min(1)
+    .max(200),
+  timezone: z.string().min(1).max(64),
+});
+
 export const commandSchema = z.discriminatedUnion("command", [
   upsertCourseSetSchema,
   recordPracticeSchema,
   createOrUpdateTaskSchema,
+  importFixedEventsSchema,
 ]);
 
 export type Command = z.infer<typeof commandSchema>;
 
-export const COMMAND_WHITELIST = ["upsert_course_set", "record_practice", "create_or_update_task"] as const;
+export const COMMAND_WHITELIST = ["upsert_course_set", "record_practice", "create_or_update_task", "import_fixed_events"] as const;
 
 /** 命令执行上下文：来源引用进 journal，目标对象由服务端解析 */
 export type CommandContext = {

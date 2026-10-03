@@ -157,3 +157,10 @@
 - VPS 磁盘余量未在本次复核（主机信息不入库，本机无 SSH 配置）；最近观测 2026-10-03 约 208 MiB（[STATUS](../STATUS.md) §3）。上线/加 OCR 前的容量方案已定：离机构建、仅清 Dash 旧构建缓存、禁止全局 `docker prune`、预留 ≥1 GiB。执行时需主人提供服务器访问方式。
 - 真实邮件到达仍未验收（沿用 STATUS §4，非本轮阻塞项）。
 
+
+### P4 部署记录（2026-10-03）
+
+- commit `9b1ae01`（P4 主体）+ `5e9a92d`（0021 迁移修复），CI run 37118703985 / 37119127750 均绿。
+- 生产部署：备份 `dash-campus-backup-20261003-111818`，迁移 0020+0021 应用后 schema 21，桥接 timer 已重启。
+- **0021 迁移事故与修复**：首版用 `PRAGMA foreign_keys=OFF` 重建表，但迁移在单事务内运行该 PRAGMA 无效，DROP TABLE 触发即时 FK 检查失败回滚（schema 停在 19）。改为方案 B：断 `clarification_questions.item_id` 引用 → 重建 → 恢复。已用带数据的 dev 库验证无损。
+- 线上冒烟（p4-online-smoke.sh）：multipart 上传 ICS → intake completed → fixed_events 落库 `[smoke] ICS 讲座 2026-10-09 14:00` → undo 清理成功。健康检查 schemaVersion 21。

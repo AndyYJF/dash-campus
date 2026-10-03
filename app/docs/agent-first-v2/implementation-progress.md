@@ -30,6 +30,14 @@
 - focus_sessions（计时器）未做，无双计合并场景；“记录 40 分钟不重复计时”在 P4/P5 有计时器后补验收。
 - 实践记录与学习块尚未自动关联（预算账本分开累计）。
 
+### 部署记录（切片2，2026-10-03）
+
+- 本地全绿（176→177/177）；commit `61a5149`→`085e446`，CI success ×3。
+- 线上 schemaVersion **19**；三页面 /today /week /direction 均 200。
+- 线上实测：dashboard 模板容量 cDay=180(tentative)、weekBudget=1260；投「明天前复习…大约两小时」→ 任务带估时 120 落库 → rebuild placed=2（90+30 块）→ dashboard 出现学习块；undo + rebuild 清理完毕（planned sessions 0、smoke 任务 0）。
+- 生产既有 8 个无估时任务诚实报 unknown_requirement，未被硬排。
+- 线上发现并修复 2 个缺陷：任务估时/截止未从原文解析（补「小时/分钟/今天明天后天」确定性解析，中文数字「两」）；undo 任务时 plan_sessions FK 阻止删除（任务撤销连带清理其学习块）。
+
 ## P2 执行策略、实体关联与可撤销变更（已完成，2026-10-03）
 
 ### 交付

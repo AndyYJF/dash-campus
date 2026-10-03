@@ -30,6 +30,14 @@
 - create_or_update_task 目前只走 create 路径（intake 来源）；owner 字段冲突提问在后续阶段。
 - 撤销 UI 入口未做（API 已通）；/today 等页面还未展示课程（P3）。
 
+### 部署记录（切片1，2026-10-03）
+
+- 本地 verifyCommand 全绿（170/170 + typecheck + lint + build）；commit `5cc9844`，CI success。
+- 部署前磁盘治理：删除 22 个旧 dash release/rollback 镜像 + builder prune，/ 空闲 242MiB → 4.8GiB（不动其他服务、不全局 prune）。
+- 流程：停 bridge timer/service → 停 web/worker → 备份（schema 16 快照 sha256 ef92f997）→ codeload 源码包覆盖 → build → migrate（0017、0018）→ up → 重启 bridge timer。
+- 线上验证：`https://dash.fei.cx/api/v1/health` 返回 schemaVersion **18**；`scripts/dev/p2-online-smoke.sh` 在 VPS 实测：混合投递 → 缺首周问 1 个问题 → 回答「第5周」→ completed，semester(2026-08-31)/course/投影/fixed_event/practice(30分钟,user_reported)/2个batch applied 全部落库；`p2-online-undo.sh` 撤销两个 batch 均 200，领域数据回滚、journal 留 undone 痕。smoke 数据已清理。
+- 运维发现：备份脚本在 worker 停机后 ~20 秒内会因心跳未过期拒绝，等 25 秒重试即可；ops 容器 entrypoint 是 bash，一次性命令要用 `ops -c "..."`。
+
 ## P1 统一接收、证据和主动问答（已完成，2026-10-03）
 
 ### 交付

@@ -164,3 +164,27 @@
 - 生产部署：备份 `dash-campus-backup-20261003-111818`，迁移 0020+0021 应用后 schema 21，桥接 timer 已重启。
 - **0021 迁移事故与修复**：首版用 `PRAGMA foreign_keys=OFF` 重建表，但迁移在单事务内运行该 PRAGMA 无效，DROP TABLE 触发即时 FK 检查失败回滚（schema 停在 19）。改为方案 B：断 `clarification_questions.item_id` 引用 → 重建 → 恢复。已用带数据的 dev 库验证无损。
 - 线上冒烟（p4-online-smoke.sh）：multipart 上传 ICS → intake completed → fixed_events 落库 `[smoke] ICS 讲座 2026-10-09 14:00` → undo 清理成功。健康检查 schemaVersion 21。
+
+## P5 方向证据、每周主动维护与邮件（2026-10-03）
+
+### 交付
+
+- 方向页候选：`directionSnapshot` 接入 v1 candidates 表（status=proposed，最多 3 个，含 deliverable/fitReason/evidenceStatus/canonicalUrl），前端展示带来源链接。
+- 周事实扩展：`weekFacts` 新增 planSessions（计划/完成/跳过计数）+ practice（次数/总分钟），每周回顾邮件引用真实记录（"实践记录 N 次共 M 分钟"、"学习块：计划/完成/跳过"）。
+- 每天有限重排：新 job 类型 `plan_maintenance`，scheduleDigests 按本地日期 dedupe（同日只排一次、错过不补），handler 调 rebuildPlan。
+
+### 验证证据
+
+- 新增 `test/direction-maintenance-v2.test.ts` 4 项：周事实 V2 统计、周邮件含实践/学习块、候选 ≤3 带证据状态、maintenance 同日不重复且执行完成。
+- 全套 **187/187 通过**，typecheck/lint/build 无错。
+
+### 本阶段决策
+
+- 每周有限探索沿用 v1 exploration topics 机制（已有调度+预算），V2 不重复建设。
+- 邮件复用 v1 投递（deliveries accepted/unknown 语义、安静时段、不自动重发），V2 只扩展内容不碰投递机制。
+- `plan_maintenance` 无条件排队（不受 digest 邮件开关影响）——重排是系统维护不是通知。
+
+### 已知限制
+
+- 方向候选来源是 v1 探索系统的 proposed 候选，V2 未新增"方向推荐"模型调用（§7 不替用户选方向）。
+- focus_sessions（计时）仍未实现，P3 已记录为差距。

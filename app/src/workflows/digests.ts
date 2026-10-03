@@ -3,7 +3,7 @@ import { getDb } from "@/repositories/db";
 import { getSetting, updateSetting } from "@/repositories/settings";
 import { createJob, leaseValid } from "@/repositories/jobs";
 import { createDelivery, getDelivery, markSubmitting } from "@/repositories/deliveries";
-import { DIGEST_JOB_TYPE, DIGEST_SETTINGS_KEY, digestSettingsSchema, type DigestKind } from "@/contracts/digests";
+import { DIGEST_JOB_TYPE, DIGEST_SETTINGS_KEY, PLAN_MAINTENANCE_JOB_TYPE, digestSettingsSchema, type DigestKind } from "@/contracts/digests";
 import type { JobRow } from "@/contracts/jobs";
 import { addDays, instanceTimezone, localDateInTz, mondayOf, wallTimeToUtc } from "@/domain/time";
 import { nextWeeklyRun } from "@/domain/exploration";
@@ -43,6 +43,8 @@ function systemFailures() {
 export function scheduleDigests(now = new Date()) {
   const db = getDb(), cfg = getDigestSettings().settings, tz = instanceTimezone();
   let queued = 0;
+  // 每天有限重排（P5）：dedupe 键含本地日期，重复调度/错过都不叠加
+  createJob({ type: PLAN_MAINTENANCE_JOB_TYPE, dedupeKey: `plan_maintenance:${localDateInTz(now, tz)}`, runAt: now.toISOString(), payload: { date: localDateInTz(now, tz) } });
   for (const kind of ["daily", "weekly"] as const) {
     const enabled = kind === "daily" ? cfg.dailyEnabled : cfg.weeklyEnabled;
     const signature = JSON.stringify(kind === "daily" ? [enabled, cfg.dailyTime, tz] : [enabled, cfg.weeklyWeekday, cfg.weeklyTime, tz]);
@@ -89,6 +91,8 @@ export function renderDigest(kind: DigestKind, date: string) {
     for (const l of f.logs.slice(0, 5)) if (!settings.privacyMode) lines.push(`${l.occurredOn}：${l.progress || "未填写进展"}${l.blocker ? `；卡点：${l.blocker}` : ""}`);
     const review = db.prepare("SELECT status FROM reviews WHERE local_monday=? AND timezone=? ORDER BY created_at DESC LIMIT 1").get(f.localMonday, tz) as { status: string } | undefined;
     lines.push(review ? `周复盘状态：${review.status}，请进入回顾页查看依据与提案。` : "尚未生成周复盘，可在回顾页手动生成；未调用模型编造总结。");
+    if (f.practice.count) lines.push(`实践记录 ${f.practice.count} 次，共 ${f.practice.totalMinutes} 分钟。`);
+    lines.push(`学习块：计划 ${f.planSessions.planned} 个，完成 ${f.planSessions.completed}，跳过 ${f.planSessions.skipped}。`);
   } else {
     const failures = systemFailures();
     lines.push(`最近异常：${failures.jobs.length} 个后台任务、${failures.deliveries.length} 封投递。`);

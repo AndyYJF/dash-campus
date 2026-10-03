@@ -1,5 +1,5 @@
 import { getDb } from "@/repositories/db";
-import { claimDueJobs, failJob, listJobs } from "@/repositories/jobs";
+import { claimDueJobs, completeJob, failJob, leaseValid, listJobs } from "@/repositories/jobs";
 import {
   listDeliveriesByJob,
   markAllSubmittingUnknown,
@@ -19,14 +19,30 @@ import { runNoticeExtractionJob } from "@/workflows/notice-extraction";
 import { INTAKE_JOB_TYPE } from "@/contracts/intake";
 import { runIntakeProcessJob } from "@/workflows/intake";
 
-import { DIGEST_JOB_TYPE } from "@/contracts/digests";
+import { DIGEST_JOB_TYPE, PLAN_MAINTENANCE_JOB_TYPE } from "@/contracts/digests";
+import { rebuildPlan } from "@/workflows/plan";
 import { runDigestJob, scheduleDigests } from "@/workflows/digests";
+
+/** 每天一次有限重排（P5）：重建未来学习块；dedupe 保证同日只跑一次 */
+async function runPlanMaintenanceJob(job: JobRow): Promise<{ kind: string }> {
+  const token = job.leaseToken!;
+  const nowIso = new Date().toISOString();
+  try {
+    rebuildPlan(new Date());
+    if (leaseValid(job.id, token, job.generation, nowIso)) completeJob(job.id, token, job.generation, { kind: "skipped", reason: "plan:rebuilt" }, nowIso);
+    return { kind: "done" };
+  } catch (e) {
+    if (leaseValid(job.id, token, job.generation, nowIso)) failJob(job.id, token, job.generation, `PLAN_MAINTENANCE:${e instanceof Error ? e.message : String(e)}`, nowIso);
+    return { kind: "failed" };
+  }
+}
 
 const HANDLERS: Record<string, (job: JobRow) => Promise<{ kind: string }>> = {
   [REMINDER_JOB_TYPE]: runReminderJob,
   [DIGEST_JOB_TYPE]: runDigestJob,
   [NOTICE_EXTRACTION_JOB_TYPE]: runNoticeExtractionJob,
   [INTAKE_JOB_TYPE]: runIntakeProcessJob,
+  [PLAN_MAINTENANCE_JOB_TYPE]: runPlanMaintenanceJob,
   [EXPLORATION_JOB_TYPE]: runExplorationJob,
   [REVIEW_JOB_TYPE]: runReviewJob,
   [ASSISTANT_JOB_TYPE]: runAssistantJob,

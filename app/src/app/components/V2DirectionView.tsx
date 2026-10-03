@@ -9,6 +9,7 @@ import styles from "./v2.module.css";
 type Direction = {
   goals: Array<{ id: string; title: string; status: string }>;
   practice: Array<{ id: string; occurredOn: string; actualMinutes: number | null; note: string }>;
+  candidates: Array<{ title: string; deliverable: string; fitReason: string; evidenceStatus: string; canonicalUrl: string | null }>;
   evidenceState: string;
   honesty: string;
 };
@@ -37,6 +38,22 @@ export default function V2DirectionView() {
         {data.goals.length === 0 && <p className={styles.muted}>还没有目标。</p>}
         {data.goals.map((g) => (
           <p key={g.id} className={styles.sessionTitle}>{g.title}{g.status === "paused" && <em className={styles.badge}>暂停</em>}</p>
+        ))}
+      </section>
+
+      <section className={styles.card}>
+        <h2 className={styles.title}>方向候选</h2>
+        {data.candidates.length === 0 && <p className={styles.muted}>暂无候选。探索有新结果时会出现在这里（最多 3 个，均带来源）。</p>}
+        {data.candidates.map((c) => (
+          <div key={c.title} className={styles.session}>
+            <span className={styles.sessionTitle}>{c.title}</span>
+            {c.canonicalUrl ? (
+              <a href={c.canonicalUrl} target="_blank" rel="noreferrer" className={styles.muted}>来源↗</a>
+            ) : (
+              <em className={styles.badge}>无链接</em>
+            )}
+            <span className={styles.muted}>{c.deliverable && `交付：${c.deliverable} · `}证据：{c.evidenceStatus}</span>
+          </div>
         ))}
       </section>
 

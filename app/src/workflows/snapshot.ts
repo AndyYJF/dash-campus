@@ -106,13 +106,16 @@ export function directionSnapshot(asOf: Date) {
   const practice = db
     .prepare(`SELECT id, occurred_on, actual_minutes, note FROM practice_entries ORDER BY occurred_on DESC, created_at DESC LIMIT 10`)
     .all() as Array<{ id: string; occurred_on: string; actual_minutes: number | null; note: string }>;
+  const candidates = db
+    .prepare(`SELECT title, deliverable, fit_reason, evidence_status, canonical_url FROM candidates WHERE status = 'proposed' ORDER BY updated_at DESC LIMIT 3`)
+    .all() as Array<{ title: string; deliverable: string; fit_reason: string; evidence_status: string; canonical_url: string | null }>;
   return {
     snapshotRevision: snapshotRevision(),
     asOf: asOf.toISOString(),
     goals: goals.map((g) => ({ id: g.id, title: g.title, status: g.status })),
     practice: practice.map((p) => ({ id: p.id, occurredOn: p.occurred_on, actualMinutes: p.actual_minutes, note: p.note })),
     evidenceState: practice.length ? "has_evidence" : "no_evidence",
-    candidates: [],
+    candidates: candidates.map((c) => ({ title: c.title, deliverable: c.deliverable, fitReason: c.fit_reason, evidenceStatus: c.evidence_status, canonicalUrl: c.canonical_url })),
     honesty: practice.length
       ? "建议只引用上面的实践记录；没有记录的方面不编造。"
       : "还没有实践记录，方向建议缺少证据。先记录几次真实学习再来看这里。",

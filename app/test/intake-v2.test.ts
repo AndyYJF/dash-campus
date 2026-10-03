@@ -94,6 +94,8 @@ test("同一缺口共享问题：第二份课表不再新建问题", async () =>
   const res = await createIntakeRoute(authedReq("/api/v2/intakes", "POST", { text: SDCT1 }, "idem-mix-2"));
   assert.equal(res.status, 202);
   const { intakeId } = (await res.json()) as { intakeId: string };
+  // runDueJobsOnce 每次会顺带排当日 plan_maintenance（P5），先 drain 再轮到本 intake
+  await runDueJobsOnce();
   await runDueJobsOnce();
 
   assert.equal(listOpenQuestions().length, 1, "仍然只有 1 个 open 问题");

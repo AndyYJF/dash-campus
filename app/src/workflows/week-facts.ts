@@ -23,6 +23,9 @@ export type WeekFacts = {
   workload: { committedMinutes: number; committedUnknownCount: number; weekCapacityMinutes: number | null };
   lastWeekProposals: Array<{ id: string; reason: string; status: string; rejectionReason: string | null }>;
   counts: { logs: number; blockers: number; completed: number; artifacts: number };
+  /** V2 事实（迁移 0019/0018 之后才有数据；老库为空表计 0，不编造） */
+  planSessions: { planned: number; completed: number; skipped: number };
+  practice: { count: number; totalMinutes: number };
 };
 
 const nextMondayOf = (m: string) => addDays(m, 7);
@@ -131,6 +134,15 @@ export function weekFacts(localMonday: string, tz = instanceTimezone()): WeekFac
       completed: completedTasks.length,
       artifacts: artifacts.length,
     },
+    planSessions: {
+      planned: (db.prepare(`SELECT COUNT(*) AS n FROM plan_sessions WHERE start_utc >= ? AND start_utc < ? AND status IN ('tentative','planned','in_progress','completed')`).get(startsAt, endsAt) as { n: number }).n,
+      completed: (db.prepare(`SELECT COUNT(*) AS n FROM plan_sessions WHERE start_utc >= ? AND start_utc < ? AND status = 'completed'`).get(startsAt, endsAt) as { n: number }).n,
+      skipped: (db.prepare(`SELECT COUNT(*) AS n FROM plan_sessions WHERE start_utc >= ? AND start_utc < ? AND status = 'skipped'`).get(startsAt, endsAt) as { n: number }).n,
+    },
+    practice: (() => {
+      const r = db.prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(actual_minutes), 0) AS m FROM practice_entries WHERE occurred_on >= ? AND occurred_on <= ?`).get(localMonday, weekEnd) as { n: number; m: number };
+      return { count: r.n, totalMinutes: r.m };
+    })(),
   };
 }
 

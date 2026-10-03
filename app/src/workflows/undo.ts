@@ -60,6 +60,8 @@ function revertOne(c: ChangeRow): void {
   const meta = KIND_TABLE[c.entityKind]!;
   const db = getDb();
   if (c.action === "create") {
+    // 任务被撤销删除时，其学习块（排程衍生数据，可重建）一并删除，否则 FK 阻止
+    if (c.entityKind === "task") db.prepare(`DELETE FROM plan_sessions WHERE task_id = ?`).run(c.entityId);
     db.prepare(`DELETE FROM ${meta.table} WHERE id = ?`).run(c.entityId);
     return;
   }

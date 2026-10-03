@@ -18,9 +18,9 @@ curl -s "${AUTH[@]}" "$BASE/api/v2/direction" | grep -o '"evidenceState":"[^"]*"
 
 echo "== 投任务（2小时，明天截止）=="
 cat > /tmp/p3-task.json <<'EOF'
-{"text":"[smoke] 明天前要复习完操作系统第二章，大概两小时"}
+{"text":"[smoke] 明天前要复习完操作系统第二章，大约需要两小时"}
 EOF
-CREATE=$(curl -s "${AUTH[@]}" -H "Idempotency-Key: smoke-p3-task-1" --data-binary @/tmp/p3-task.json "$BASE/api/v2/intakes")
+CREATE=$(curl -s "${AUTH[@]}" -H "Idempotency-Key: smoke-p3-task-2" --data-binary @/tmp/p3-task.json "$BASE/api/v2/intakes")
 ID=$(echo "$CREATE" | grep -o '"intakeId":"[^"]*"' | cut -d'"' -f4)
 echo "intake: $ID"
 sleep 12

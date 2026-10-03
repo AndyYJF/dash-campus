@@ -102,6 +102,27 @@ test("P2：实体后续被修改后 undo 返回 409，不强行覆盖", async ()
   assert.ok(row.title.includes("（主人改）"), "后续修改不被撤销覆盖");
 });
 
+test("P2：任务撤销连带清理其学习块（FK 安全）", async () => {
+  const { rebuildPlan } = await import("@/workflows/plan");
+  const { executeCommand } = await import("@/workflows/commands");
+  const r = await executeCommand(
+    { command: "create_or_update_task", title: "FK 验证任务", estimateMinutes: 30 },
+    { intakeId: null, itemId: null, itemKey: "", instanceEpoch: 0, evidence: "" },
+  );
+  assert.ok(r.ok && r.batchId);
+  rebuildPlan(new Date());
+  const fkTask = getDb().prepare(`SELECT id FROM tasks WHERE title = 'FK 验证任务'`).get() as { id: string };
+  const res = await undoRoute(
+    authedReq(`/api/v2/actions/${r.batchId}/undo`, "POST", { expectedVersion: 1 }, "idem-i2-undo-fk"),
+    { params: Promise.resolve({ batchId: r.batchId }) },
+  );
+  assert.equal(res.status, 200, "带学习块的任务也能干净撤销");
+  const gone = getDb().prepare(`SELECT COUNT(*) AS n FROM tasks WHERE id = ?`).get(fkTask.id) as { n: number };
+  assert.equal(gone.n, 0);
+  const orphan = getDb().prepare(`SELECT COUNT(*) AS n FROM plan_sessions WHERE task_id = ?`).get(fkTask.id) as { n: number };
+  assert.equal(orphan.n, 0, "学习块随任务撤销清理");
+});
+
 test("P2：cancel 取消未应用部分，保留已应用结果与撤销入口", async () => {
   const before = (getDb().prepare(`SELECT COUNT(*) AS n FROM practice_entries`).get() as { n: number }).n;
   const intakeId = await submitIntake("今天练了听力", "idem-i2-cancel-1");

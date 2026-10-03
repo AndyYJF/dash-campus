@@ -55,17 +55,24 @@ export const applyEventExceptionSchema = z.object({
   note: z.string().max(200).default(""),
 });
 
+export const archiveEntitySchema = z.object({
+  command: z.literal("archive_entity"),
+  entityKind: z.enum(["task", "course_set", "goal"]),
+  entityId: z.string().min(1).max(64),
+});
+
 export const commandSchema = z.discriminatedUnion("command", [
   upsertCourseSetSchema,
   recordPracticeSchema,
   createOrUpdateTaskSchema,
   importFixedEventsSchema,
   applyEventExceptionSchema,
+  archiveEntitySchema,
 ]);
 
 export type Command = z.infer<typeof commandSchema>;
 
-export const COMMAND_WHITELIST = ["upsert_course_set", "record_practice", "create_or_update_task", "import_fixed_events", "apply_event_exception"] as const;
+export const COMMAND_WHITELIST = ["upsert_course_set", "record_practice", "create_or_update_task", "import_fixed_events", "apply_event_exception", "archive_entity"] as const;
 
 /** 命令执行上下文：来源引用进 journal，目标对象由服务端解析 */
 export type CommandContext = {

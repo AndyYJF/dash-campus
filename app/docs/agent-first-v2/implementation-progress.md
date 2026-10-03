@@ -213,3 +213,21 @@
 ### 保留差距（验收映射 §已知限制）
 
 focus 计时器未实现、PDF/XLSX 待依赖批准、vision 无坐标、A20 需人工走查、A21 引导组未做、域名→私网 DNS 防护未做。
+
+## P6 补强：focus 计时 / archive_entity / 排程单一源（2026-10-03，judge 复审后）
+
+### 交付
+
+- **focus_sessions 计时**（0023，schema 23）：部分唯一索引保证最多 1 个进行中；POST /api/v2/focus（start，已有则 409）、POST /api/v2/focus/:id/stop（版本校验；>4h 需 confirm=true；同日手动汇报分钟差 ≤10min 自动合并不双计——A08 完整闭环）；今天页计时卡片（开始/停止）。
+- **archive_entity 命令**（白名单第 7 个）：task/goal 软删 archived_at、course_set 转 superseded，journal+undo 恢复。
+- **plan_sessions 唯一排程事实源**：0023 把 v1 tasks.scheduled_start/end 一次性迁入 plan_sessions（locked=1 保留原安排，幂等不重复）；V2 快照链路只读 plan_sessions。
+- dashboard snapshot 加 focus 字段。
+
+### 验证证据
+
+- 新增 `focus-v2.test.ts` 4 项（max 1 进行中、stop 落 timer 分钟、A08 合并标注不翻倍、>4h 确认）；acceptance-v2 加 archive undo 测试。全套 **196/196 通过**。
+- retry/cancel 端点（judge 追问项）自 P2 已存在：POST /api/v2/intakes/:id/retry、/cancel（`src/app/api/v2/intakes/[id]/retry|cancel/route.ts` + commands-items-v2 测试覆盖）。
+
+### 覆盖事故记录
+
+- 误将 v1 `repositories/focus.ts`（周重点）覆盖为计时仓储，已用 git show 恢复并改名 `focus-timer.ts`。教训：写新文件前先 grep 同名。

@@ -62,7 +62,37 @@ function applyCommand(cmd: Command, ctx: CommandContext, changes: ChangeInput[])
   if (cmd.command === "record_practice") return applyPractice(cmd, ctx, changes);
   if (cmd.command === "import_fixed_events") return applyFixedEvents(cmd, ctx, changes);
   if (cmd.command === "apply_event_exception") return applyException(cmd, ctx, changes);
+  if (cmd.command === "archive_entity") return applyArchive(cmd, ctx, changes);
   return applyTask(cmd, ctx, changes);
+}
+
+/** 归档（软删除）：task/goal 置 archived_at + bump version；course_set 转 superseded。undo 恢复 */
+function applyArchive(cmd: Extract<Command, { command: "archive_entity" }>, ctx: CommandContext, changes: ChangeInput[]): string {
+  const db = getDb();
+  const nowIso = new Date().toISOString();
+  const table = cmd.entityKind === "course_set" ? "course_sets" : cmd.entityKind === "goal" ? "goals" : "tasks";
+  const row = db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(cmd.entityId) as Record<string, unknown> | undefined;
+  if (!row) throw new HttpError(404, "NOT_FOUND", `${cmd.entityKind} 不存在`);
+  const before = { archivedAt: (row.archived_at as string | null) ?? null, status: (row.status as string) ?? null, version: (row.version as number) ?? null };
+  if (cmd.entityKind === "course_set") {
+    if (row.status === "superseded") return "该课表已是归档状态";
+    db.prepare(`UPDATE course_sets SET status = 'superseded', version = version + 1 WHERE id = ?`).run(cmd.entityId);
+  } else {
+    if (row.archived_at) return "已是归档状态";
+    db.prepare(`UPDATE ${table} SET archived_at = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(nowIso, nowIso, cmd.entityId);
+  }
+  changes.push({
+    entityKind: cmd.entityKind,
+    entityId: cmd.entityId,
+    action: "update",
+    before,
+    after: { archivedAt: cmd.entityKind === "course_set" ? null : nowIso, status: cmd.entityKind === "course_set" ? "superseded" : before.status },
+    beforeVersion: before.version,
+    afterVersion: (before.version ?? 0) + 1,
+  });
+  linkSource({ entityKind: cmd.entityKind, entityId: cmd.entityId, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
+  bumpPlanningRevision();
+  return `${cmd.entityKind} 已归档`;
 }
 
 /** 单日停课例外（A03）：独立事实表，不改课程本体；同 course_set+date 幂等去重 */

@@ -85,6 +85,19 @@ test("A09：锁定的学习块在重排时不被移动", async () => {
   void prefs;
 });
 
+test("archive_entity：归档任务可撤销恢复", async () => {
+  executeCommand({ command: "create_or_update_task", title: "待归档任务", estimateMinutes: 30 }, CTX);
+  const taskId = (getDb().prepare(`SELECT id FROM tasks WHERE title = '待归档任务'`).get() as { id: string }).id;
+  const r = executeCommand({ command: "archive_entity", entityKind: "task", entityId: taskId }, CTX);
+  assert.ok(r.ok);
+  const archived = getDb().prepare(`SELECT archived_at FROM tasks WHERE id = ?`).get(taskId) as { archived_at: string | null };
+  assert.ok(archived.archived_at, "已软删除");
+  const { undoBatch } = await import("@/workflows/undo");
+  assert.equal(undoBatch(r.ok ? r.batchId : "").kind, "undone");
+  const restored = getDb().prepare(`SELECT archived_at FROM tasks WHERE id = ?`).get(taskId) as { archived_at: string | null };
+  assert.equal(restored.archived_at, null, "撤销后恢复");
+});
+
 test("A03：单日停课例外从预算移除，撤销后恢复", async () => {
   executeCommand({ command: "upsert_course_set", firstMonday: "2026-09-07", totalWeeks: 20, timezone: "Asia/Shanghai", sdctText: SDCT }, CTX);
   // 2026-10-05 是周一（第 5 周），原本有数学课 08:15-09:55

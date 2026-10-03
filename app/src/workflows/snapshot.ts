@@ -3,6 +3,7 @@ import { instanceTimezone, localDateInTz, mondayOf, wallTimeToUtc, addDays } fro
 import { futureCapacity, minutesOf, type Interval } from "@/domain/budget";
 import { getPrefs, listSessionsInRange } from "@/repositories/plan";
 import { listOpenQuestions } from "@/repositories/questions";
+import { getInProgressFocus } from "@/repositories/focus-timer";
 import { getPlanningRevision } from "@/repositories/proposals";
 import { dayView, latestPlanUnscheduled } from "./plan";
 
@@ -67,6 +68,10 @@ export function dashboardSnapshot(dateLocal: string, asOf: Date) {
       budget: { cDay: view.cDay, bDay, futureBudget: future.futureBudget, futureCapacity: future.futureCapacity, source: prefs.status },
     },
     questions: listOpenQuestions(3).map((q) => ({ id: q.id, prompt: q.prompt, version: q.version })),
+    focus: (() => {
+      const f = getInProgressFocus();
+      return f ? { id: f.id, note: f.note, startedAt: f.startedAt, version: f.version } : null;
+    })(),
     recentChanges: recentBatches(),
   };
 }

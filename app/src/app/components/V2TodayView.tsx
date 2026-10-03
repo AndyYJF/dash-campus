@@ -15,6 +15,7 @@ type Snapshot = {
     budget: { cDay: number; bDay: number; futureBudget: number; futureCapacity: number; source: string };
   };
   questions: Array<{ id: string; prompt: string }>;
+  focus: { id: string; note: string; startedAt: string; version: number } | null;
   recentChanges: Array<{ batchId: string; command: string; status: string; createdAt: string }>;
 };
 
@@ -64,6 +65,38 @@ export default function V2TodayView() {
         </div>
         {b.source === "tentative" && (
           <p className={styles.muted}>容量按默认作息模板估算。到「本周」页一句话确认后转为正式。</p>
+        )}
+      </section>
+
+      <section className={styles.card}>
+        <h2 className={styles.title}>计时</h2>
+        {snap.focus ? (
+          <div className={styles.session}>
+            <span className={styles.sessionTitle}>计时中：{snap.focus.note || "未命名"}</span>
+            <span className={styles.muted}>开始于 {hm(snap.focus.startedAt)}</span>
+            <button
+              className={styles.btn}
+              onClick={() =>
+                api(`/api/v2/focus/${snap.focus!.id}/stop`, { method: "POST", body: { expectedVersion: snap.focus!.version }, idempotencyKey: newIdempotencyKey() })
+                  .then(refresh)
+                  .catch((e) => setError(e instanceof Error ? e.message : "停止失败"))
+              }
+            >
+              停止并计入
+            </button>
+          </div>
+        ) : (
+          <button
+            className={styles.btn}
+            onClick={() => {
+              const note = window.prompt("计时做什么？（如：学数学）") ?? "";
+              api("/api/v2/focus", { method: "POST", body: { note }, idempotencyKey: newIdempotencyKey() })
+                .then(refresh)
+                .catch((e) => setError(e instanceof Error ? e.message : "启动失败"));
+            }}
+          >
+            开始计时
+          </button>
         )}
       </section>
 

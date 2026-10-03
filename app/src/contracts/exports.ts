@@ -106,6 +106,8 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   intake_attachments: {},
   // Agent-first V2（迁移 0022）：课程单日例外（停课/调课）
   course_event_exceptions: {},
+  // Agent-first V2（迁移 0023）：focus 计时
+  focus_sessions: {},
   // 非敏感设置（邮件模板、预算）；调度内部状态不导出
   settings: {},
 };

@@ -47,16 +47,25 @@ export const importFixedEventsSchema = z.object({
   timezone: z.string().min(1).max(64),
 });
 
+export const applyEventExceptionSchema = z.object({
+  command: z.literal("apply_event_exception"),
+  courseName: z.string().min(1).max(100),
+  eventDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  action: z.literal("cancel").default("cancel"),
+  note: z.string().max(200).default(""),
+});
+
 export const commandSchema = z.discriminatedUnion("command", [
   upsertCourseSetSchema,
   recordPracticeSchema,
   createOrUpdateTaskSchema,
   importFixedEventsSchema,
+  applyEventExceptionSchema,
 ]);
 
 export type Command = z.infer<typeof commandSchema>;
 
-export const COMMAND_WHITELIST = ["upsert_course_set", "record_practice", "create_or_update_task", "import_fixed_events"] as const;
+export const COMMAND_WHITELIST = ["upsert_course_set", "record_practice", "create_or_update_task", "import_fixed_events", "apply_event_exception"] as const;
 
 /** 命令执行上下文：来源引用进 journal，目标对象由服务端解析 */
 export type CommandContext = {

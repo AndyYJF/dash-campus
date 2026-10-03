@@ -17,6 +17,7 @@ const KIND_TABLE: Record<string, { table: string; versioned: boolean }> = {
   practice_entry: { table: "practice_entries", versioned: true },
   task: { table: "tasks", versioned: true },
   plan_session: { table: "plan_sessions", versioned: true },
+  course_exception: { table: "course_event_exceptions", versioned: false },
 };
 
 export type UndoResult =

@@ -20,6 +20,7 @@ import { insertPracticeEntry } from "@/repositories/practice";
 import { addChange, createBatch, type ChangeInput } from "@/repositories/journal";
 import { commandSchema, COMMAND_POLICY_VERSION, type Command, type CommandContext } from "@/contracts/commands";
 import { instanceTimezone } from "@/domain/time";
+import { HttpError } from "@/workflows/http";
 
 /**
  * 命令执行器（MASTER-PLAN §4.2/§5.3）：
@@ -60,7 +61,36 @@ function applyCommand(cmd: Command, ctx: CommandContext, changes: ChangeInput[])
   if (cmd.command === "upsert_course_set") return applyCourseSet(cmd, ctx, changes);
   if (cmd.command === "record_practice") return applyPractice(cmd, ctx, changes);
   if (cmd.command === "import_fixed_events") return applyFixedEvents(cmd, ctx, changes);
+  if (cmd.command === "apply_event_exception") return applyException(cmd, ctx, changes);
   return applyTask(cmd, ctx, changes);
+}
+
+/** 单日停课例外（A03）：独立事实表，不改课程本体；同 course_set+date 幂等去重 */
+function applyException(cmd: Extract<Command, { command: "apply_event_exception" }>, ctx: CommandContext, changes: ChangeInput[]): string {
+  const db = getDb();
+  const set = db
+    .prepare(
+      `SELECT cs.id FROM course_sets cs JOIN courses c ON c.course_set_id = cs.id
+       WHERE cs.status = 'active' AND c.name = ? ORDER BY cs.created_at DESC LIMIT 1`,
+    )
+    .get(cmd.courseName) as { id: string } | undefined;
+  if (!set) throw new HttpError(422, "INVALID_REFERENCE", `找不到课程「${cmd.courseName}」的进行中课表`);
+  const existing = db.prepare(`SELECT id FROM course_event_exceptions WHERE course_set_id = ? AND event_date = ?`).get(set.id, cmd.eventDate) as { id: string } | undefined;
+  if (existing) return `${cmd.eventDate} 已有停课例外，不重复记录`;
+  const id = crypto.randomUUID();
+  db.prepare(`INSERT INTO course_event_exceptions (id, course_set_id, course_name, event_date, action, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+    id,
+    set.id,
+    cmd.courseName,
+    cmd.eventDate,
+    cmd.action,
+    cmd.note,
+    new Date().toISOString(),
+  );
+  changes.push({ entityKind: "course_exception", entityId: id, action: "create", after: { ...cmd }, afterVersion: null });
+  linkSource({ entityKind: "course_exception", entityId: id, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
+  bumpPlanningRevision();
+  return `${cmd.courseName} ${cmd.eventDate} 停课例外已记录`;
 }
 
 /** ICS 等文件来源的一次性固定事件（确定性解析结果，weekday 取当日） */

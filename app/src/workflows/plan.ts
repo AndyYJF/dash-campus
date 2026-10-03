@@ -58,19 +58,25 @@ export function dayView(date: string, prefs: Prefs, tz: string): { w: Interval[]
 }
 
 /** 当日固定活动区间（fixed_events 展开）；isCourse = 由课程投影产生（用于通勤扣除与课程占用显示） */
-function eventsForDay(date: string, tz: string): Array<{ interval: Interval; isCourse: boolean }> {
+export function eventsForDay(date: string, tz: string): Array<{ interval: Interval; isCourse: boolean }> {
   const db = getDb();
   const first = wallTimeToUtc(date, "00:00", tz).getTime();
   const last = wallTimeToUtc(addDays(date, 1), "00:00", tz).getTime();
   const courseIds = new Set(
     (db.prepare(`SELECT DISTINCT fixed_event_id FROM course_meeting_projections`).all() as Array<{ fixed_event_id: string }>).map((r) => r.fixed_event_id),
   );
+  // A03：当日有停课例外的课程不占时
+  const exceptedCourses = new Set(
+    (db.prepare(`SELECT course_name FROM course_event_exceptions WHERE event_date = ?`).all(date) as Array<{ course_name: string }>).map((r) => r.course_name),
+  );
   const rows = db.prepare(`SELECT * FROM fixed_events`).all() as Array<Record<string, unknown>>;
   const out: Array<{ interval: Interval; isCourse: boolean }> = [];
   for (const r of rows) {
+    const title = r.title as string;
+    if (exceptedCourses.size && [...exceptedCourses].some((name) => title.startsWith(name))) continue;
     const rule = {
       id: r.id as string,
-      title: r.title as string, weekday: r.weekday as number,
+      title, weekday: r.weekday as number,
       localStart: r.local_start as string, localEnd: r.local_end as string, timezone: r.timezone as string,
       eventDate: (r.event_date as string) ?? null, validFrom: (r.valid_from as string) ?? null, validUntil: (r.valid_until as string) ?? null,
     };

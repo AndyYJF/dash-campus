@@ -100,22 +100,51 @@ export function recordUrlDocument(intakeId: string, url: string, text: string): 
     .run(crypto.randomUUID(), intakeId, text, crypto.createHash("sha256").update(text).digest("hex"), url, new Date().toISOString());
 }
 
-/** 抓 URL 正文：data: 直接解析；http(s) 10s 超时 + 1MiB 上限 + 去标签 */
+const PRIVATE_HOSTNAMES = new Set(["localhost", "::1", "0.0.0.0", "[::1]"]);
+
+/** A16 SSRF 防护：IP 字面量的私网/环回/链路本地一律拒绝（域名→私网的 DNS 防护为已知限制） */
+function isPrivateHost(host: string): boolean {
+  const h = host.toLowerCase();
+  if (PRIVATE_HOSTNAMES.has(h)) return true;
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h);
+  if (!m) return false;
+  const a = Number(m[1]), b = Number(m[2]);
+  return a === 0 || a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+}
+
+/** 抓 URL 正文：data: 直接解析；http(s) 10s 超时 + 1MiB 上限 + 去标签；重定向手动跟随且每跳校验私网（A16） */
 export async function fetchUrlText(url: string): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
   if (url.startsWith("data:")) {
     const comma = url.indexOf(",");
     if (comma === -1) return { ok: false, error: "data URL 不合法" };
     return { ok: true, text: decodeURIComponent(url.slice(comma + 1)).slice(0, 100_000) };
   }
-  if (!/^https?:\/\//.test(url)) return { ok: false, error: "只支持 http(s) 链接" };
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(10_000), redirect: "follow" });
-    if (!res.ok) return { ok: false, error: `抓取失败 HTTP ${res.status}` };
-    const raw = (await res.text()).slice(0, MAX_URL_BYTES);
-    return { ok: true, text: raw.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/g, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 100_000) };
-  } catch (e) {
-    return { ok: false, error: `抓取失败：${e instanceof Error ? e.message : String(e)}` };
+  let current = url;
+  for (let hop = 0; hop < 2; hop++) {
+    if (!/^https?:\/\//.test(current)) return { ok: false, error: "只支持 http(s) 链接" };
+    let host: string;
+    try {
+      host = new URL(current).hostname;
+    } catch {
+      return { ok: false, error: "URL 不合法" };
+    }
+    if (isPrivateHost(host)) return { ok: false, error: `不允许抓取私网或本机地址：${host}` };
+    try {
+      const res = await fetch(current, { signal: AbortSignal.timeout(10_000), redirect: "manual" });
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get("location");
+        if (!loc) return { ok: false, error: "重定向无目标" };
+        current = new URL(loc, current).toString();
+        continue;
+      }
+      if (!res.ok) return { ok: false, error: `抓取失败 HTTP ${res.status}` };
+      const raw = (await res.text()).slice(0, MAX_URL_BYTES);
+      return { ok: true, text: raw.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/g, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 100_000) };
+    } catch (e) {
+      return { ok: false, error: `抓取失败：${e instanceof Error ? e.message : String(e)}` };
+    }
   }
+  return { ok: false, error: "重定向次数过多" };
 }
 
 /** 附件处理成事项：ics → 确定性 ready 事项；text → 并入分类文本；image → vision 分类；unsupported → 失败事项 */

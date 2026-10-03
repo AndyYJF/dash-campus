@@ -89,6 +89,16 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   intake_items: {},
   clarification_questions: {},
   clarification_answers: {},
+  // Agent-first V2（迁移 0018）：课程语义模型/实践记录/命令 journal 都是业务数据，全部导出
+  semesters: {},
+  course_sets: {},
+  courses: {},
+  course_meetings: {},
+  course_meeting_projections: {},
+  entity_source_links: {},
+  agent_action_batches: {},
+  agent_action_changes: {},
+  practice_entries: {},
   // 非敏感设置（邮件模板、预算）；调度内部状态不导出
   settings: {},
 };

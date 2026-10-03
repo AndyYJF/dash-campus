@@ -32,7 +32,7 @@ export function closeDb(): void {
 }
 
 /** 本版应用要求的 schema 版本（= migrations 最大编号；test/delivery.test.ts 校验二者一致） */
-export const EXPECTED_SCHEMA_VERSION = 17;
+export const EXPECTED_SCHEMA_VERSION = 18;
 
 /**
  * 服务进程启动检查（计划 10.1）：只检查不改表。

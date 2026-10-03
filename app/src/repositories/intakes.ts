@@ -148,6 +148,11 @@ export function getItem(id: string): IntakeItemRow | null {
   return row ? mapItem(row) : null;
 }
 
+/** 删除事项（P2 retry：删掉失败的分类占位事项让管线重跑）。须在调用方事务内使用 */
+export function deleteItem(id: string): void {
+  getDb().prepare(`DELETE FROM intake_items WHERE id = ?`).run(id);
+}
+
 export function listItems(intakeId: string): IntakeItemRow[] {
   const rows = getDb()
     .prepare(`SELECT * FROM intake_items WHERE intake_id = ? ORDER BY created_at, stable_item_key`)

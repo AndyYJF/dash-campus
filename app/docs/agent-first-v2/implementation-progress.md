@@ -2,6 +2,34 @@
 
 本页按阶段记录事实、缺口和下一步。开工指令见 [CODING-AGENT.md](./CODING-AGENT.md)，完整契约见 [MASTER-PLAN.md](./MASTER-PLAN.md)。每条结论注明验证方式；无证据的能力标为缺口。
 
+## P2 执行策略、实体关联与可撤销变更（已完成，2026-10-03）
+
+### 交付
+
+- 迁移 `0018_course_commands.sql`：semesters / course_sets / courses / course_meetings / course_meeting_projections / entity_source_links / agent_action_batches(+changes) / practice_entries；`EXPECTED_SCHEMA_VERSION=18`；9 张新表全部进 full_json 导出白名单。
+- 命令白名单（`contracts/commands.ts`）：upsert_course_set、record_practice、create_or_update_task；Zod 校验 + 服务端解析目标，模型不碰任意 ID。
+- 命令执行器（`workflows/commands.ts`）：单 IMMEDIATE 事务内完成领域写入 + journal；同学期整套替换（旧 set supersede + 投影删除）进同一 bundle。
+- 撤销（`workflows/undo.ts` + `POST /api/v2/actions/:batchId/undo`）：粒度=batch；逐项校验当前版本==afterVersion，冲突整体不动返回 409；已撤销批次重复撤销 409；版本不倒退。
+- 重试/取消：`POST /api/v2/intakes/:id/retry`（只删失败占位重跑分类，不重放已成功 effects）、`POST /api/v2/intakes/:id/cancel`（取消未应用部分，保留已应用结果与撤销入口）。
+- intake 管线第三阶段：ready 事项自动经命令落领域——课表→课程语义模型+fixed_events 投影+来源关联；practice→practice_entries（分钟从引用逐字解析，user_reported）；task→tasks；notice/note 只留事实不行动。
+
+### 验证证据
+
+- 新增 `test/commands-course-v2.test.ts` + `test/commands-items-v2.test.ts` 共 8 项：课表落模型+投影+来源关联、undo 回滚、重复 undo 409、实体后续修改后 undo 409 且不覆盖、retry 只重试失败分支、practice 分钟 user_reported、task 落库、cancel 不产生实践记录。
+- 全套 **170/170 通过**，typecheck/lint 无错。
+
+### 本阶段决策（最小一致选择）
+
+- entity_revisions 不单独建表：agent_action_changes 的 before/after 已覆盖快照职责（§5.1 说“尚无专用 history 的实体”才需要）。
+- 学期冲突替换：同学期已有 active course_set 时整套替换并进同一 journal bundle（可一并撤销）；与旧 v1 import 的 fixed_events 不交叉管理。
+- 固定事件去重沿用 v1 identicalRule：命中已有事件只挂投影不新建，undo 只删自己创建的。
+- P1 测试断言 ready → applied 是契约演进：可行动事项现在推进到 applied。
+
+### 已知限制
+
+- create_or_update_task 目前只走 create 路径（intake 来源）；owner 字段冲突提问在后续阶段。
+- 撤销 UI 入口未做（API 已通）；/today 等页面还未展示课程（P3）。
+
 ## P1 统一接收、证据和主动问答（已完成，2026-10-03）
 
 ### 交付

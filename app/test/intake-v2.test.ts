@@ -81,7 +81,7 @@ test("A04/A01：混合文字拆成课表+实践两个事项；缺首周只产生
   const timetable = items.find((i) => i.kind === "timetable")!;
   const practice = items.find((i) => i.kind === "practice")!;
   assert.equal(timetable.state, "awaiting_input");
-  assert.equal(practice.state, "ready");
+  assert.equal(practice.state, "applied"); // P2 起：practice 经白名单命令落领域
   assert.equal(practice.payload.summary, "跑步40分钟，环境报错");
 
   const open = listOpenQuestions();
@@ -141,7 +141,7 @@ test("A02/A11：回答后从 Resolve 恢复，两份课表都得到锚点候选�
   for (const row of intakes) {
     assert.equal(row.status, "completed");
     const timetable = listItems(row.id).find((i) => i.kind === "timetable")!;
-    assert.equal(timetable.state, "ready");
+    assert.equal(timetable.state, "applied");
     const candidate = timetable.payload.candidate as { firstMonday: string; courseCount: number; occurrenceCount: number };
     assert.equal(candidate.firstMonday, expectedFirstMonday);
     assert.equal(candidate.courseCount, 1);
@@ -186,7 +186,7 @@ test("A10：模型失败时原文保留、事项失败、课表分支不受影�
     const doc = getDb().prepare(`SELECT content_text FROM extracted_documents WHERE intake_id = ?`).get(intakeId) as { content_text: string };
     assert.ok(doc.content_text.includes(PRACTICE_TEXT), "原文保留在提取证据里");
     const timetable = items.find((i) => i.kind === "timetable")!;
-    assert.equal(timetable.state, "ready", "学期锚点已答，课表分支独立推进");
+    assert.equal(timetable.state, "applied", "学期锚点已答，课表分支独立落领域");
     assert.equal(getIntake(intakeId)!.status, "partially_applied");
   } finally {
     setProvidersForTests({});

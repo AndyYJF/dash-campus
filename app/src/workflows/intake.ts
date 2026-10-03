@@ -3,6 +3,7 @@ import {
   createExtractedDocument,
   createIntake,
   createItem,
+  deleteItem,
   deriveIntakeStatus,
   getIntake,
   listItems,
@@ -10,6 +11,7 @@ import {
   setIntakeStatus,
   updateItem,
   type IntakeItemRow,
+  type IntakeRow,
 } from "@/repositories/intakes";
 import {
   ensureOpenQuestion,
@@ -18,12 +20,13 @@ import {
   recordAnswer,
   type QuestionRow,
 } from "@/repositories/questions";
-import { createJob, getJob, leaseValid, renewLease, completeJob, failJob, completeCancellation } from "@/repositories/jobs";
+import { createJob, getJob, leaseValid, renewLease, completeJob, failJob, completeCancellation, listJobs, requestCancel } from "@/repositories/jobs";
 import { getInstanceState } from "@/repositories/instance";
 import { resolveModelProvider } from "@/integrations";
 import { budgetCheck, meteredModel } from "@/workflows/ai-budget";
 import { instanceTimezone, localDateInTz, mondayOf, addDays } from "@/domain/time";
 import { parseTimetable, TimetableError } from "@/domain/timetable";
+import { executeCommand } from "@/workflows/commands";
 import {
   INTAKE_JOB_TYPE,
   SEMESTER_FIRST_MONDAY_KEY,
@@ -146,14 +149,15 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
   if (getJob(job.id)?.cancelRequested) return cancel();
   db.prepare(`UPDATE intakes SET status = 'processing', updated_at = ? WHERE id = ?`).run(now(), intakeId);
 
-  // 第一阶段：无事项时做拆分（确定性 SDCT1 + 模型分类）；恢复时事项已存在则跳过，不重复调模型
+  // 第一阶段：拆分。课表块确定性切出；剩余文本在无分类结果时走模型分类。
+  // 条件独立于事项总数：retry 删掉失败占位后只重跑分类，不重建课表事项、不重复调模型。
   let items = listItems(intakeId);
-  if (items.length === 0) {
-    const { sdct, rest } = splitSdct1(intake.text);
-    if (sdct) {
-      createItem({ intakeId, stableItemKey: "timetable", kind: "timetable", payload: { sdctText: sdct } });
-    }
-    if (rest) {
+  const { sdct, rest } = splitSdct1(intake.text);
+  if (sdct && !items.some((i) => i.stableItemKey === "timetable")) {
+    createItem({ intakeId, stableItemKey: "timetable", kind: "timetable", payload: { sdctText: sdct } });
+    items = listItems(intakeId);
+  }
+  if (rest && !items.some((i) => i.stableItemKey !== "timetable")) {
       const model = resolveModelProvider();
       const budget = budgetCheck({ model: 1 });
       const unavailable = !model ? "模型未配置，原文已保留" : !budget.ok ? `BUDGET_EXCEEDED：${budget.message}` : null;
@@ -201,8 +205,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
         }
       }
     }
-    items = listItems(intakeId);
-  }
+  items = listItems(intakeId);
 
   // 第二阶段：Resolve。extracted/resolving 正常推进；awaiting_input 在别处已有答案时也推进（多份材料共享缺口）
   for (const item of items) {
@@ -210,16 +213,64 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
     if (item.kind === "timetable") {
       resolveTimetableItem(intakeId, item, intake.timezone);
     } else {
-      // P1：分类事实即结果；领域写入（任务/实践/通知）在 P2 经白名单命令
+      // 分类事实先就绪；领域写入走下方白名单命令（P2）
       updateItem(item.id, { state: "ready", waitingQuestionId: null });
     }
+  }
+
+  // 第三阶段：ready 事项经白名单命令落领域（§4.2）；notice/note 只保留事实不行动
+  for (const item of listItems(intakeId)) {
+    if (item.state !== "ready") continue;
+    applyItem(intake, item);
   }
   return finish("done", null);
 }
 
-/** 模型不可用/失败：原文完整保留为 note 事项并标记失败，不丢弃材料 */
+/** ready → 命令执行 → applied/failed。命令自身是原子事务（含 journal），失败不半截入领域 */
+function applyItem(intake: IntakeRow, item: IntakeItemRow): void {
+  const ctx = {
+    intakeId: intake.id,
+    itemId: item.id,
+    itemKey: item.stableItemKey,
+    instanceEpoch: intake.instanceEpoch,
+    evidence: (item.evidence?.excerpt as string) ?? (item.payload.candidate as { anchorEvidence?: string } | undefined)?.anchorEvidence ?? "",
+  };
+  const cmd = commandForItem(intake, item);
+  if (!cmd) return; // notice/note：事实保留，不产生行动
+  const result = executeCommand(cmd, ctx);
+  if (!result.ok) {
+    updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: result.error, retryable: true } });
+    return;
+  }
+  updateItem(item.id, { state: "applied", payload: { ...item.payload, applied: { batchId: result.batchId, summary: result.summary } } });
+}
+
+/** 事项 → 命令参数映射（服务端解析，模型不给任意 ID） */
+function commandForItem(intake: IntakeRow, item: IntakeItemRow): unknown | null {
+  if (item.kind === "timetable") {
+    const candidate = item.payload.candidate as { firstMonday?: string } | undefined;
+    if (!candidate?.firstMonday || !item.payload.sdctText) return null;
+    return { command: "upsert_course_set", sdctText: item.payload.sdctText, firstMonday: candidate.firstMonday, timezone: intake.timezone };
+  }
+  if (item.kind === "practice") {
+    const excerpt = (item.evidence?.excerpt as string) ?? "";
+    const minutes = /(\d{1,3})\s*分钟/.exec(excerpt);
+    return {
+      command: "record_practice",
+      occurredOn: intake.referenceDate,
+      actualMinutes: minutes ? Number(minutes[1]) : null,
+      note: (item.payload.summary as string) ?? excerpt.slice(0, 200),
+    };
+  }
+  if (item.kind === "task") {
+    return { command: "create_or_update_task", title: ((item.payload.summary as string) ?? "未命名事项").slice(0, 200) };
+  }
+  return null;
+}
+
+/** 模型不可用/失败：原文完整保留为 note 事项并标记失败，不丢弃材料；retryable 供显式重试重跑分类 */
 function failNoteItem(intakeId: string, text: string, error: string): void {
-  const { item } = createItem({ intakeId, stableItemKey: "note-1", kind: "note", payload: { text } });
+  const { item } = createItem({ intakeId, stableItemKey: "note-1", kind: "note", payload: { text, retryable: true } });
   updateItem(item.id, { state: "failed", evidence: { error } });
 }
 
@@ -275,6 +326,53 @@ function resolveTimetableItem(intakeId: string, item: IntakeItemRow, timezone: s
       throw e;
     }
   }
+}
+
+export type RetryResult = { kind: "requeued" } | { kind: "not_found" } | { kind: "stale" } | { kind: "nothing" };
+
+/** 显式重试（§8）：只重试失败/未执行分支——删除 retryable 失败占位，重排队让管线重跑分类；已 applied 的不动 */
+export function retryIntake(intakeId: string, expectedVersion: number): RetryResult {
+  return getDb()
+    .transaction((): RetryResult => {
+      const intake = getIntake(intakeId);
+      if (!intake) return { kind: "not_found" };
+      if (intake.version !== expectedVersion) return { kind: "stale" };
+      const failed = listItems(intakeId).filter((i) => i.state === "failed" && i.payload.retryable);
+      if (!failed.length) return { kind: "nothing" };
+      for (const f of failed) deleteItem(f.id);
+      setIntakeStatus(intakeId, "processing");
+      createJob({
+        type: INTAKE_JOB_TYPE,
+        dedupeKey: `intake:${intakeId}:retry:${expectedVersion}`,
+        runAt: new Date().toISOString(),
+        payload: { intakeId, cause: "retry" },
+      });
+      return { kind: "requeued" };
+    })
+    .immediate();
+}
+
+export type CancelResult = { kind: "cancelled" } | { kind: "not_found" } | { kind: "stale" } | { kind: "completed" };
+
+/** 取消（§8）：取消未应用部分（排队 job + 未完结事项），已 applied 的领域结果与撤销入口保留 */
+export function cancelIntake(intakeId: string, expectedVersion: number): CancelResult {
+  return getDb()
+    .transaction((): CancelResult => {
+      const intake = getIntake(intakeId);
+      if (!intake) return { kind: "not_found" };
+      if (intake.version !== expectedVersion) return { kind: "stale" };
+      if (intake.status === "completed") return { kind: "completed" };
+      for (const job of listJobs({ type: INTAKE_JOB_TYPE })) {
+        const p = job.payload as { intakeId?: string };
+        if (p.intakeId === intakeId && (job.status === "queued" || job.status === "running")) requestCancel(job.id);
+      }
+      for (const item of listItems(intakeId)) {
+        if (["extracted", "resolving", "awaiting_input"].includes(item.state)) updateItem(item.id, { state: "cancelled", waitingQuestionId: null });
+      }
+      setIntakeStatus(intakeId, "cancelled");
+      return { kind: "cancelled" };
+    })
+    .immediate();
 }
 
 export type SubmitAnswerResult =

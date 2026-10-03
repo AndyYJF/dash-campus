@@ -1,6 +1,6 @@
 -- P4 修正：intake_items.kind 增加 'ics'（0017 的 CHECK 只允许 5 种；SQLite 需重建表改 CHECK）
-
-PRAGMA foreign_keys = OFF;
+-- 约束：迁移在单事务内运行，PRAGMA foreign_keys=OFF 无效，defer_foreign_keys 也压不住 DROP TABLE。
+-- 方案 B：先断开 clarification_questions.item_id 引用 → 重建 intake_items → 恢复引用。
 
 CREATE TABLE intake_items_new (
   id TEXT PRIMARY KEY,
@@ -18,6 +18,10 @@ CREATE TABLE intake_items_new (
   UNIQUE (intake_id, stable_item_key)
 );
 
+CREATE TEMP TABLE _item_ref_map AS
+  SELECT id, item_id FROM clarification_questions WHERE item_id IS NOT NULL;
+UPDATE clarification_questions SET item_id = NULL WHERE item_id IS NOT NULL;
+
 INSERT INTO intake_items_new
   SELECT id, intake_id, stable_item_key, kind, payload_json, state, evidence_json, waiting_question_id, version, created_at, updated_at
   FROM intake_items;
@@ -26,4 +30,7 @@ DROP TABLE intake_items;
 ALTER TABLE intake_items_new RENAME TO intake_items;
 CREATE INDEX intake_items_intake ON intake_items(intake_id);
 
-PRAGMA foreign_keys = ON;
+UPDATE clarification_questions
+  SET item_id = (SELECT m.item_id FROM _item_ref_map m WHERE m.id = clarification_questions.id)
+  WHERE id IN (SELECT id FROM _item_ref_map);
+DROP TABLE _item_ref_map;

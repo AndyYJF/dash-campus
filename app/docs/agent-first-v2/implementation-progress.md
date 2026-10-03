@@ -231,3 +231,8 @@ focus 计时器未实现、PDF/XLSX 待依赖批准、vision 无坐标、A20 需
 ### 覆盖事故记录
 
 - 误将 v1 `repositories/focus.ts`（周重点）覆盖为计时仓储，已用 git show 恢复并改名 `focus-timer.ts`。教训：写新文件前先 grep 同名。
+
+### P6 补强部署记录（2026-10-03）
+
+- commit `dc9a922`，CI 绿；备份 `dash-campus-backup-20261003-121822`；迁移 0023 应用后 schema 23。
+- 线上验证：生产无旧排程残留（tasks.scheduled_start 全 NULL，迁移无对象）；focus 冒烟 start 201 / 重复 start 409 / stop 200 落 1 分钟 timer 实践，smoke 数据已清理；健康检查 schemaVersion 23。

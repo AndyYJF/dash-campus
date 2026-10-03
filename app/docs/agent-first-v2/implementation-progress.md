@@ -188,3 +188,8 @@
 
 - 方向候选来源是 v1 探索系统的 proposed 候选，V2 未新增"方向推荐"模型调用（§7 不替用户选方向）。
 - focus_sessions（计时）仍未实现，P3 已记录为差距。
+
+### P5 部署记录（2026-10-03）
+
+- commit `b43f529`，CI run 37120278993 绿；备份 `dash-campus-backup-20261003-113936`，无新迁移（schema 21）。
+- 线上验证：plan_maintenance job 已排队执行（done, plan:rebuilt）；/api/v2/direction 返回 3 个真实 proposed candidates（含 deliverable/来源）；健康检查 schemaVersion 21。

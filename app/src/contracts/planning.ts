@@ -82,6 +82,8 @@ export const taskSchema = z.object({
   scheduledStart: isoInstant.nullable().default(null),
   scheduledEnd: isoInstant.nullable().default(null),
   due: dueSchema.default({ kind: "none" }),
+  planningOverrideReason: z.string().trim().min(1).max(1000).nullable().optional(),
+  reminderLeadMinutes: z.number().int().min(0).max(525600).nullable().optional(),
 });
 
 /** 创建任务：结束时间必须晚于开始、不能只有结束 */

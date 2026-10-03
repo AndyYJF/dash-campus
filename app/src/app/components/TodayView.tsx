@@ -66,10 +66,11 @@ export default function TodayView() {
           <div className={styles.card}>
             <h2>近期行动</h2>
             {summary.actions.length === 0 ? (
-              <p className={styles.empty}>本周暂无已安排任务。可以在下面添加第一条行动。</p>
+              <p className={styles.empty}>{summary.unplannedTaskCount > 0 ? "近期没有已安排的行动；已有任务仍在待安排区。" : "近期暂无行动。可以在下面添加第一条任务。"}</p>
             ) : (
               <TaskList actions={summary.actions} onChanged={refresh} />
             )}
+            {summary.unplannedTaskCount > 0 && <p className={styles.muted}>还有 {summary.unplannedTaskCount} 条任务未分配计划周，<Link href="/plan#unplanned-tasks">去待安排区选择下一步</Link>。</p>}
             {summary.moreActionCount > 0 && (
               <p className={styles.muted}>
                 还有 {summary.moreActionCount} 项未显示，<Link href="/plan">去计划页查看全部</Link>。

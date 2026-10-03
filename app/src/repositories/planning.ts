@@ -2,6 +2,8 @@ import crypto from "node:crypto";
 import { getDb } from "@/repositories/db";
 import { refreshReminders } from "@/workflows/reminders";
 import { instanceTimezone, localDateInTz, mondayOf } from "@/domain/time";
+import { scheduleIssues } from '@/domain/schedule';
+import { HttpError } from '@/workflows/http';
 import type {
   Due,
   GoalInput,
@@ -55,6 +57,8 @@ export type TaskRow = {
   scheduledStart: string | null;
   scheduledEnd: string | null;
   due: Due;
+  planningOverrideReason?: string | null;
+  reminderLeadMinutes?: number | null;
   version: number;
   reminderRevision: number;
   /** 人工编辑时确认过的来源修订（计划 5.1）；非收件箱任务为 null */
@@ -328,12 +332,13 @@ export function getTask(id: string): TaskRow | null {
   return row ? mapTask(row) : null;
 }
 
-export function createTask(input: TaskInput): TaskRow {
+export function createTask(input: TaskInput, options: { validateSchedule?: boolean; scheduleReminders?: boolean } = {}): TaskRow {
   const db = getDb();
   const id = crypto.randomUUID();
   const t = now();
   const due = input.due;
   const tx = db.transaction(() => {
+    if (options.validateSchedule !== false) checkTaskSchedule(input);
     db.prepare(
       `INSERT INTO tasks (id, title, description, project_id, goal_id, status, priority,
          estimate_minutes, planned_week_monday, planned_week_timezone,
@@ -362,10 +367,11 @@ export function createTask(input: TaskInput): TaskRow {
       t,
       t,
     );
-    const task = getTask(id)!;
+    db.prepare('UPDATE tasks SET planning_override_reason=?, reminder_lead_minutes=? WHERE id=?').run(input.planningOverrideReason ?? null, input.reminderLeadMinutes ?? null, id);
+    if (input.scheduledStart || input.plannedWeek) db.prepare('UPDATE planning_state SET planning_revision=planning_revision+1 WHERE id=1').run();
     // 同一事务内建提醒：只建触发点在未来的 job；due=none 不建
-    refreshReminders(task, t);
-    return task;
+    if (options.scheduleReminders !== false) refreshReminders(getTask(id)!, t);
+    return getTask(id)!;
   });
   return tx();
 }
@@ -374,10 +380,12 @@ export function updateTask(
   id: string,
   patch: Partial<TaskInput>,
   expectedVersion: number,
+  options: { validateSchedule?: boolean } = {},
 ): TaskRow | "conflict" | "not_found" {
   const db = getDb();
   const current = getTask(id);
   if (!current || current.archivedAt) return "not_found";
+  if (current.version !== expectedVersion) return 'conflict';
 
   const sets: string[] = [];
   const vals: Array<string | number | null> = [];
@@ -392,6 +400,8 @@ export function updateTask(
   if (patch.status !== undefined) add("status", patch.status);
   if (patch.priority !== undefined) add("priority", patch.priority);
   if (patch.estimateMinutes !== undefined) add("estimate_minutes", patch.estimateMinutes);
+  if (patch.planningOverrideReason !== undefined) add('planning_override_reason', patch.planningOverrideReason);
+  if (patch.reminderLeadMinutes !== undefined) add('reminder_lead_minutes', patch.reminderLeadMinutes);
   if (patch.plannedWeek !== undefined) {
     add("planned_week_monday", patch.plannedWeek?.localMonday ?? null);
     add("planned_week_timezone", patch.plannedWeek?.timezone ?? null);
@@ -429,7 +439,7 @@ export function updateTask(
     patch.status !== "cancelled";
   // due 值真正变化才递增（同值重发不让已 accepted 的提醒重新出现在待处理里）
   const dueChanged = patch.due !== undefined && JSON.stringify(patch.due) !== JSON.stringify(current.due);
-  const reminderAffected = dueChanged || toTerminal || reopened;
+  const reminderAffected = dueChanged || toTerminal || reopened || (patch.reminderLeadMinutes !== undefined && patch.reminderLeadMinutes !== current.reminderLeadMinutes);
   // 任务计划时间变化使排程草案保守失效（F10）；与写入同一事务
   const scheduleChanged =
     (patch.scheduledStart !== undefined && patch.scheduledStart !== current.scheduledStart) ||
@@ -437,6 +447,8 @@ export function updateTask(
     (patch.plannedWeek !== undefined && JSON.stringify(patch.plannedWeek) !== JSON.stringify(current.plannedWeek));
 
   const tx = db.transaction(() => {
+    if (options.validateSchedule !== false && (scheduleChanged || reopened)) checkTaskSchedule({ ...current, ...patch, planningOverrideReason: patch.planningOverrideReason ?? null }, id);
+    if (scheduleChanged && patch.planningOverrideReason === undefined) add('planning_override_reason', null);
     if (reminderAffected) sets.push("reminder_revision = reminder_revision + 1");
     // 完成时刻：进入 done 记录，离开 done 清空（周复盘"本周完成"依据）
     if (statusChanged && patch.status === "done") {
@@ -518,6 +530,8 @@ function mapTask(r: Record<string, unknown>): TaskRow {
     scheduledStart: (r.scheduled_start as string | null) ?? null,
     scheduledEnd: (r.scheduled_end as string | null) ?? null,
     due,
+    planningOverrideReason: (r.planning_override_reason as string | null) ?? null,
+    reminderLeadMinutes: (r.reminder_lead_minutes as number | null) ?? null,
     version: r.version as number,
     reminderRevision: r.reminder_revision as number,
     sourceRevisionId: (r.source_revision_id as string | null) ?? null,
@@ -526,4 +540,10 @@ function mapTask(r: Record<string, unknown>): TaskRow {
     updatedAt: r.updated_at as string,
     archivedAt: (r.archived_at as string | null) ?? null,
   };
+}
+
+function checkTaskSchedule(input: TaskInput, id?: string) {
+  const issues = scheduleIssues({ ...input, id }, listTasks());
+  const issue = issues.find(i => i.code === 'VALIDATION') ?? (input.planningOverrideReason ? null : issues[0]);
+  if (issue) throw new HttpError(issue.code === 'VALIDATION' ? 422 : 409, issue.code, issue.message, { conflicts: issues });
 }

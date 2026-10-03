@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 import Icon from "./Icon";
+import ManualNoticeForm from "./ManualNoticeForm";
 import styles from "./dash.module.css";
 
 /**
@@ -22,6 +23,7 @@ type InboxItem = {
   occurredAt: string | null;
   textPreview: string;
   updatedAt: string;
+  legacyStatus: "open" | "completed" | "cancelled" | null;
 };
 
 const PARTITION_LABEL: Record<string, string> = {
@@ -44,28 +46,45 @@ const APPLICABILITY: Record<string, { label: string; cls: string }> = {
 export default function InboxView() {
   const [items, setItems] = useState<InboxItem[] | null>(null);
   const [showFolded, setShowFolded] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [nextCursor, setNextCursor] = useState<string | null>(null), [total, setTotal] = useState(0), [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
-    api<{ items: InboxItem[] }>("/api/v1/inbox")
+    api<{ items: InboxItem[]; nextCursor: string | null; total: number }>("/api/v1/inbox")
       .then((r) => {
         setItems(r.items);
+        setNextCursor(r.nextCursor); setTotal(r.total);
         setError(null);
       })
       .catch((e) => setError(e instanceof Error ? e.message : "加载失败"));
   }, []);
 
   useEffect(refresh, [refresh]);
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true); setLoadError(null);
+    try {
+      const r = await api<{ items: InboxItem[]; nextCursor: string | null; total: number }>(`/api/v1/inbox?cursor=${encodeURIComponent(nextCursor)}`);
+      setItems((previous) => [...new Map([...(previous ?? []), ...r.items].map((i) => [i.id, i])).values()]);
+      setNextCursor(r.nextCursor); setTotal(r.total);
+    } catch (e) { setLoadError(e instanceof Error ? e.message : "加载失败"); }
+    finally { setLoadingMore(false); }
+  }
 
   if (error) return <p className={styles.error}>{error}</p>;
   if (!items) return <p className={styles.muted}>加载中…</p>;
 
   const conflicts = items.filter((i) => i.status === "revision_conflict");
   const normal = items.filter((i) => i.status === "active");
-  const visible = normal.filter((i) => showFolded || i.partition !== "folded");
+  const visible = normal.filter((i) => (showFolded || i.partition !== "folded") && (showHistory || !["completed", "cancelled"].includes(i.legacyStatus ?? "")));
 
   return (
     <div className={styles.narrow}>
+      <ManualNoticeForm onCreated={refresh} />
+      <p className={styles.muted}>已加载 {items.length} / {total} 条通知。上游已结束事项只影响这里的显示，不改变你的任务状态。</p>
+      {normal.some((i) => ["completed", "cancelled"].includes(i.legacyStatus ?? "")) && <p><button className={styles.btn} onClick={() => setShowHistory((s) => !s)}>{showHistory ? "隐藏" : "显示"}上游已结束的历史事项</button></p>}
       {conflicts.length > 0 && (
         <div className={styles.card}>
           <h2 className={`${styles.sectionTitle} ${styles.sectionDanger}`}>有 {conflicts.length} 条通知的修订顺序无法确定，需要你选择当前版本。</h2>
@@ -81,7 +100,7 @@ export default function InboxView() {
         </div>
       )}
 
-      {visible.length === 0 && <p className={styles.empty}>收件箱是空的。外部通知导入后会出现在这里。</p>}
+      {visible.length === 0 && <p className={styles.empty}>{total ? "已加载部分没有可见通知。可显示历史／折叠事项，或加载更早的通知。" : "收件箱是空的。粘贴原文或接入校园插件后，通知会出现在这里。"}</p>}
 
       {ORDER.filter((p) => visible.some((i) => i.partition === p)).map((p) => (
         <div key={p} className={styles.card}>
@@ -98,6 +117,7 @@ export default function InboxView() {
                       {APPLICABILITY[i.applicability ?? ""]?.label ?? "未筛选"}
                     </span>
                     {i.noticeType && <span className={styles.metaItem}>类型 {i.noticeType}</span>}
+                    {i.legacyStatus && <span className={styles.metaItem}>上游{ i.legacyStatus === "open" ? "开放" : i.legacyStatus === "completed" ? "已完成" : "已取消" }</span>}
                     {i.occurredAt && (
                       <span className={styles.metaItem}>
                         <Icon name="clock" size={14} />
@@ -122,6 +142,8 @@ export default function InboxView() {
           </button>
         </p>
       )}
+      {nextCursor && <p><button className={styles.btn} disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? "加载中…" : "加载更早的通知"}</button></p>}
+      {loadError && <p className={styles.error} role="alert">{loadError}；已加载通知保留，可再次点击加载。</p>}
     </div>
   );
 }

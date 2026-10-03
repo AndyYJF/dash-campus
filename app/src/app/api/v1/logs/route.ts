@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
 const logSchema = z
   .object({
     clientEntryId: z.string().min(1).max(100),
-    occurredOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    occurredOn: z.iso.date(),
     progress: z.string().max(5000).default(""),
     blocker: z.string().max(5000).default(""),
     taskId: z.string().uuid().nullable().optional(),

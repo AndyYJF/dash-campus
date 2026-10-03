@@ -1,0 +1,15 @@
+[Unit]
+Description=Dash Campus read-only campus notice bridge
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/dash-campus-campus-bridge
+ExecStop=-/usr/bin/docker stop -t 10 dash-campus-campus-bridge
+TimeoutStartSec=300
+TimeoutStopSec=20
+NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true

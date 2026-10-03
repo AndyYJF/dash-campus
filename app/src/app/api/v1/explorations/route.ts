@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
 
   const r = startExploration(parsed.data);
   if (!r.ok) {
-    return errorResponse(r.code, r.message, r.code === "NOT_FOUND" ? 404 : 503);
+    return errorResponse(r.code, r.message, r.code === "NOT_FOUND" ? 404 : r.code === "INVALID_REFERENCE" ? 422 : r.code === "BUDGET_EXCEEDED" ? 429 : r.code === "RESTORED_HOLD" ? 409 : 503);
   }
   const body = { jobId: r.jobId, runId: r.run.id, integrationMode: r.run.integrationMode };
   recordIdempotency({ ...scope, statusCode: 202, resourceType: "exploration_run", resourceId: r.run.id, responseBody: body });

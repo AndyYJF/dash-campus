@@ -28,13 +28,6 @@ function fmt(iso: string | null): string {
   return new Date(iso).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-/** 次日 09:00（实例时区 Asia/Shanghai = +08:00） */
-function tomorrowNine(): string {
-  const now = new Date(Date.now() + 8 * 3600_000);
-  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 1, 0));
-  return d.toISOString();
-}
-
 export default function ProposalCard({
   proposal: p,
   tasks,
@@ -52,6 +45,7 @@ export default function ProposalCard({
   const [error, setError] = useState<{ message: string; status?: number } | null>(null);
   const [stale, setStale] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState(false);
+  const problem = stale ?? p.validation?.message ?? null;
 
   async function act(path: string, body: unknown) {
     setBusy(true);
@@ -78,13 +72,13 @@ export default function ProposalCard({
         </strong>
         <span className={styles.badge}>{SOURCE[p.sourceKind] ?? p.sourceKind}</span>
         <span className={`${styles.badge} ${p.status === "pending" ? styles.badgeAccent : p.status === "applied" ? styles.badgeOk : ""}`}>
-          {p.status === "pending" ? (p.snoozeUntil && new Date(p.snoozeUntil) > new Date() ? `暂缓至 ${fmt(p.snoozeUntil)}` : "待处理") : ({ applied: "已应用", rejected: "已拒绝", snoozed: "已暂缓" } as Record<string, string>)[p.status]}
+          {p.status === "pending" ? (problem ? "需重新分析" : p.snoozeUntil && new Date(p.snoozeUntil) > new Date() ? `暂缓至 ${fmt(p.snoozeUntil)}` : "待处理") : ({ applied: "已应用", rejected: "已拒绝", snoozed: "已暂缓" } as Record<string, string>)[p.status]}
         </span>
       </div>
 
       {p.contextRefs.length > 0 && (
         <p className={styles.muted} style={{ margin: "6px 0" }}>
-          依据：{p.contextRefs.map((id) => evidenceLabels?.get(id) ?? `记录 ${id.slice(0, 6)}`).join("；")}
+          依据：{p.contextRefs.map((id) => evidenceLabels?.get(id) ?? (tasks.has(id) ? `任务「${tasks.get(id)!.title}」` : `依据 ${id.slice(0, 6)}`)).join("；")}
         </p>
       )}
 
@@ -120,22 +114,22 @@ export default function ProposalCard({
         })}
       </ul>
 
-      {stale && (
+      {problem && (
         <p className={ex.banner} role="alert">
-          这份提案已过时：{stale}。内容保留可查看，不会部分应用；需要时请重新分析或重新发起。
+          这份提案目前不能应用：{problem}。内容保留可查看，不会部分应用；需要时请重新分析或重新发起。
         </p>
       )}
       <ErrorNote error={error} />
 
-      {p.status === "pending" && !stale && (
+      {p.status === "pending" && (
         <div className={ex.actions}>
-          <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={busy} onClick={() => act("apply", {})}>
+          <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={busy || Boolean(problem)} onClick={() => act("apply", {})}>
             应用
           </button>
           <button className={styles.btn} disabled={busy} onClick={() => setRejecting((r) => !r)}>
             拒绝…
           </button>
-          <button className={styles.btn} disabled={busy} onClick={() => act("snooze", { snoozeUntil: tomorrowNine(), expectedVersion: p.version })}>
+          <button className={styles.btn} disabled={busy || Boolean(problem)} onClick={() => act("snooze", { expectedVersion: p.version })}>
             暂缓到明早
           </button>
         </div>

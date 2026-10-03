@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { getDb } from "@/repositories/db";
-import { createJob, completeJob, failJob, leaseValid, renewLease } from "@/repositories/jobs";
+import { createJob, completeJob, completeCancellation, failJob, getJob, leaseValid, renewLease } from "@/repositories/jobs";
 import {
   finishAssistant,
   finishReview,
@@ -116,6 +116,7 @@ function holdLease(job: JobRow): Lease {
       fenced = true;
       controller.abort();
     }
+    if (getJob(job.id)?.cancelRequested) controller.abort();
   }, JOB_RENEW_INTERVAL_MS);
   return { job, fenced: () => fenced, controller, stop: () => clearInterval(timer) };
 }
@@ -124,11 +125,23 @@ function stillHeld(l: Lease): boolean {
   return !l.fenced() && leaseValid(l.job.id, l.job.leaseToken!, l.job.generation, new Date().toISOString());
 }
 
+/** Check inside the result transaction too; a cancelled workflow never publishes AI suggestions. */
+function cancelReviewWork(job: JobRow, kind: "review" | "assistant", id: string): "cancelled" | "fenced" {
+  return getDb().transaction(() => {
+    if (!completeCancellation(job.id, job.leaseToken!, job.generation, new Date().toISOString())) return "fenced" as const;
+    if (kind === "review") finishReview(id, { status: "cancelled", aiSkippedReason: "user_cancelled" });
+    else finishAssistant(id, { status: "cancelled", errorMessage: "已取消，可重新分析" });
+    return "cancelled" as const;
+  }).immediate();
+}
+
 export async function runReviewJob(job: JobRow): Promise<{ kind: "done" | "failed" | "fenced" | "cancelled" }> {
   const { reviewId } = job.payload as { reviewId: string };
   const review = getReview(reviewId);
   const token = job.leaseToken!;
   const nowIso = () => new Date().toISOString();
+  if (getJob(job.id)?.cancelRequested) return { kind: cancelReviewWork(job, "review", reviewId) };
+  if (!leaseValid(job.id, token, job.generation, nowIso())) return { kind: "fenced" };
   if (!review || !["queued", "generating"].includes(review.status)) {
     return completeJob(job.id, token, job.generation, { kind: "skipped", reason: "review_finished" }, nowIso())
       ? { kind: "done" }
@@ -170,6 +183,7 @@ export async function runReviewJob(job: JobRow): Promise<{ kind: "done" | "faile
   const lease = holdLease(job);
   try {
     const provider = meteredModel(model.provider, { type: "review", id: review.id });
+    if (getJob(job.id)?.cancelRequested) return { kind: cancelReviewWork(job, "review", reviewId) };
     const r = await provider.call({
       workflow: MODEL_WORKFLOW_REVIEW,
       context: { facts: factsForModel(facts) },
@@ -180,6 +194,7 @@ export async function runReviewJob(job: JobRow): Promise<{ kind: "done" | "faile
       signal: lease.controller.signal,
     });
     if (!stillHeld(lease)) return { kind: "fenced" };
+    if (getJob(job.id)?.cancelRequested) return { kind: cancelReviewWork(job, "review", reviewId) };
     if (!r.ok) {
       // AI 失败不影响事实部分：状态仍 ready，AI 部分显示失败原因
       return finish(
@@ -196,7 +211,9 @@ export async function runReviewJob(job: JobRow): Promise<{ kind: "done" | "faile
     // 发布：租约仍有效才写提案与草案（同一事务）
     const outcome = getDb().transaction(() => {
       if (!leaseValid(job.id, token, job.generation, nowIso())) return "fenced" as const;
+      if (getJob(job.id)?.cancelRequested) return cancelReviewWork(job, "review", reviewId);
       const t = translateProposals(out.proposals.slice(0, MAX_REVIEW_PROPOSALS), {
+        inputVersions: Object.fromEntries([...facts.logs.map((l)=>[`log:${l.id}`,l.version]), ...facts.artifacts.map((a)=>[`artifact:${a.id}`,a.version]), ...facts.openTasks.map((t)=>[`task:${t.id}`,t.version])]),
         evidenceIds,
         taskIds: new Set(facts.openTasks.map((x) => x.id)),
         projectIds: new Set(facts.projects.map((p) => p.id)),
@@ -323,6 +340,8 @@ export async function runAssistantJob(job: JobRow): Promise<{ kind: "done" | "fa
   const req = getAssistantRequest(requestId);
   const token = job.leaseToken!;
   const nowIso = () => new Date().toISOString();
+  if (getJob(job.id)?.cancelRequested) return { kind: cancelReviewWork(job, "assistant", requestId) };
+  if (!leaseValid(job.id, token, job.generation, nowIso())) return { kind: "fenced" };
   if (!req || !["queued", "running"].includes(req.status)) {
     return completeJob(job.id, token, job.generation, { kind: "skipped", reason: "request_finished" }, nowIso()) ? { kind: "done" } : { kind: "fenced" };
   }
@@ -367,6 +386,7 @@ export async function runAssistantJob(job: JobRow): Promise<{ kind: "done" | "fa
   try {
     const provider = meteredModel(model.provider, { type: "assistant_request", id: req.id });
     const project = projectId ? getProject(projectId) : null;
+    if (getJob(job.id)?.cancelRequested) return { kind: cancelReviewWork(job, "assistant", requestId) };
     const r = await provider.call({
       workflow: MODEL_WORKFLOW_BLOCKER,
       context: {
@@ -385,6 +405,7 @@ export async function runAssistantJob(job: JobRow): Promise<{ kind: "done" | "fa
       signal: lease.controller.signal,
     });
     if (!stillHeld(lease)) return { kind: "fenced" };
+    if (getJob(job.id)?.cancelRequested) return { kind: cancelReviewWork(job, "assistant", requestId) };
     if (!r.ok) {
       const code = r.error.message.startsWith("BUDGET_EXCEEDED") ? "BUDGET_EXCEEDED" : r.error.code;
       return finish({ status: "failed", errorCode: code, errorMessage: r.error.message }, false) ? { kind: "failed" } : { kind: "fenced" };
@@ -393,6 +414,7 @@ export async function runAssistantJob(job: JobRow): Promise<{ kind: "done" | "fa
     const evidenceIds = new Set<string>([...allLogs.map((l) => l.id), ...taskIds]);
     const outcome = getDb().transaction(() => {
       if (!leaseValid(job.id, token, job.generation, nowIso())) return "fenced" as const;
+      if (getJob(job.id)?.cancelRequested) return cancelReviewWork(job, "assistant", requestId);
       const t = out.proposal
         ? translateProposals([out.proposal].slice(0, MAX_ASSISTANT_PROPOSALS), {
             evidenceIds,
@@ -404,6 +426,7 @@ export async function runAssistantJob(job: JobRow): Promise<{ kind: "done" | "fa
             groupId: crypto.randomUUID(),
             groupTitle: "卡点分析",
             ignoreCooldown: req.rerun,
+            inputVersions: Object.fromEntries([...allLogs.map((l)=>[`log:${l.id}`,l.version]), ...tasks.map((t)=>[`task:${t.id}`,t.version])]),
           })
         : { created: [], dropped: [] };
       const explanations = out.explanations.filter((x) => x.evidenceIds.every((id) => evidenceIds.has(id)));
@@ -417,7 +440,7 @@ export async function runAssistantJob(job: JobRow): Promise<{ kind: "done" | "fa
           proposalIds: t.created.map((p) => p.id),
           dropped: [...t.dropped, ...(explanations.length < out.explanations.length ? ["部分解释引用了范围外的记录，已删除"] : [])],
           insufficientReason: out.insufficientReason ?? (hasContent ? null : "资料不足，没有形成可靠的分析"),
-          readScope: { logIds: allLogs.map((l) => l.id), taskIds: [...taskIds], projectId },
+          readScope: { logIds: allLogs.map((l) => l.id), taskIds: [...taskIds], projectId, logSnapshots: allLogs.map((l)=>({id:l.id,version:l.version,occurredOn:l.occurredOn,progress:l.progress,blocker:l.blocker})) },
         },
       });
       completeJob(job.id, token, job.generation, { kind: "skipped", reason: `assistant:proposals:${t.created.length}` }, nowIso());

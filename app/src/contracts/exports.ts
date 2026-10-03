@@ -48,11 +48,21 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   projects: {},
   project_goals: {},
   tasks: {},
+  legacy_instances: {},
+  legacy_mappings: {},
+  legacy_imports: {},
   daily_logs: {},
+  daily_log_revisions: {},
   artifacts: {},
+  artifact_revisions: {},
+  resources: {},
+  resource_revisions: {},
+  evidence_resource_refs: {},
   weekly_focus: {},
   availability_blocks: {},
   fixed_events: {},
+  fixed_event_exceptions: {},
+  notice_extractions: { omit: ["job_id"] },
   proposal_groups: {},
   proposals: {},
   proposal_operations: {},
@@ -78,7 +88,7 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
 };
 
 /** settings 里只属于调度内部的键 */
-export const FULL_JSON_SETTINGS_OMIT_KEYS = ["weeklyReviewNextRun"];
+export const FULL_JSON_SETTINGS_OMIT_KEYS = ["weeklyReviewNextRun", "digestSchedule:daily", "digestSchedule:weekly", "digestSystemFingerprint"];
 
 /** 明确不导出（审计用）：凭证、会话、幂等记录、后台队列、导出记录本身、实例控制 */
 export const FULL_JSON_EXCLUDED = [

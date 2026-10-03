@@ -11,7 +11,8 @@ export class ApiError extends Error {
 }
 
 function csrf(): string {
-  return typeof window !== "undefined" ? (localStorage.getItem("csrfToken") ?? "") : "";
+  try { return typeof window !== "undefined" ? (localStorage.getItem("csrfToken") ?? "") : ""; }
+  catch { return ""; }
 }
 
 /** 当前页面的登录链接（登录后回到这里） */
@@ -42,7 +43,7 @@ export async function api<T>(
   const body = await res.json().catch(() => null);
   if (res.status === 401) {
     // 会话失效：不整页跳转（会丢掉未保存输入），由调用方提示并保留草稿（13.3）
-    throw new ApiError(401, "UNAUTHORIZED", "登录已过期，内容已保存在本机。请重新登录后再提交");
+    throw new ApiError(401, "UNAUTHORIZED", "登录已过期。当前页面输入保留，请在新标签页登录后再提交；本机草稿是否已保存以表单提示为准");
   }
   if (!res.ok) {
     throw new ApiError(res.status, body?.error?.code ?? "UNKNOWN", body?.error?.message ?? `请求失败（${res.status}）`);

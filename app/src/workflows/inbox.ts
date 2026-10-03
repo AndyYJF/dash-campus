@@ -6,7 +6,7 @@ import {
   profileRuleSchema,
 } from "@/contracts/inbox";
 import { evaluateCondition } from "@/domain/conditions";
-import { factsMap, listRules, upsertFact, createRule, updateRule, type ProfileRuleRow } from "@/repositories/profile";
+import { factsMap, getFactByField, listRules, upsertFact, createRule, updateRule, type ProfileRuleRow } from "@/repositories/profile";
 import {
   createMessage,
   createRevision,
@@ -26,6 +26,7 @@ import {
   type InboxMessageRow,
   type InboxRevisionRow,
 } from "@/repositories/inbox";
+import { enqueueNoticeExtraction } from "./notice-extraction";
 import { createTask, getTask } from "@/repositories/planning";
 
 /**
@@ -46,10 +47,19 @@ export type ImportError =
   | { ok: false; error: "source_forbidden" }
   | { ok: false; error: "revision_collision" };
 
-export function importNotice(payload: NoticeImport, token: string): ImportOk | ImportError {
+export function importNotice(payload: NoticeImport, token: string, options: { automaticExtraction?: boolean } = {}): ImportOk | ImportError {
   // 导入 token 只能向配置允许的 source 写入
   if (!sourceTokenMatches(payload.source, token)) return { ok: false, error: "source_forbidden" };
 
+  return importVerifiedNotice(payload, options);
+}
+
+/** Internal entry point. Call only after authenticating the source or owner. */
+export function importVerifiedNotice(payload: NoticeImport, options: { automaticExtraction?: boolean } = {}): ImportOk | ImportError {
+  return getDb().transaction(() => importNoticeTransaction(payload, options.automaticExtraction !== false)).immediate();
+}
+
+function importNoticeTransaction(payload: NoticeImport, automaticExtraction: boolean): ImportOk | ImportError {
   const existingMessage = getMessageByExternalId(payload.source, payload.externalId);
   if (!existingMessage) {
     const message = createMessage(payload.source, payload.externalId, "");
@@ -64,6 +74,7 @@ export function importNotice(payload: NoticeImport, token: string): ImportOk | I
     });
     setMessageCurrent(message.id, revision.id, "active");
     computeAndStoreDecision(message, revision);
+    if (!revision.structured && automaticExtraction) enqueueNoticeExtraction(revision.id);
     return { ok: true, kind: "created", messageId: message.id, revisionId: revision.id, becameCurrent: true };
   }
 
@@ -100,6 +111,7 @@ export function importNotice(payload: NoticeImport, token: string): ImportOk | I
     // 顺序更新的版本成为 current；当前版需重评（不继承旧修订的人工覆盖）
     setMessageCurrent(message.id, revision.id, "active");
     computeAndStoreDecision(message, revision);
+    if (!revision.structured && automaticExtraction) enqueueNoticeExtraction(revision.id);
     return { ok: true, kind: "created", messageId: message.id, revisionId: revision.id, becameCurrent: true };
   }
   // 顺序不晚于当前：入历史，current 不回退（r1→r2→r1 的 r1 已按同 key 重放处理）
@@ -189,11 +201,16 @@ export function reevaluateAllCurrent(): void {
 export function resolveThisRevision(
   messageId: string,
   partition: Partition,
-): "ok" | "not_found" {
+  revisionId: string,
+  expectedVersion?: number,
+): "ok" | "not_found" | "conflict" {
+  return getDb().transaction(() => {
   const message = getMessage(messageId);
   if (!message?.currentRevisionId) return "not_found";
+  if (message.currentRevisionId !== revisionId) return 'conflict';
   const revision = getRevision(message.currentRevisionId)!;
   const existing = getDecisionByRevision(revision.id);
+  if (expectedVersion !== undefined && existing?.version !== expectedVersion) return 'conflict';
   upsertDecision({
     messageId,
     revisionId: revision.id,
@@ -205,6 +222,7 @@ export function resolveThisRevision(
     partition,
   });
   return "ok";
+  }).immediate();
 }
 
 /** 纠正作用域 2：更正身份 —— 修改主人确认事实并重评；不回写已确认任务 */
@@ -214,15 +232,13 @@ export function resolveProfile(
   for (const f of facts) {
     if (!(PROFILE_FIELDS as readonly string[]).includes(f.field)) return "invalid_field";
   }
-  const conflicts: string[] = [];
-  let updated = 0;
-  for (const f of facts) {
-    const r = upsertFact(f.field, f.value, f.expectedVersion);
-    if (r === "conflict") conflicts.push(f.field);
-    else updated++;
-  }
-  reevaluateAllCurrent();
-  return { updated, conflicts };
+  return getDb().transaction(() => {
+    const conflicts = facts.filter((f) => (getFactByField(f.field)?.version ?? 0) !== f.expectedVersion).map((f) => f.field);
+    if (conflicts.length) return { updated: 0, conflicts };
+    for (const f of facts) upsertFact(f.field, f.value, f.expectedVersion);
+    reevaluateAllCurrent();
+    return { updated: facts.length, conflicts: [] };
+  }).immediate();
 }
 
 /** 纠正作用域 3：保存规则 —— 结构化条件和输出，主人确认后启用并重评；可撤销（删除/停用） */
@@ -339,3 +355,4 @@ export function selectRevision(messageId: string, revisionId: string): "ok" | "n
   computeAndStoreDecision(fresh, revision);
   return "ok";
 }
+import { getDb } from '@/repositories/db';

@@ -1490,6 +1490,14 @@ p.muted {
     margin: 0 calc(var(--space-2) * -1);
   }
 
+  .taskRowWrap > .taskBody {
+    flex-basis: 100%;
+  }
+
+  .taskRowWrap > .actionsRow {
+    margin-top: 0;
+  }
+
   .inlineForm {
     flex-wrap: wrap;
   }

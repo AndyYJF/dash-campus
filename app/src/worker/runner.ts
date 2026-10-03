@@ -14,8 +14,16 @@ import type { JobRow } from "@/contracts/jobs";
 import { isRestoredHold, touchWorkerHeartbeat } from "@/repositories/instance";
 import { sweepExpiredExports } from "@/workflows/exports";
 
+import { NOTICE_EXTRACTION_JOB_TYPE } from "@/contracts/notice-extraction";
+import { runNoticeExtractionJob } from "@/workflows/notice-extraction";
+
+import { DIGEST_JOB_TYPE } from "@/contracts/digests";
+import { runDigestJob, scheduleDigests } from "@/workflows/digests";
+
 const HANDLERS: Record<string, (job: JobRow) => Promise<{ kind: string }>> = {
   [REMINDER_JOB_TYPE]: runReminderJob,
+  [DIGEST_JOB_TYPE]: runDigestJob,
+  [NOTICE_EXTRACTION_JOB_TYPE]: runNoticeExtractionJob,
   [EXPLORATION_JOB_TYPE]: runExplorationJob,
   [REVIEW_JOB_TYPE]: runReviewJob,
   [ASSISTANT_JOB_TYPE]: runAssistantJob,
@@ -39,6 +47,7 @@ export async function runDueJobsOnce(limit = 1): Promise<RunOnceStats & { held?:
   // 定期探索与定期周复盘：到期先入队（入队本身不调用外部服务）
   scheduleDueTopics();
   scheduleWeeklyReview();
+  scheduleDigests();
   const nowIso = new Date().toISOString();
   const jobs = claimDueJobs(nowIso, limit);
   const stats: RunOnceStats = { claimed: jobs.length, done: 0, failed: 0, cancelled: 0 };

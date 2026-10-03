@@ -4,10 +4,14 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "./api";
 import styles from "./dash.module.css";
 import Icon from "./Icon";
+import Link from "next/link";
 import IntegrationStatus from "./IntegrationStatus";
 import AiBudgetCard from "./AiBudgetCard";
 import ThemeToggle from "./ThemeToggle";
+import DigestSettingsCard from "./DigestSettingsCard";
+import ProfileSourcesCard from "./ProfileSourcesCard";
 import DataExportCard from "./DataExportCard";
+import LegacyImportCard from "./LegacyImportCard";
 import type { IntegrationStatusMap } from "@/contracts/integration-status";
 import type { TaskRow } from "@/repositories/planning";
 import {
@@ -22,58 +26,15 @@ import {
  */
 
 type PreviewResp = { sample: boolean; subject: string; html: string; text: string };
-type NotificationsResp = {
-  pendingReminders: Array<{ taskId: string; title: string; triggerAt: string }>;
-  upcomingReminders: Array<{ jobId: string; taskId: string; title: string; runAt: string }>;
-  inFlightOldReminders: Array<{
-    deliveryId: string;
-    taskId: string;
-    title: string;
-    status: string;
-    reminderRevision: number;
-    currentRevision: number;
-  }>;
-  recentDeliveries: Array<{
-    id: string;
-    taskId: string | null;
-    subject: string;
-    status: string;
-    attempt: number;
-    resentFrom: string | null;
-    error: string | null;
-    createdAt: string;
-  }>;
-};
-
-const RESENDABLE = new Set(["unknown", "failed"]);
-
-function formatTime(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? iso
-    : d.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-const DELIVERY_STATUS_LABEL: Record<string, string> = {
-  queued: "排队中（未准入）",
-  submitting: "发送中",
-  accepted: "已被发送服务接受（不代表已读）",
-  failed: "失败",
-  unknown: "结果未确定，可能已发送（不自动重发）",
-  cancelled: "已取消",
-};
-
 export default function SettingsView() {
   const [integrations, setIntegrations] = useState<IntegrationStatusMap | null>(null);
   const [settings, setSettings] = useState<MailTemplateSettings | null>(null);
   const [version, setVersion] = useState(0);
   const [preview, setPreview] = useState<PreviewResp | null>(null);
-  const [notifs, setNotifs] = useState<NotificationsResp | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [previewTasks, setPreviewTasks] = useState<TaskRow[]>([]);
   const [previewTaskId, setPreviewTaskId] = useState("");
-  const [confirmResendId, setConfirmResendId] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     api<{ integrations: IntegrationStatusMap }>("/api/v1/integrations")
@@ -85,9 +46,6 @@ export default function SettingsView() {
         setVersion(r.version);
       })
       .catch(() => setSettings(null));
-    api<NotificationsResp>("/api/v1/notifications")
-      .then((r) => setNotifs(r))
-      .catch(() => setNotifs(null));
     api<{ tasks: TaskRow[] }>("/api/v1/tasks")
       .then((r) =>
         setPreviewTasks(
@@ -155,28 +113,6 @@ export default function SettingsView() {
     }
   }
 
-  async function doResend(deliveryId: string) {
-    setBusy(true);
-    setMessage(null);
-    try {
-      const r = await api<{ delivery: { status: string; attempt: number } }>(
-        `/api/v1/deliveries/${deliveryId}/resend`,
-        { method: "POST", body: { confirmDuplicateRisk: true } },
-      );
-      setMessage(
-        r.delivery.status === "accepted"
-          ? `第 ${r.delivery.attempt} 次尝试已被发送服务接受（不代表已读）`
-          : `重发状态：${DELIVERY_STATUS_LABEL[r.delivery.status] ?? r.delivery.status}`,
-      );
-    } catch (e) {
-      setMessage(e instanceof ApiError ? `${e.code}: ${e.message}` : "重发失败");
-    } finally {
-      setConfirmResendId(null);
-      setBusy(false);
-      refresh();
-    }
-  }
-
   function toggleColumn(key: MailColumnKey) {
     setSettings((s) => {
       if (!s) return s;
@@ -213,8 +149,11 @@ export default function SettingsView() {
         <p className={styles.muted}>亮色、跟随系统或暗色。选择只保存在这台设备的浏览器里。</p>
       </div>
 
+      <ProfileSourcesCard />
+      <DigestSettingsCard />
       <AiBudgetCard />
       <DataExportCard />
+      <LegacyImportCard />
 
       <div className={styles.card}>
         <h2 className={styles.sectionTitle}>邮件模板</h2>
@@ -319,87 +258,7 @@ export default function SettingsView() {
         )}
       </div>
 
-      <div className={styles.card}>
-        <h2 className={styles.sectionTitle}>提醒与投递</h2>
-        <h3 className={styles.sectionTitle}>待处理提醒（触发点已到）</h3>
-        {notifs && notifs.pendingReminders.length === 0 && <p className={styles.muted}>无</p>}
-        {notifs?.pendingReminders.map((r) => (
-          <div key={r.taskId} className={styles.logItem}>
-            <div>{r.title}</div>
-            <span className={styles.metaRow}>
-              <span className={styles.metaItem}>
-                <Icon name="clock" size={14} />
-                触发于 {formatTime(r.triggerAt)}
-              </span>
-            </span>
-          </div>
-        ))}
-        <h3 className={styles.sectionTitle}>未来提醒</h3>
-        {notifs && notifs.upcomingReminders.length === 0 && <p className={styles.muted}>无</p>}
-        {notifs?.upcomingReminders.map((r) => (
-          <div key={r.jobId} className={styles.logItem}>
-            <div>{r.title}</div>
-            <span className={styles.metaRow}>
-              <span className={styles.metaItem}>
-                <Icon name="mail" size={14} />
-                {formatTime(r.runAt)} 发送
-              </span>
-            </span>
-          </div>
-        ))}
-        {notifs && notifs.inFlightOldReminders.length > 0 && (
-          <>
-            <h3 className={styles.sectionTitle}>存在发送中的旧提醒</h3>
-            <p className={styles.muted}>
-              这些任务改期前的提醒已经交给发送服务，可能仍会到达，按新时间的提醒另行发送。
-            </p>
-            {notifs.inFlightOldReminders.map((r) => (
-              <div key={r.deliveryId} className={styles.logItem}>
-                <span className={styles.taskMeta}>{DELIVERY_STATUS_LABEL[r.status] ?? r.status}</span>{" "}
-                {r.title}（旧版本 {r.reminderRevision}，当前 {r.currentRevision}）
-              </div>
-            ))}
-          </>
-        )}
-        <h3 className={styles.sectionTitle}>投递记录</h3>
-        {notifs && notifs.recentDeliveries.length === 0 && <p className={styles.muted}>无</p>}
-        {notifs?.recentDeliveries.map((d) => {
-          const resent = notifs.recentDeliveries.some((x) => x.resentFrom === d.id);
-          return (
-            <div key={d.id} className={styles.logItem}>
-              <span className={styles.taskMeta}>{DELIVERY_STATUS_LABEL[d.status] ?? d.status}</span>{" "}
-              {d.subject}
-              <span className={styles.muted}>
-                {" "}
-                · {formatTime(d.createdAt)}
-                {d.attempt > 1 ? ` · 第 ${d.attempt} 次尝试` : ""}
-              </span>
-              {d.error && <span className={styles.muted}>（{d.error}）</span>}
-              {RESENDABLE.has(d.status) && !resent && confirmResendId !== d.id && (
-                <button className={`${styles.btn} ${styles.btnGhost}`} disabled={busy} onClick={() => setConfirmResendId(d.id)}>
-                  重发…
-                </button>
-              )}
-              {resent && <span className={styles.muted}> · 已重发</span>}
-              {confirmResendId === d.id && (
-                <div className={styles.actionsRow} role="group" aria-label="确认重发">
-                  <span className={styles.muted}>
-                    {d.status === "unknown"
-                      ? "这封邮件可能已经发出，重发可能让你收到两封。"
-                      : "上次发送失败，重发会再尝试一次。"}
-                  </span>
-                  <button className={`${styles.btn} ${styles.btnPrimary}`} disabled={busy} onClick={() => doResend(d.id)}>
-                    确认重发
-                  </button>
-                  <button className={styles.btn} disabled={busy} onClick={() => setConfirmResendId(null)}>
-                    取消
-                  </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
+      <p><Link href="/notifications">查看提醒队列与投递记录</Link></p>
 
       {message && (
         <p className={styles.notice} role="status">

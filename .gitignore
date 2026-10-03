@@ -1,1 +1,4 @@
 .claude/
+
+# Local planning and disposable verification helpers
+.planning/

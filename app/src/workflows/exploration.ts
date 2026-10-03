@@ -1,4 +1,5 @@
 import { isRestoredHold, RESTORED_HOLD_MESSAGE } from "@/repositories/instance";
+import { getResource,resourceRevisions } from "@/repositories/resources";
 import crypto from "node:crypto";
 import { getDb } from "@/repositories/db";
 import { createJob, getJob, leaseValid, renewLease, completeJob, failJob, completeCancellation } from "@/repositories/jobs";
@@ -51,7 +52,7 @@ import { budgetCheck, BudgetExceeded, getAiBudget, meteredModel, meteredSearch }
 
 export type StartResult =
   | { ok: true; run: RunRow; jobId: string }
-  | { ok: false; code: "INTEGRATION_UNAVAILABLE" | "NOT_FOUND" | "BUDGET_EXCEEDED" | "RESTORED_HOLD"; message: string };
+  | { ok: false; code: "INTEGRATION_UNAVAILABLE" | "NOT_FOUND" | "INVALID_REFERENCE" | "BUDGET_EXCEEDED" | "RESTORED_HOLD"; message: string };
 
 /** API 入口：建 run + job（202）。模型必需；搜索缺失时只能用粘贴资料 */
 export function startExploration(
@@ -59,12 +60,16 @@ export function startExploration(
   opts: { kind?: "on_demand" | "scheduled" } = {},
 ): StartResult {
   if (isRestoredHold()) return { ok: false, code: "RESTORED_HOLD", message: RESTORED_HOLD_MESSAGE };
+  const resources = [...new Set(req.resourceIds ?? [])].map(getResource);
+  if (req.materials.length + resources.length > 6 || resources.some((r) => !r || r.archivedAt || !r.body.trim())) {
+    return { ok:false,code:"INVALID_REFERENCE",message:"最多使用6份资料；保存的资料必须未归档并有正文，链接需先补充原文" };
+  }
   const model = resolveModelProvider();
   if (!model) {
     return { ok: false, code: "INTEGRATION_UNAVAILABLE", message: "模型未配置，无法生成候选。请在部署配置中设置模型。" };
   }
   const search = resolveSearchProvider();
-  if (!search && req.materials.length === 0) {
+  if (!search && req.materials.length + resources.length === 0) {
     return {
       ok: false,
       code: "INTEGRATION_UNAVAILABLE",
@@ -108,6 +113,11 @@ export function startExploration(
         publishedAt: null,
         retrievedAt: at,
       });
+    }
+    for (const resource of resources) {
+      const r=resource!, revision=resourceRevisions(r.id).find((v)=>v.version===r.version)!;
+      const e=insertEvidence({runId:run.id,hitId:null,url:r.url,canonicalUrl:r.url?canonicalUrl(r.url):null,title:r.title,text:r.body,status:"user_supplied",contentHash:contentHash(r.body),publishedAt:null,retrievedAt:at});
+      db.prepare("INSERT INTO evidence_resource_refs(evidence_id,resource_id,resource_version,content_hash) VALUES(?,?,?,?)").run(e.id,r.id,r.version,revision.contentHash);
     }
     const job = createJob({
       type: EXPLORATION_JOB_TYPE,
@@ -289,7 +299,8 @@ export async function runExplorationJob(job: JobRow): Promise<ExplorationOutcome
 
   const model = resolveModelProvider();
   const search = run.integrationMode === "materials_only" ? null : resolveSearchProvider();
-  if (!model || (!search && run.integrationMode !== "materials_only")) {
+  const fixtureMaterialsOnly=run.integrationMode==="fixture" && !search && Boolean(getDb().prepare("SELECT id FROM evidence_documents WHERE run_id=? AND status='user_supplied' LIMIT 1").get(run.id));
+  if (!model || (!search && run.integrationMode !== "materials_only" && !fixtureMaterialsOnly)) {
     const msg = !model ? "模型未配置" : "搜索服务未配置";
     finishRun(run.id, "failed", { errorCode: "INTEGRATION_UNAVAILABLE", errorMessage: msg });
     return failJob(job.id, token, gen, `INTEGRATION_UNAVAILABLE: ${msg}`, nowIso()) ? { kind: "failed" } : { kind: "fenced" };

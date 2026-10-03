@@ -1,10 +1,13 @@
 "use client";
 
+const TASK_STATUS_LABEL: Record<string, string> = { todo: "待办", doing: "进行中", blocked: "卡住", done: "已完成", cancelled: "已取消" };
+
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { api, ApiError } from "./api";
 import styles from "./dash.module.css";
 import ex from "./explore.module.css";
+import { PROFILE_FIELDS } from "@/contracts/inbox";
 
 /**
  * 收件箱详情（T4）：原文与条件引用、三种纠正作用域（默认仅本条）、
@@ -12,6 +15,7 @@ import ex from "./explore.module.css";
  */
 
 type Detail = {
+  extraction: null | {integrationMode: string; status: string; error: string | null; evidence: string | null};
   message: { id: string; status: "active" | "revision_conflict"; externalId: string; sourceId: string };
   current: {
     id: string;
@@ -25,6 +29,7 @@ type Detail = {
     } | null;
   } | null;
   decision: {
+    version: number;
     applicability: string | null;
     partition: string;
     basePartition: string;
@@ -71,6 +76,11 @@ export default function InboxDetailView() {
   }, [params.id]);
 
   useEffect(refresh, [refresh]);
+  const extractionStatus = detail?.extraction?.status;
+  useEffect(() => {
+    if (!extractionStatus || !["queued", "running"].includes(extractionStatus)) return;
+    const timer = setInterval(refresh, 3000); return () => clearInterval(timer);
+  }, [extractionStatus, refresh]);
 
   async function post(path: string, body: unknown, ok: string) {
     setBusy(true);
@@ -96,6 +106,8 @@ export default function InboxDetailView() {
     <div className={styles.narrow}>
       <div className={styles.card}>
         <h2 className={styles.sectionTitle}>通知原文</h2>
+        {detail.extraction && <div className={styles.notice}><p>{detail.extraction.integrationMode === "fixture" ? "（示例数据，非真实模型）" : ""}条件与行动提取：{{queued: "排队中", running: "提取中", done: "已完成", failed: "未完成", superseded: "旧版本已跳过"}[detail.extraction.status] ?? detail.extraction.status}</p>{detail.extraction.error && <p>{detail.extraction.error}</p>}{detail.extraction.evidence && <ExtractionEvidence raw={detail.extraction.evidence} />}</div>}
+        {current && !["queued", "running"].includes(detail.extraction?.status ?? "") && <button className={styles.btn} disabled={busy} onClick={() => void post(`/api/v1/inbox/${params.id}/extract`, {revisionId: current.id}, "已排队重新提取；人工分区覆盖会保留。")}>重新提取原文</button>}
         <p style={{ whiteSpace: "pre-wrap" }}>{current?.text ?? "（无当前版本）"}</p>
         {current?.sourceUrl && (
           <p>
@@ -123,7 +135,7 @@ export default function InboxDetailView() {
                 <span className={styles.muted}>不据标题猜资格</span>
               </>
             )}
-            {!decision?.applicability && <span className={styles.badge}>未筛选（仅存原文）</span>}
+            {!decision?.applicability && <span className={styles.badge}>未筛选（资格条件待确认）</span>}
           </dd>
           <dt>分区</dt>
           <dd>
@@ -142,6 +154,13 @@ export default function InboxDetailView() {
         )}
       </div>
 
+      {!action && detail.links.length > 0 && <div className={styles.card}>
+        <h2 className={styles.sectionTitle}>已关联任务</h2>
+        {detail.links.map((link) => <div key={link.actionKey} className={styles.logItem}>
+          {link.task?.title ?? "任务不可用"} · {TASK_STATUS_LABEL[link.task?.status ?? ""] ?? "未知状态"}
+          {detail.sourceChanges.some((c) => c.taskId === link.taskId && c.changed) && <p className={styles.muted}>来源与任务有差异，请核对原文与上游状态；任务保持你的修改。</p>}
+        </div>)}
+      </div>}
       {action && (
         <div className={styles.card}>
           <h2 className={styles.sectionTitle}>行动草案：{action.title}</h2>
@@ -155,7 +174,7 @@ export default function InboxDetailView() {
                 .filter((c) => c.changed)
                 .map((c) => (
                   <div key={c.actionKey} className={styles.logItem}>
-                    来源已变化（只标记，不覆盖你的任务）：
+                    来源与任务有差异（只标记，不覆盖你的任务）：
                     {c.fields.map((f) => (
                       <div key={f.field}>
                         {f.field === "title" ? "标题" : "截止"}：你的「{f.taskValue}」 vs 来源「
@@ -204,7 +223,7 @@ export default function InboxDetailView() {
             onClick={() =>
               post(
                 `/api/v1/inbox/${msg.id}/resolve`,
-                { scope: "this_revision", partition },
+                { scope: "this_revision", partition, revisionId: current?.id, expectedVersion: decision?.version },
                 "已覆盖本条分区（不影响身份和其他通知）",
               )
             }
@@ -214,10 +233,7 @@ export default function InboxDetailView() {
         </div>
         <div className={ex.row} style={{ marginTop: 8 }}>
           <select aria-label="要更正的身份字段" value={factField} onChange={(e) => setFactField(e.target.value)}>
-            <option value="education_level">education_level</option>
-            <option value="program">program</option>
-            <option value="campus">campus</option>
-            <option value="grade_year">grade_year</option>
+            {PROFILE_FIELDS.map((field) => <option key={field} value={field}>{{education_level: "学历层次", program: "专业", campus: "校区", grade_year: "入学年份", study_year: "当前年级"}[field]}</option>)}
           </select>
           <input
             aria-label="更正后的身份值"
@@ -311,3 +327,9 @@ export default function InboxDetailView() {
   );
 }
 
+
+function ExtractionEvidence({raw}: {raw: string}) {
+  let e: {actionQuote: string | null; dueQuote: string | null; unknownReason: string | null};
+  try { e = JSON.parse(raw); } catch { return null; }
+  return <div>{e.actionQuote && <p>行动依据：{e.actionQuote}</p>}{e.dueQuote && <p>截止依据：{e.dueQuote}</p>}{e.unknownReason && <p>仍不确定：{e.unknownReason}</p>}</div>;
+}

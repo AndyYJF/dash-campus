@@ -43,7 +43,7 @@ function taskUrl(projectId: string | null): string {
   return projectId ? `${base}/projects/${projectId}` : `${base}/today`;
 }
 
-type Admission =
+export type Admission =
   | { kind: "delivery"; delivery: DeliveryRow }
   | { kind: "skip"; reason: string };
 
@@ -140,7 +140,12 @@ function dbCancelDelivery(id: string, leaseToken: string): boolean {
 }
 
 /** 执行一个提醒 job；返回执行结果分类。mailer 由 resolveMailer 解析（测试可注入）。 */
-export async function runReminderJob(job: JobRow): Promise<ReminderRunOutcome> {
+export function runReminderJob(job: JobRow): Promise<ReminderRunOutcome> {
+  return runMailJob(job, admitReminderDelivery);
+}
+
+/** Shared mail state machine: admission → frozen delivery → one SMTP attempt. */
+export async function runMailJob(job: JobRow, admit: (job: JobRow, nowIso: string) => Admission): Promise<ReminderRunOutcome> {
   const token = job.leaseToken!;
   const gen = job.generation;
   const nowIso = () => new Date().toISOString();
@@ -173,7 +178,7 @@ export async function runReminderJob(job: JobRow): Promise<ReminderRunOutcome> {
     return ok ? { kind: "failed", error: "INTEGRATION_UNAVAILABLE" } : { kind: "fenced" };
   }
 
-  const admission = admitReminderDelivery(job, nowIso());
+  const admission = admit(job, nowIso());
   if (admission.kind === "skip") {
     if (admission.reason === "lease_lost") return { kind: "fenced" };
     const ok = completeJob(job.id, token, gen, { kind: "skipped", reason: admission.reason }, nowIso());
@@ -203,6 +208,12 @@ export async function runReminderJob(job: JobRow): Promise<ReminderRunOutcome> {
       text: delivery.snapshot.text,
       requestId: delivery.requestId,
     });
+  } catch (e) {
+    // Once a network submission starts, an unexpected exception has uncertain delivery semantics.
+    if (!leaseValid(job.id, token, gen, nowIso())) return { kind: "fenced" };
+    markDeliveryUnknown(delivery.id, e instanceof Error ? e.message : "发送异常，结果未确定");
+    completeJob(job.id, token, gen, { kind: "unknown", deliveryId: delivery.id, note: "发送异常，不自动重发" }, nowIso());
+    return { kind: "done" };
   } finally {
     clearInterval(renewTimer);
   }

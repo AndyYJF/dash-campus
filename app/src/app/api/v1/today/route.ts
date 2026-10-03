@@ -8,7 +8,7 @@ import { getFocus } from "@/repositories/focus";
 import { listProposals } from "@/repositories/proposals";
 import { listTasks } from "@/repositories/planning";
 import { listRecentLogs } from "@/repositories/logs";
-import { getDecisionByRevision, getRevision, listMessages } from "@/repositories/inbox";
+import { listPendingInboxDecisions } from "@/workflows/pending-inbox";
 
 export const dynamic = "force-dynamic";
 
@@ -30,25 +30,10 @@ export function GET(request: NextRequest) {
   const shownActions = actions.slice(0, 6);
 
   const proposals = listProposals({ status: "pending" }).filter(
-    (p) => !p.snoozeUntil || new Date(p.snoozeUntil).getTime() <= asOf.getTime(),
+    (p) => !p.validation && (!p.snoozeUntil || new Date(p.snoozeUntil).getTime() <= asOf.getTime()),
   );
   // 收件箱当前修订的 action/review 项也进首页待决策（T4）
-  const inboxDecisions = listMessages({ status: "active" }).flatMap((m) => {
-    if (!m.currentRevisionId) return [];
-    const revision = getRevision(m.currentRevisionId);
-    const decision = getDecisionByRevision(m.currentRevisionId);
-    if (!revision || !decision) return [];
-    if (decision.partition !== "action" && decision.partition !== "review") return [];
-    return [
-      {
-        kind: "inbox" as const,
-        id: m.id,
-        title: revision.structured?.action?.title ?? revision.text.slice(0, 60),
-        version: decision.version,
-        href: `/inbox/${m.id}`,
-      },
-    ];
-  });
+  const inboxDecisions = listPendingInboxDecisions();
   const allDecisions = [...inboxDecisions, ...proposals.map((p) => ({
     kind: "proposal" as const,
     id: p.id,
@@ -86,6 +71,7 @@ export function GET(request: NextRequest) {
     })(),
     actions: shownActions,
     moreActionCount: Math.max(0, actions.length - shownActions.length),
+    unplannedTaskCount: allTasks.filter((task) => !task.plannedWeek && !["done", "cancelled"].includes(task.status)).length,
     decisions,
     moreDecisionCount: allDecisions.length - decisions.length,
     recentLogs: listRecentLogs(3),

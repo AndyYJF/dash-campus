@@ -60,8 +60,7 @@ export default function ExplorationConclusion({
   useEffect(refresh, [refresh]);
 
   if (!data) return null;
-  // 只有来自候选或已填过结论的项目显示此区块
-  if (!data.candidateId && !data.conclusion) return null;
+  // 模板和主人新建的项目同样需要留下实践后的本人判断。
 
   async function save(e: React.FormEvent) {
     e.preventDefault();

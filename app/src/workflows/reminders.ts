@@ -22,7 +22,7 @@ export function refreshReminders(task: TaskRow, nowIso: string): void {
   cancelQueuedForTask(task.id);
 
   if (!reminderActive(task)) return;
-  const trigger = reminderTriggerUtc(task.due);
+  const trigger = reminderTriggerUtc(task.due, task.reminderLeadMinutes);
   // 只建立触发时间在当前时刻之后的新版本提醒
   if (!trigger || trigger <= nowIso) return;
 

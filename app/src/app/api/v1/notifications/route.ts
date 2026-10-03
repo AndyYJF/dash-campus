@@ -23,7 +23,7 @@ export function GET(request: NextRequest) {
 
   const activeTasks = db
     .prepare(
-      `SELECT id, title, due_kind, due_local_date, due_timezone, due_at, reminder_revision
+      `SELECT id, title, due_kind, due_local_date, due_timezone, due_at, reminder_revision, reminder_lead_minutes
        FROM tasks
        WHERE archived_at IS NULL AND status NOT IN ('done', 'cancelled') AND due_kind != 'none'`,
     )
@@ -35,6 +35,7 @@ export function GET(request: NextRequest) {
     due_timezone: string | null;
     due_at: string | null;
     reminder_revision: number;
+    reminder_lead_minutes: number | null;
   }>;
 
   const pendingReminders = [];
@@ -43,7 +44,7 @@ export function GET(request: NextRequest) {
       t.due_kind === "date"
         ? { kind: "date" as const, localDate: t.due_local_date!, timezone: t.due_timezone! }
         : { kind: "instant" as const, at: t.due_at!, timezone: t.due_timezone! };
-    const trigger = reminderTriggerUtc(due);
+    const trigger = reminderTriggerUtc(due, t.reminder_lead_minutes);
     if (!trigger || trigger > nowIso) continue;
     const delivered = db
       .prepare(
@@ -82,6 +83,7 @@ export function GET(request: NextRequest) {
     task_id: string;
     status: string;
     reminder_revision: number;
+    reminder_lead_minutes: number | null;
     current_revision: number;
     title: string;
   }>;

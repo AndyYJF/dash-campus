@@ -2,34 +2,56 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, newIdempotencyKey } from "./api";
-import TaskForm, { mondaysFrom } from "./TaskForm";
-import { TaskMeta } from "./TaskList";
+import TaskEditor from "./TaskEditor";
+import ManagedTasks from "./ManagedTasks";
+import PlanningEntities from "./PlanningEntities";
+import CalendarSettings from "./CalendarSettings";
 import Duration from "./Duration";
 import { formatMinutes } from "./WeekStatusStrip";
 import styles from "./dash.module.css";
 import type { WeekPlan } from "@/contracts/today";
-import type { TaskRow } from "@/repositories/planning";
+import type { TaskRow, GoalRow, ProjectRow } from "@/repositories/planning";
 
-/** 计划页：周视图 + 每周重点 + 改期提案发起 */
+/** 计划页：周视图、每周重点与主人直接管理排程。 */
 export default function PlanView() {
   const [plan, setPlan] = useState<WeekPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [focusTitle, setFocusTitle] = useState("");
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
-  const [editing, setEditing] = useState<string | null>(null);
-  const focusKey = useRef<{ title: string; key: string } | null>(null);
+  const [date, setDate] = useState("");
+  const [goals, setGoals] = useState<GoalRow[]>([]);
+  const [projects, setProjects] = useState<ProjectRow[]>([]);
+  const [focusGoalId, setFocusGoalId] = useState("");
+  const [focusProjectId, setFocusProjectId] = useState("");
+  const [backlog, setBacklog] = useState<TaskRow[]>([]);
+  const focusKey = useRef<{ body: string; key: string } | null>(null);
+  const initialAnchorScrolled = useRef(false);
 
   const refresh = useCallback(() => {
-    api<WeekPlan>("/api/v1/planning/week")
-      .then((p) => {
-        setPlan(p);
-        setFocusTitle(p.focus?.title ?? "");
-        setError(null);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "加载失败"));
-  }, []);
+    Promise.all([
+      api<WeekPlan>(`/api/v1/planning/week${date ? `?date=${date}` : ""}`),
+      api<{tasks: TaskRow[]}>("/api/v1/tasks"),
+      api<{goals: GoalRow[]}>("/api/v1/goals"),
+      api<{projects: ProjectRow[]}>("/api/v1/projects"),
+    ]).then(([p,t,g,projects]) => {
+      setPlan(p); setFocusTitle(p.focus?.title ?? "");
+      setFocusGoalId(p.focus?.goalId ?? ""); setFocusProjectId(p.focus?.projectId ?? "");
+      setGoals(g.goals); setProjects(projects.projects);
+      setBacklog(t.tasks.filter((task) => !task.plannedWeek && task.status !== "done" && task.status !== "cancelled"));
+      setError(null);
+    }).catch((e) => setError(e instanceof Error ? e.message : "加载失败"));
+  }, [date]);
 
   useEffect(refresh, [refresh]);
+  useEffect(() => {
+    if (!plan || initialAnchorScrolled.current || window.location.hash !== "#unplanned-tasks") return;
+    // The anchor is absent while async data loads, so the router's initial scroll can miss it.
+    const frame = requestAnimationFrame(() => {
+      document.getElementById("unplanned-tasks")?.scrollIntoView({ block: "start" });
+      initialAnchorScrolled.current = true;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [plan]);
 
   if (error) return (
     <p className={styles.error} role="alert">
@@ -44,25 +66,15 @@ export default function PlanView() {
   async function saveFocus() {
     if (!focusTitle.trim()) return;
     setMessage(null);
-    // 首次创建：同一标题重试复用同一个键（超时后再点不会变成 409）
+    const body = {localMonday: plan!.week.localMonday, timezone: plan!.timezone, title: focusTitle.trim(), goalId: focusGoalId || null, projectId: focusProjectId || null, ...(plan!.focus ? {expectedVersion: plan!.focus.version} : {})};
+    const serialized = JSON.stringify(body);
     let key: string | undefined;
     if (!plan?.focus) {
-      key = focusKey.current && focusKey.current.title === focusTitle.trim() ? focusKey.current.key : newIdempotencyKey();
-      focusKey.current = { title: focusTitle.trim(), key };
+      key = focusKey.current?.body === serialized ? focusKey.current.key : newIdempotencyKey();
+      focusKey.current = {body: serialized, key};
     }
     try {
-      await api("/api/v1/planning/week/focus", {
-        method: "PUT",
-        idempotencyKey: key,
-        body: {
-          localMonday: plan!.week.localMonday,
-          timezone: plan!.timezone,
-          title: focusTitle.trim(),
-          goalId: null,
-          projectId: null,
-          ...(plan!.focus ? { expectedVersion: plan!.focus.version } : {}),
-        },
-      });
+      await api("/api/v1/planning/week/focus", {method: "PUT", idempotencyKey: key, body});
       setMessage({ ok: true, text: "本周重点已保存" });
       refresh();
     } catch (e) {
@@ -70,23 +82,12 @@ export default function PlanView() {
     }
   }
 
-  async function proposeReschedule(task: TaskRow, start: string | null, end: string | null) {
-    setMessage(null);
-    try {
-      await api("/api/v1/proposals", {
-        method: "POST",
-        idempotencyKey: newIdempotencyKey(),
-        body: { type: "reschedule", taskId: task.id, scheduledStart: start, scheduledEnd: end, reason: "" },
-      });
-      setEditing(null);
-      setMessage({ ok: true, text: "改期提案已创建。确认后才会修改计划，可在今天页「需要你决定」或回顾页处理。" });
-    } catch (e) {
-      setMessage({ ok: false, text: e instanceof ApiError ? e.message : "创建提案失败" });
-    }
-  }
-
   return (
     <div>
+      <div className={styles.actionsRow}>
+        <label className={styles.label} htmlFor="plan-week">查看哪一周</label><input id="plan-week" type="date" className={styles.field} value={date || plan.week.localMonday} onChange={(e) => setDate(e.target.value)} />
+        <button className={styles.btn} onClick={() => setDate("")}>回到本周</button>
+      </div>
       <section className={`${styles.card} ${styles.cardFeature}`} aria-labelledby="focus-title">
         <h2 id="focus-title">本周重点 · {plan.week.localMonday} 起的一周</h2>
         <form
@@ -110,6 +111,22 @@ export default function PlanView() {
             保存
           </button>
         </form>
+        <label className={styles.label}>
+          重点关联（选择一个目标或项目）
+          <select
+            className={styles.field}
+            value={focusGoalId ? `goal:${focusGoalId}` : focusProjectId ? `project:${focusProjectId}` : ""}
+            onChange={(e) => {
+              const value = e.target.value;
+              setFocusGoalId(value.startsWith("goal:") ? value.slice(5) : "");
+              setFocusProjectId(value.startsWith("project:") ? value.slice(8) : "");
+            }}
+          >
+            <option value="">不关联</option>
+            <optgroup label="目标">{goals.map((g) => <option key={g.id} value={`goal:${g.id}`}>{g.title}</option>)}</optgroup>
+            <optgroup label="项目">{projects.map((p) => <option key={p.id} value={`project:${p.id}`}>{p.title}</option>)}</optgroup>
+          </select>
+        </label>
         {plan.focus && <p className={styles.muted}>最近确认：{new Date(plan.focus.confirmedAt).toLocaleString()}</p>}
       </section>
 
@@ -153,44 +170,16 @@ export default function PlanView() {
       <section className={styles.card} aria-labelledby="tasks-title">
         <h2 id="tasks-title">本周任务</h2>
         {plan.tasks.length === 0 && <p className={styles.empty}>本周还没有任务。</p>}
-        {plan.tasks.map((t) => (
-          <div key={t.id} className={`${styles.taskRow} ${styles.taskRowWrap}`}>
-            <div className={styles.taskBody}>
-              <span className={styles.taskTitle}>
-                {t.title}{" "}
-                <span
-                  className={`${styles.badge} ${t.status === "done" ? styles.badgeOk : t.status === "blocked" ? styles.badgeHigh : t.status === "doing" ? styles.badgeAccent : ""}`}
-                >
-                  {TASK_STATUS[t.status]}
-                </span>
-              </span>
-              <TaskMeta task={t} />
-            </div>
-            {t.status !== "done" && t.status !== "cancelled" && editing !== t.id && (
-              <button className={`${styles.btn} ${styles.btnGhost}`} onClick={() => setEditing(t.id)}>
-                改期
-              </button>
-            )}
-            {editing === t.id && (
-              <RescheduleForm
-                task={t}
-                timezone={plan.timezone}
-                onCancel={() => setEditing(null)}
-                onSubmit={(start, end) => proposeReschedule(t, start, end)}
-              />
-            )}
-          </div>
-        ))}
+        <ManagedTasks tasks={plan.tasks} timezone={plan.timezone} onChanged={refresh} />
         <details className={styles.addTask}>
           <summary>添加任务</summary>
-          <TaskForm
-            defaultPlannedMonday={plan.week.localMonday}
-            weekOptions={mondaysFrom(plan.week.localMonday)}
-            timezone={plan.timezone}
-            onCreated={refresh}
-          />
+          <TaskEditor key={plan.week.localMonday} plannedMonday={plan.week.localMonday} timezone={plan.timezone} onSaved={refresh} />
         </details>
       </section>
+      <section className={styles.card} id="unplanned-tasks" style={{ scrollMarginTop: 80 }}><h2>待安排任务 · {backlog.length}</h2><p className={styles.muted}>候选项目的第一批任务会先出现在这里。编辑后选择计划周或具体时段即可进入行动列表。</p><ManagedTasks tasks={backlog} timezone={plan.timezone} onChanged={refresh} /></section>
+      {plan.conflicts.length > 0 && <section className={styles.card}><h2>本周排程需核对</h2><p className={styles.muted}>修改课程或可用窗口后，既有任务不会自动改期。下列冲突需你核对；已填写的人工覆盖原因会保留。</p>{plan.conflicts.map((c) => <p key={`${c.taskId}:${c.code}`}><strong>{c.title}</strong>：{c.message}{c.overrideReason ? `；人工覆盖：${c.overrideReason}` : ""}</p>)}</section>}
+      <PlanningEntities onChanged={refresh} />
+      <CalendarSettings timezone={plan.timezone} onChanged={refresh} />
       {message && (
         <p
           className={`${styles.notice} ${message.ok ? styles.noticeOk : styles.noticeError}`}
@@ -200,111 +189,5 @@ export default function PlanView() {
         </p>
       )}
     </div>
-  );
-}
-
-const TASK_STATUS: Record<TaskRow["status"], string> = {
-  todo: "待办",
-  doing: "进行中",
-  blocked: "受阻",
-  done: "已完成",
-  cancelled: "已取消",
-};
-
-/** 实例时区下的日期+时间 → UTC ISO（服务端再校验结束晚于开始、与固定活动冲突等） */
-function toInstant(date: string, time: string, tz: string): string {
-  const guess = new Date(`${date}T${time}:00Z`);
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).formatToParts(guess);
-  const get = (k: string) => Number(parts.find((p) => p.type === k)!.value);
-  const asUtc = Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"));
-  return new Date(guess.getTime() - (asUtc - guess.getTime())).toISOString();
-}
-
-function RescheduleForm({
-  task,
-  timezone,
-  onCancel,
-  onSubmit,
-}: {
-  task: TaskRow;
-  timezone: string;
-  onCancel: () => void;
-  onSubmit: (start: string | null, end: string | null) => void;
-}) {
-  const [date, setDate] = useState("");
-  const [from, setFrom] = useState("19:00");
-  const [minutes, setMinutes] = useState(String(task.estimateMinutes ?? 60));
-  const [err, setErr] = useState<string | null>(null);
-  const id = `rs-${task.id}`;
-  return (
-    <form
-      className={styles.subForm}
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (!date) {
-          onSubmit(null, null);
-          return;
-        }
-        const m = Number(minutes);
-        if (!Number.isFinite(m) || m <= 0) {
-          setErr("时长需要是正数分钟");
-          return;
-        }
-        const start = toInstant(date, from, timezone);
-        onSubmit(start, new Date(new Date(start).getTime() + m * 60_000).toISOString());
-      }}
-    >
-      <div className={styles.formGrid}>
-        <div>
-          <label className={styles.label} htmlFor={`${id}-d`}>
-            日期（留空为取消安排）
-          </label>
-          <input id={`${id}-d`} type="date" className={styles.field} value={date} onChange={(e) => setDate(e.target.value)} />
-        </div>
-        <div>
-          <label className={styles.label} htmlFor={`${id}-t`}>
-            开始时间
-          </label>
-          <input id={`${id}-t`} type="time" className={styles.field} value={from} onChange={(e) => setFrom(e.target.value)} />
-        </div>
-        <div>
-          <label className={styles.label} htmlFor={`${id}-m`}>
-            时长（分钟）
-          </label>
-          <input
-            id={`${id}-m`}
-            type="number"
-            min={5}
-            className={styles.field}
-            value={minutes}
-            onChange={(e) => setMinutes(e.target.value)}
-          />
-        </div>
-      </div>
-      <p className={styles.muted} style={{ marginTop: 0 }}>
-        按实例时区 {timezone} 解释。生成的是提案，确认后才修改计划。
-      </p>
-      <div className={styles.actionsRow}>
-        <button type="submit" className={`${styles.btn} ${styles.btnPrimary}`}>
-          生成改期提案
-        </button>
-        <button type="button" className={styles.btn} onClick={onCancel}>
-          取消
-        </button>
-      </div>
-      {err && (
-        <p className={styles.error} role="alert">
-          {err}
-        </p>
-      )}
-    </form>
   );
 }

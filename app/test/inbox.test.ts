@@ -207,7 +207,7 @@ test("F4 纠正作用域：仅本条不改变身份；下一次同类活动不�
   if (first.ok) {
     const decision = getDecisionByRevision(first.revisionId)!;
     assert.equal(decision.partition, "opportunity", "自愿且 TRUE → opportunity");
-    assert.equal(resolveThisRevision(first.messageId, "folded"), "ok");
+    assert.equal(resolveThisRevision(first.messageId, "folded", first.revisionId, decision.version), "ok");
     assert.equal(getDecisionByRevision(first.revisionId)!.partition, "folded");
   }
   const second = importNotice(

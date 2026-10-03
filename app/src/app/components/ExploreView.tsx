@@ -7,6 +7,7 @@ import { api, ApiError, newIdempotencyKey } from "./api";
 import styles from "./dash.module.css";
 import ex from "./explore.module.css";
 import TopicList from "./TopicList";
+import ResourceLibrary from "./ResourceLibrary";
 import type { IntegrationStatusMap } from "@/contracts/integration-status";
 
 /**
@@ -25,6 +26,10 @@ type RunSummary = {
 };
 
 type Template = {
+  version: number;
+  sourceLinks: Array<{title: string; url: string; license: string}>;
+  deliverables: string[];
+  initialTasks: Array<{title: string; estimateMinutes: number | null}>;
   id: string;
   status: "draft" | "ready";
   direction: string;
@@ -62,6 +67,7 @@ export default function ExploreView() {
   const [projectId, setProjectId] = useState("");
   const [materialText, setMaterialText] = useState("");
   const [materialUrl, setMaterialUrl] = useState("");
+  const [resourceIds, setResourceIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // 同一次输入重试复用同一个幂等键；内容变化才换新键
@@ -88,13 +94,21 @@ export default function ExploreView() {
   const searchReady = integrations?.search.state === "configured";
   const modelReady = integrations?.model.state === "configured";
 
+  async function startFromTemplate(t: Template) {
+    setBusy(true); setError(null);
+    const body = {expectedVersion: t.version, plannedWeek: null}, serialized = `template:${t.id}:${JSON.stringify(body)}`;
+    const key = keyRef.current?.body === serialized ? keyRef.current.key : newIdempotencyKey(); keyRef.current = {body: serialized, key};
+    try { const p = await api<{id: string}>(`/api/v1/practice-templates/${t.id}/start`, {method: "POST", body, idempotencyKey: key}); router.push(`/projects/${p.id}`); }
+    catch (e) { setError(e instanceof Error ? e.message : "创建失败"); } finally { setBusy(false); }
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     const materials = materialText.trim()
       ? [{ title: "", url: materialUrl.trim() || null, text: materialText.trim() }]
       : [];
-    const body = { query: query.trim(), background, projectId: projectId || null, topicId: null, materials };
+    const body = { query: query.trim(), background, projectId: projectId || null, topicId: null, materials, resourceIds };
     const serialized = JSON.stringify(body);
     if (!keyRef.current || keyRef.current.body !== serialized) keyRef.current = { body: serialized, key: newIdempotencyKey() };
     setBusy(true);
@@ -187,7 +201,7 @@ export default function ExploreView() {
             <button
               className={`${styles.btn} ${styles.btnPrimary}`}
               type="submit"
-              disabled={busy || !query.trim() || !modelReady || (!searchReady && !materialText.trim())}
+              disabled={busy || !query.trim() || !modelReady || (!searchReady && !materialText.trim() && resourceIds.length === 0)}
             >
               {busy ? "提交中…" : "开始探索"}
             </button>
@@ -211,11 +225,12 @@ export default function ExploreView() {
         </div>
 
         <div>
+          <ResourceLibrary selected={resourceIds} onSelectionChange={setResourceIds} />
           <TopicList searchReady={Boolean(searchReady && modelReady)} onRun={refresh} />
           <div className={styles.card}>
             <h2>实践模板</h2>
             <p className={styles.muted}>
-              模板为草稿（draft）：具体数据集或教程来源与许可需你核实后才能标记为可用，不是完整课程内容。
+              可用模板包含具体步骤、完成标准和官方参考资料，无需模型即可开始。修改过的旧草稿会保留原内容。创建后在项目中选择计划周或时段。
             </p>
             {templates.map((t) => (
               <div key={t.id} className={styles.logItem}>
@@ -229,6 +244,8 @@ export default function ExploreView() {
                   {t.estimatedMinutesRange &&
                     ` · 约 ${Math.round(t.estimatedMinutesRange.min / 60)}–${Math.round(t.estimatedMinutesRange.max / 60)} 小时`}
                 </div>
+                <details><summary>产出、任务与资料</summary><ul>{t.deliverables.map((d) => <li key={d}>{d}</li>)}</ul><ul>{t.initialTasks.map((task) => <li key={task.title}>{task.title} · {task.estimateMinutes ?? "未知"} 分钟</li>)}</ul>{t.sourceLinks.map((link) => <p key={link.url}><a href={link.url} target="_blank" rel="noreferrer">{link.title}</a><br /><span className={styles.muted}>{link.license}</span></p>)}</details>
+                {t.status === "ready" && <button className={styles.btn} disabled={busy} onClick={() => void startFromTemplate(t)}>用此模板创建项目</button>}
               </div>
             ))}
           </div>

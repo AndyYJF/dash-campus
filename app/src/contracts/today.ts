@@ -23,6 +23,7 @@ export type TodaySummary = {
   };
   actions: Array<{ task: TaskRow; section: "overdue" | "today" | "upcoming" | "this_week" }>;
   moreActionCount: number;
+  unplannedTaskCount: number;
   decisions: Array<{ kind: "inbox" | "proposal"; id: string; title: string; version: number; href: string }>;
   moreDecisionCount: number;
   recentLogs: Array<{
@@ -62,4 +63,5 @@ export type WeekPlan = {
     hasAnyTimeData: boolean;
   };
   tasks: TaskRow[];
+  conflicts: Array<{taskId: string; title: string; code: string; message: string; overrideReason: string | null}>;
 };

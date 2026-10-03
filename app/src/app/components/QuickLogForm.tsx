@@ -7,6 +7,7 @@ import ErrorNote, { toErrorState } from "./ErrorNote";
 import LogTimeline from "./LogTimeline";
 import styles from "./dash.module.css";
 import type { TaskRow } from "@/repositories/planning";
+import { nextLogDraftDate, type LogDraftDate } from "@/domain/log-draft";
 
 /**
  * QuickLogForm（F17/U7）：每条新记录一个独立 clientEntryId，与正文一起存为本机草稿；
@@ -14,7 +15,7 @@ import type { TaskRow } from "@/repositories/planning";
  * 成功后清理草稿并生成新 clientEntryId。日期按实例时区取"今天"。
  */
 
-type Draft = { clientEntryId: string; occurredOn: string; progress: string; blocker: string; taskId: string };
+type Draft = LogDraftDate & { clientEntryId: string; taskId: string };
 
 export default function QuickLogForm({
   recentLogs,
@@ -35,9 +36,10 @@ export default function QuickLogForm({
   localDate: string;
   onSaved: () => void;
 }) {
-  const { value: d, update, clear, restored, loaded } = useDraft<Draft>("quick-log", {
+  const { value: d, update, clear, restored, loaded, persisted } = useDraft<Draft>("quick-log", {
     clientEntryId: "",
     occurredOn: "",
+    dateMode: "legacy",
     progress: "",
     blocker: "",
     taskId: "",
@@ -51,14 +53,16 @@ export default function QuickLogForm({
   useEffect(() => {
     if (!loaded) return;
     if (!d.clientEntryId) update({ clientEntryId: crypto.randomUUID() });
-    if (!d.occurredOn && localDate) update({ occurredOn: localDate });
-  }, [loaded, d.clientEntryId, d.occurredOn, localDate, update]);
+    const date = nextLogDraftDate(d, localDate);
+    if (date !== d.occurredOn) update({ occurredOn: date, dateMode: "auto" });
+  }, [loaded, d, localDate, update]);
 
   async function save() {
     if (!d.progress.trim() && !d.blocker.trim()) {
       setError({ message: "进展与卡点至少填一项" });
       return;
     }
+    if (!d.occurredOn) { setError({ message: "请选择记录日期" }); return; }
     setBusy(true);
     setError(null);
     try {
@@ -73,7 +77,7 @@ export default function QuickLogForm({
           projectId: tasks.find((t) => t.id === d.taskId)?.projectId ?? null,
         },
       });
-      clear({ clientEntryId: crypto.randomUUID(), occurredOn: localDate });
+      clear({ clientEntryId: crypto.randomUUID(), occurredOn: localDate, dateMode: "auto" });
       setSavedAt(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
       onSaved();
     } catch (e) {
@@ -105,7 +109,7 @@ export default function QuickLogForm({
         >
           {state === "submitting" && "提交中…"}
           {state === "failed" && "未保存，内容在本机"}
-          {state === "draft" && (restored ? "已恢复本机草稿" : "草稿已存本机")}
+          {state === "draft" && (persisted ? (restored ? "已恢复本机草稿" : "草稿已存本机") : "内容暂存内存，刷新可能丢失；请保存记录")}
           {state === "saved" && `已保存 ${savedAt}`}
         </span>
       </div>
@@ -133,7 +137,7 @@ export default function QuickLogForm({
           <label className="visually-hidden" htmlFor="log-date">
             日期
           </label>
-          <input id="log-date" type="date" value={d.occurredOn} onChange={(e) => update({ occurredOn: e.target.value })} />
+          <input id="log-date" type="date" required value={d.occurredOn} onChange={(e) => update({ occurredOn: e.target.value, dateMode: "manual" })} />
           <label className="visually-hidden" htmlFor="log-task">
             关联
           </label>
@@ -150,6 +154,7 @@ export default function QuickLogForm({
           </button>
         </div>
       </form>
+      {d.occurredOn && d.occurredOn !== localDate && <p className={styles.muted} role="status">这条记录将记为 {d.occurredOn}，今天是 {localDate}。<button type="button" className={`${styles.btn} ${styles.btnGhost}`} onClick={() => update({ occurredOn: localDate, dateMode: "auto" })}>使用今天</button></p>}
       <p className={styles.composerHint}>
         <span>{linked ? `记在任务「${linked.title}」${linked.projectId ? "及其项目" : ""}下` : "记为日常记录"}</span>
         <span>
@@ -160,7 +165,7 @@ export default function QuickLogForm({
       <h3 className={styles.sectionTitle}>最近记录</h3>
       {recentLogs.length === 0 && <p className={styles.empty}>还没有记录。写一条今天的进展或卡点吧。</p>}
       {recentLogs.length > 0 && (
-        <LogTimeline logs={recentLogs} />
+        <LogTimeline logs={recentLogs} onChanged={onSaved} />
       )}
     </section>
   );

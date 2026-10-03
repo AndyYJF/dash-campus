@@ -15,6 +15,7 @@ export function useDraft<T extends object>(key: string, initial: T) {
   // 读取完成才允许写回：用 state 而不是 ref —— 同一轮 effect 里写回会用初始空值覆盖刚读到的草稿
   // （clientEntryId 随之丢失，重新登录后再提交就成了新记录）
   const [loaded, setLoaded] = useState(false);
+  const [persisted, setPersisted] = useState(false);
 
   // 首次挂载时读取（SSR 期间没有 localStorage）
   useEffect(() => {
@@ -33,23 +34,29 @@ export function useDraft<T extends object>(key: string, initial: T) {
 
   useEffect(() => {
     if (!loaded) return;
+    let saved = false;
     try {
       localStorage.setItem(storageKey, JSON.stringify({ v: value, at: Date.now() }));
+      saved = true;
     } catch {
       // 存储满或被禁用：草稿退化为仅内存
     }
+    let cancelled = false;
+    queueMicrotask(() => { if (!cancelled) setPersisted(saved); });
+    return () => { cancelled = true; };
   }, [storageKey, value, loaded]);
 
-  const update = useCallback((patch: Partial<T>) => setValue((v) => ({ ...v, ...patch })), []);
+  const update = useCallback((patch: Partial<T>) => { setPersisted(false); setValue((v) => ({ ...v, ...patch })); }, []);
 
   const clear = useCallback(
     (next?: Partial<T>) => {
-      localStorage.removeItem(storageKey);
+      try { localStorage.removeItem(storageKey); } catch { /* Saving to server already succeeded. */ }
+      setPersisted(false);
       setRestored(false);
       setValue({ ...initialRef.current, ...next });
     },
     [storageKey],
   );
 
-  return { value, update, clear, restored, loaded };
+  return { value, update, clear, restored, loaded, persisted };
 }

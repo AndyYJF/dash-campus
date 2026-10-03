@@ -8,7 +8,7 @@ import { dueSchema } from "@/contracts/planning";
  */
 
 /** 允许的身份字段（叶子字段白名单；新增字段属后续任务） */
-export const PROFILE_FIELDS = ["education_level", "program", "campus", "grade_year"] as const;
+export const PROFILE_FIELDS = ["education_level", "program", "campus", "grade_year", "study_year"] as const;
 export type ProfileField = (typeof PROFILE_FIELDS)[number];
 
 export const PARTITIONS = ["action", "info", "opportunity", "review", "folded"] as const;

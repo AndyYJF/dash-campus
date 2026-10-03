@@ -46,6 +46,7 @@ export function withReferenceCheck(fn: () => NextResponse): NextResponse {
   try {
     return fn();
   } catch (e) {
+    if (e instanceof HttpError) return errorResponse(e.code, e.message, e.status, e.details);
     if (isForeignKeyViolation(e)) return invalidReference422();
     throw e;
   }

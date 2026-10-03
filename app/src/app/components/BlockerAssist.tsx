@@ -5,6 +5,7 @@ import { api, newIdempotencyKey } from "./api";
 import ErrorNote, { toErrorState } from "./ErrorNote";
 import Icon from "./Icon";
 import ProposalCard from "./ProposalCard";
+import CancelJobButton from "./CancelJobButton";
 import styles from "./dash.module.css";
 import ex from "./explore.module.css";
 import type { ProposalRow } from "@/repositories/proposals";
@@ -25,7 +26,7 @@ type Result = {
   readScope: { logIds: string[]; taskIds: string[]; projectId: string | null };
 };
 
-type Req = { id: string; status: string; result: Result | null; errorMessage: string | null; integrationMode: string | null };
+type Req = { id: string; jobId: string | null; status: string; result: Result | null; errorMessage: string | null; integrationMode: string | null };
 
 export default function BlockerAssist({ log }: { log: { id: string; projectId: string | null; blocker: string } }) {
   const [open, setOpen] = useState(false);
@@ -117,6 +118,8 @@ export default function BlockerAssist({ log }: { log: { id: string; projectId: s
             </button>
           )}
           {running && <p className={styles.muted}>分析中…</p>}
+          {running && req.jobId && <CancelJobButton key={req.jobId} jobId={req.jobId} onChanged={() => load(req.id)} />}
+          {(req?.status === "cancelled" || req?.status === "failed") && <div><p className={styles.muted}>{req.status === "cancelled" ? "分析已取消，记录和任务保持不变。" : "可重新发起分析。"}</p><button className={styles.btn} disabled={busy} onClick={() => start(true)}>重新分析</button></div>}
           {req?.integrationMode === "fixture" && <p className={ex.banner}>示例数据（非真实模型）</p>}
           {req?.status === "failed" && <p className={styles.error}>{req.errorMessage ?? "分析失败"}</p>}
           {res && (

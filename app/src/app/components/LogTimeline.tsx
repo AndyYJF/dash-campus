@@ -1,11 +1,12 @@
 import BlockerAssist from "./BlockerAssist";
 import Icon from "./Icon";
 import styles from "./dash.module.css";
+import LogEdit from "./LogEdit";
 
 type LogLite = { id: string; occurredOn: string; progress: string; blocker: string; projectId: string | null };
 
 /** 记录时间线：日期、进展、卡点（带"分析这个卡点"入口）。今天页与项目页共用。 */
-export default function LogTimeline({ logs }: { logs: LogLite[] }) {
+export default function LogTimeline({ logs,onChanged }: { logs: LogLite[];onChanged?:()=>void }) {
   return (
     <div className={styles.timeline}>
       {logs.map((log) => (
@@ -19,6 +20,7 @@ export default function LogTimeline({ logs }: { logs: LogLite[] }) {
             </div>
           )}
           <BlockerAssist log={log} />
+          {onChanged&&<LogEdit id={log.id} onChanged={onChanged}/>}
         </div>
       ))}
     </div>

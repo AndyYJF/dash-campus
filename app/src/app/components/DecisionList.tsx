@@ -24,7 +24,7 @@ export default function DecisionList({ summary }: { summary: TodaySummary }) {
       ))}
       {summary.moreDecisionCount > 0 && (
         <p className={styles.muted}>
-          还有 {summary.moreDecisionCount} 项，<Link href="/reviews">去回顾页处理</Link>。
+          还有 {summary.moreDecisionCount} 项；通知去<Link href="/inbox">收件箱</Link>，计划提案去<Link href="/reviews">回顾页</Link>处理。
         </p>
       )}
     </section>

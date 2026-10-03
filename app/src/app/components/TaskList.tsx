@@ -106,6 +106,7 @@ export function TaskMeta({ task, overdue = false }: { task: TaskRow; overdue?: b
           安排在 {new Date(task.scheduledStart).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
         </span>
       )}
+      {task.plannedWeek && <span className={styles.metaItem}>计划周：{task.plannedWeek.localMonday}</span>}
       {task.projectId && (
         <span className={styles.metaItem}>
           <Icon name="folder" size={14} />

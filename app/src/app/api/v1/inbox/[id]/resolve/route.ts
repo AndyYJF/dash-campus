@@ -19,6 +19,8 @@ const resolveSchema = z.discriminatedUnion("scope", [
   z.object({
     scope: z.literal("this_revision"),
     partition: z.enum(PARTITIONS),
+    revisionId: z.string().uuid(),
+    expectedVersion: z.number().int().min(1),
   }),
   z.object({
     scope: z.literal("profile"),
@@ -50,7 +52,8 @@ export async function POST(request: NextRequest, ctx: Params) {
 
   switch (parsed.data.scope) {
     case "this_revision": {
-      const r = resolveThisRevision(id, parsed.data.partition);
+      const r = resolveThisRevision(id, parsed.data.partition, parsed.data.revisionId, parsed.data.expectedVersion);
+      if (r === 'conflict') return errorResponse('CONFLICT', '通知已更新，请查看新版本后再纠正', 409);
       if (r === "not_found") return notFound404("通知或当前修订不存在");
       return NextResponse.json({ resolved: "this_revision" });
     }

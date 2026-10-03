@@ -3,6 +3,7 @@ import type { ModelProvider, ModelRequest, ModelResult } from "@/contracts/model
 import type { EvidenceDocument, SearchHit, SearchProvider } from "@/contracts/search";
 import { MODEL_WORKFLOW_CANDIDATES, MODEL_WORKFLOW_PLAN } from "@/contracts/exploration";
 import { MODEL_WORKFLOW_BLOCKER, MODEL_WORKFLOW_REVIEW } from "@/contracts/review";
+import { NOTICE_EXTRACTION_JOB_TYPE } from "@/contracts/notice-extraction";
 import { FakeModelProvider } from "@/integrations/fake-model-provider";
 
 /**
@@ -54,6 +55,11 @@ type FixtureEvidence = { id: string; text: string };
 
 /** 按证据文本构造候选：只引用真实存在的片段；GPU/受限数据标 unknown（F7） */
 export function fixtureModelResponder(req: ModelRequest): ModelResult {
+  if (req.workflow === NOTICE_EXTRACTION_JOB_TYPE) {
+    const {text} = req.context as {text: string};
+    const quote = text.includes("本科生") ? "本科生" : text.includes("研究生") ? "研究生" : null;
+    return {ok: true, validatedResult: {structured: quote ? {noticeType: "（示例）通知", condition: {kind: "leaf", field: "education_level", op: "eq", value: quote === "本科生" ? "本科" : "研究生", quote}, action: {actionKey: "primary", title: "（示例）核对通知要求", description: "合成提取结果，仅用于本地流程验证。", required: false}} : null, actionQuote: quote ? text.slice(0, Math.min(text.length, 200)) : null, dueQuote: null, unknownReason: "（示例）请人工核对，不能据此替代真实提取"}};
+  }
   if (req.workflow === MODEL_WORKFLOW_PLAN) {
     const ctx = req.context as { question?: string };
     return { ok: true, validatedResult: { queries: [String(ctx.question ?? "实践").slice(0, 200)] } };

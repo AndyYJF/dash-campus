@@ -9,6 +9,7 @@ import ProposalCard from "./ProposalCard";
 import { useDraft } from "./useDraft";
 import { REVIEW_STATUS } from "./ReviewsView";
 import BackLink from "./BackLink";
+import CancelJobButton from "./CancelJobButton";
 import styles from "./dash.module.css";
 import ex from "./explore.module.css";
 import type { ProposalRow } from "@/repositories/proposals";
@@ -24,6 +25,7 @@ type Review = {
   id: string;
   localMonday: string;
   status: string;
+  jobId: string | null;
   facts: WeekFacts | null;
   aiDraft: {
     factNotes: Array<{ text: string; evidenceIds: string[] }>;
@@ -46,6 +48,7 @@ const SKIP: Record<string, string> = {
   budget: "今日 AI 额度已用完，只汇总了事实。",
   no_records: "这一周没有记录，依据不足，没有生成推测或建议。",
   error: "AI 部分生成失败，事实部分不受影响。",
+  user_cancelled: "生成已取消，没有发布 AI 推测或建议。本人修订仍可保存。",
 };
 
 export default function ReviewDetailView() {
@@ -130,6 +133,7 @@ export default function ReviewDetailView() {
         {review.generatedAt && ` · 生成于 ${new Date(review.generatedAt).toLocaleString("zh-CN")}`}
       </p>
       {review.integrationMode === "fixture" && <p className={ex.banner}>AI 部分是示例数据（非真实模型）。</p>}
+      {running && review.jobId && <CancelJobButton key={review.jobId} jobId={review.jobId} onChanged={refresh} />}
 
       <div className={styles.columns}>
         <div>

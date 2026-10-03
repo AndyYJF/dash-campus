@@ -43,6 +43,7 @@ export const explorationRequestSchema = z.object({
   /** 当前基础、可用时间等背景（主人自填，可空） */
   background: z.string().max(2000).default(""),
   materials: z.array(materialSchema).max(6).default([]),
+  resourceIds: z.array(z.string().uuid()).max(6).optional(),
 });
 export type ExplorationRequest = z.infer<typeof explorationRequestSchema>;
 

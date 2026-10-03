@@ -41,6 +41,8 @@ export type TranslateContext = {
   groupTitle: string;
   /** 主人主动重跑：跳过拒绝冷却 */
   ignoreCooldown?: boolean;
+  /** Versions captured before the model call; edits during a call cannot become a fresh read set. */
+  inputVersions?: Record<string,number>;
 };
 
 export type TranslateResult = { created: ProposalRow[]; dropped: string[] };
@@ -85,7 +87,7 @@ function toOperation(op: ModelOperation, ctx: TranslateContext): ProposalOperati
       const t = getTask(op.taskId);
       if (!t || t.archivedAt) return `任务 ${op.taskId} 不存在`;
       if (t.status === op.status) return `任务「${t.title}」已是 ${op.status}，无需变更`;
-      return { kind: "set_task_status", taskId: t.id, expectedVersion: t.version, status: op.status };
+      return { kind: "set_task_status", taskId: t.id, expectedVersion: ctx.inputVersions?.[`task:${t.id}`] ?? t.version, status: op.status };
     }
     case "reschedule_task": {
       if (!ctx.taskIds.has(op.taskId)) return `引用了不存在或范围外的任务 ${op.taskId}`;
@@ -99,7 +101,7 @@ function toOperation(op: ModelOperation, ctx: TranslateContext): ProposalOperati
       return {
         kind: "reschedule_task",
         taskId: t.id,
-        expectedVersion: t.version,
+        expectedVersion: ctx.inputVersions?.[`task:${t.id}`] ?? t.version,
         scheduledStart: op.scheduledStart,
         scheduledEnd: op.scheduledEnd,
       };
@@ -134,7 +136,13 @@ export function translateProposals(proposals: ModelProposal[], ctx: TranslateCon
       dropped.push(`建议「${p.reason.slice(0, 40)}」：${problem}，已丢弃`);
       continue;
     }
-    const fp = fingerprint(ctx.projectId, p.operations, p.evidenceIds);
+    const versions = Object.fromEntries(Object.entries(ctx.inputVersions ?? {}).filter(([ref]) => p.evidenceIds.includes(ref.split(":")[1]!)));
+    // Keep initial-record fingerprints compatible with existing rejection cooldowns.
+    // Only a revised log/artifact supplies new evidence; task changes remain read-set fences.
+    const fp = fingerprint(ctx.projectId, p.operations, p.evidenceIds.map((id) => {
+      const revision = Object.entries(versions).find(([ref]) => ref === `log:${id}` || ref === `artifact:${id}`);
+      return revision && revision[1] > 1 ? `${revision[0]}:v${revision[1]}` : id;
+    }));
     if (!ctx.ignoreCooldown && rejectedRecently(fp, since)) {
       dropped.push(`建议「${p.reason.slice(0, 40)}」与 ${REJECTION_COOLDOWN_DAYS} 天内被拒绝的建议依据相同，未重复提出`);
       continue;
@@ -143,7 +151,7 @@ export function translateProposals(proposals: ModelProposal[], ctx: TranslateCon
       dropped.push(`建议「${p.reason.slice(0, 40)}」已有同样依据的待处理提案`);
       continue;
     }
-    const inputVersions: Record<string, number> = {};
+    const inputVersions: Record<string, number> = { ...versions };
     for (const op of ops) {
       if (op.kind !== "create_task") inputVersions[`task:${op.taskId}`] = op.expectedVersion;
     }

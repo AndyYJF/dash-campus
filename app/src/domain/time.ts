@@ -64,7 +64,7 @@ export function resolveWallTime(
     if (tzOffsetMs(new Date(mid), tz) === after) hi = mid;
     else lo = mid;
   }
-  return { instant: new Date(hi), adjustment: "gap_shifted" };
+  return { instant: new Date(Math.floor(hi / 1000) * 1000), adjustment: "gap_shifted" };
 }
 
 /** 当地墙钟时间 → UTC instant；DST 规则见 resolveWallTime */

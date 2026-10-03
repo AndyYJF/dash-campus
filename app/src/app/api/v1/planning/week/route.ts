@@ -7,6 +7,7 @@ import { computeWorkload, weekRange } from "@/domain/workload";
 import { instanceTimezone, localDateInTz, mondayOf } from "@/domain/time";
 import { getFocus } from "@/repositories/focus";
 import { listTasks } from "@/repositories/planning";
+import { taskScheduleIssues } from "@/domain/schedule";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,8 @@ export function GET(request: NextRequest) {
   const asOf = new Date();
   const localDate = q.data.date ?? localDateInTz(asOf, tz);
   const localMonday = mondayOf(localDate);
-  const tasks = listTasks().filter((t) => t.plannedWeek?.localMonday === localMonday);
+  const allTasks = listTasks();
+  const tasks = allTasks.filter((t) => t.plannedWeek?.localMonday === localMonday);
   return NextResponse.json({
     asOf: asOf.toISOString(),
     timezone: tz,
@@ -35,5 +37,6 @@ export function GET(request: NextRequest) {
     focus: getFocus(localMonday, tz),
     workload: computeWorkload(listTasks(), localMonday, asOf),
     tasks,
+    conflicts: tasks.flatMap((t) => taskScheduleIssues(t, allTasks).map((issue) => ({ taskId: t.id, title: t.title, ...issue, overrideReason: t.planningOverrideReason ?? null }))),
   });
 }

@@ -7,13 +7,15 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "migrate": "tsx --env-file-if-exists=.env src/scripts/migrate.ts",
     "worker": "tsx --env-file-if-exists=.env src/worker/index.ts",
     "test": "tsx --test \"test/**/*.test.ts\"",
     "backup": "tsx --env-file-if-exists=.env src/scripts/backup.ts",
     "restore": "tsx --env-file-if-exists=.env src/scripts/restore.ts",
-    "resume-after-restore": "tsx --env-file-if-exists=.env src/scripts/resume.ts"
+    "resume-after-restore": "tsx --env-file-if-exists=.env src/scripts/resume.ts",
+    "legacy:snapshot": "tsx src/scripts/legacy-snapshot.ts",
+    "legacy:campus-bridge": "tsx --env-file-if-exists=.env.campus-bridge src/scripts/campus-bridge.ts"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

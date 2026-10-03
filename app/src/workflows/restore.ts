@@ -70,7 +70,7 @@ export function restoreStatus(nowIso = new Date().toISOString()): RestoreStatus 
   if (st.restoredHold) {
     for (const t of listTasks()) {
       if (t.archivedAt || t.status === "done" || t.status === "cancelled") continue;
-      const trigger = reminderTriggerUtc(t.due);
+      const trigger = reminderTriggerUtc(t.due, t.reminderLeadMinutes);
       if (trigger && trigger <= nowIso) pastReminders.push({ taskId: t.id, title: t.title, triggerAt: trigger });
     }
   }
@@ -126,6 +126,8 @@ export function resumeAfterRestore(now = new Date()): ResumeResult {
       `UPDATE reviews SET status = 'cancelled', error_code = 'RESTORED', error_message = '从备份恢复后取消，可重新生成', updated_at = ?
        WHERE status IN ('queued', 'generating')`,
     ).run(nowIso);
+
+    db.prepare("UPDATE notice_extractions SET status='failed',error='RESTORED：从备份恢复后取消，可在详情重新提取',updated_at=? WHERE status IN ('queued','running')").run(nowIso);
     db.prepare(
       `UPDATE assistant_requests SET status = 'cancelled', error_code = 'RESTORED', error_message = '从备份恢复后取消，可重新分析', updated_at = ?
        WHERE status IN ('queued', 'running')`,
@@ -136,7 +138,7 @@ export function resumeAfterRestore(now = new Date()): ResumeResult {
     let skippedPastReminders = 0;
     for (const t of listTasks()) {
       if (t.archivedAt || t.status === "done" || t.status === "cancelled") continue;
-      const trigger = reminderTriggerUtc(t.due);
+      const trigger = reminderTriggerUtc(t.due, t.reminderLeadMinutes);
       if (!trigger) continue;
       if (trigger <= nowIso) {
         skippedPastReminders++;
@@ -163,6 +165,7 @@ export function resumeAfterRestore(now = new Date()): ResumeResult {
     }
     // 定期周复盘：删掉调度状态，worker 下一趟按"现在之后"重新计算（configChanged 分支不入队）
     db.prepare(`DELETE FROM settings WHERE key = 'weeklyReviewNextRun'`).run();
+    db.prepare("DELETE FROM settings WHERE key IN ('digestSchedule:daily','digestSchedule:weekly')").run();
 
     db.prepare(`UPDATE instance_state SET restored_hold = 0, resumed_at = ? WHERE id = 1`).run(nowIso);
     return { ok: true, cancelledJobs, cancelledDeliveries, rebuiltReminders, skippedPastReminders, topicsRescheduled: topics.length };

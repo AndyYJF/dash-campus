@@ -10,6 +10,7 @@ import {
   listTaskLinks,
 } from "@/repositories/inbox";
 import { getTask } from "@/repositories/planning";
+import { extractionFor } from "@/workflows/notice-extraction";
 import { sourceChangeDiff } from "@/workflows/inbox";
 
 export const dynamic = "force-dynamic";
@@ -47,6 +48,7 @@ export async function GET(request: NextRequest, ctx: Params) {
         }
       : null,
     decision,
+    extraction: current ? extractionFor(current.id) : null,
     revisions,
     links: listTaskLinks(id).map((l) => ({ ...l, task: getTask(l.taskId) })),
     sourceChanges: sourceChangeDiff(id),

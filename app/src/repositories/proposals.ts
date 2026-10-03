@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { getDb } from "@/repositories/db";
+import { proposalProblem, type ProposalProblem } from "./proposal-validity";
 
 /**
  * 提案 repository（计划 v1.2 第 6 节）。
@@ -29,6 +30,7 @@ export type ProposalOperationInput =
     }
   | {
       kind: "reschedule_task";
+      overrideReason?: string;
       taskId: string;
       expectedVersion: number;
       scheduledStart: string | null;
@@ -62,6 +64,8 @@ export type ProposalRow = {
   decidedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** Derived read-only state; expired snoozes are checked before returning to the owner. */
+  validation?: ProposalProblem | null;
 };
 
 export function createProposal(args: {
@@ -148,7 +152,9 @@ export function listProposals(
   const rows = db
     .prepare(`SELECT * FROM proposals ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC`)
     .all(...vals) as Array<Record<string, unknown>>;
-  return rows.map(mapProposal);
+  const asOf = new Date();
+  return rows.map(mapProposal).map((p) => p.status === "pending" && (!p.snoozeUntil || new Date(p.snoozeUntil) <= asOf)
+    ? { ...p, validation: proposalProblem(p) } : p);
 }
 
 /**

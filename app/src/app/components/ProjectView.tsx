@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, newIdempotencyKey } from "./api";
-import TaskForm from "./TaskForm";
+import TaskEditor from "./TaskEditor";
+import ManagedTasks from "./ManagedTasks";
+import PlanningEntities from "./PlanningEntities";
 import ExplorationConclusion from "./ExplorationConclusion";
 import StageReport from "./StageReport";
 import BackLink from "./BackLink";
 import LogTimeline from "./LogTimeline";
-import { TaskMeta } from "./TaskList";
+import ArtifactEdit from "./ArtifactEdit";
 import styles from "./dash.module.css";
 import type { TaskRow, ProjectRow } from "@/repositories/planning";
 import type { DailyLogRow, ArtifactRow } from "@/repositories/logs";
@@ -15,6 +17,8 @@ import type { DailyLogRow, ArtifactRow } from "@/repositories/logs";
 /** 项目详情：信息 + 任务 + 记录 + 成果（成果只支持文本与链接，URL 限 http/https） */
 export default function ProjectView({ projectId }: { projectId: string }) {
   const [project, setProject] = useState<ProjectRow | null>(null);
+  const [timezone, setTimezone] = useState("Asia/Shanghai");
+  const [currentMonday, setCurrentMonday] = useState("");
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [logs, setLogs] = useState<DailyLogRow[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactRow[]>([]);
@@ -44,6 +48,7 @@ export default function ProjectView({ projectId }: { projectId: string }) {
   }, [projectId]);
 
   useEffect(refresh, [refresh]);
+  useEffect(() => { api<{timezone: string; week: {localMonday: string}}>("/api/v1/planning/week").then((p) => { setTimezone(p.timezone); setCurrentMonday(p.week.localMonday); }).catch((e) => setError(e.message)); }, []);
 
   if (error) return <p className={styles.error} role="alert">{error}</p>;
   if (!project) return <p className={styles.muted}>加载中…</p>;
@@ -95,6 +100,7 @@ export default function ProjectView({ projectId }: { projectId: string }) {
         </div>
       </div>
 
+      <PlanningEntities projectId={projectId} onChanged={refresh} />
       <div className={styles.columns}>
         <div>
           <section className={styles.card}>
@@ -116,29 +122,17 @@ export default function ProjectView({ projectId }: { projectId: string }) {
           <section className={styles.card}>
             <h2>任务</h2>
             {tasks.length === 0 && <p className={styles.empty}>还没有任务。</p>}
-            {tasks.map((t) => (
-              <div key={t.id} className={styles.taskRow}>
-                <div className={styles.taskBody}>
-                  <span className={styles.taskTitle}>
-                    {t.title}{" "}
-                    <span className={`${styles.badge} ${t.status === "done" ? styles.badgeOk : t.status === "blocked" ? styles.badgeHigh : t.status === "doing" ? styles.badgeAccent : ""}`}>
-                      {TASK_STATUS[t.status]}
-                    </span>
-                  </span>
-                  <TaskMeta task={t} />
-                </div>
-              </div>
-            ))}
+            <ManagedTasks tasks={tasks} timezone={timezone} onChanged={refresh} />
             <details className={styles.addTask}>
               <summary>添加任务</summary>
-              <TaskForm projectId={projectId} onCreated={refresh} />
+              <TaskEditor key={currentMonday} projectId={projectId} plannedMonday={currentMonday} timezone={timezone} onSaved={refresh} />
             </details>
           </section>
 
           <section className={styles.card}>
             <h2>相关记录</h2>
             {logs.length === 0 && <p className={styles.empty}>还没有记录。可以在今天页写一条并关联到这个项目的任务。</p>}
-            {logs.length > 0 && <LogTimeline logs={logs} />}
+            {logs.length > 0 && <LogTimeline logs={logs} onChanged={refresh} />}
           </section>
         </div>
 
@@ -148,6 +142,7 @@ export default function ProjectView({ projectId }: { projectId: string }) {
             {artifacts.length === 0 && <p className={styles.empty}>还没有成果。</p>}
             {artifacts.map((a) => (
               <div key={a.id} className={styles.logItem}>
+                <ArtifactEdit artifact={a} onChanged={refresh}/>
                 <span className={styles.badge}>{a.kind === "link" ? "链接" : "文本"}</span> <strong>{a.title}</strong>
                 {a.url && (
                   <div>
@@ -214,4 +209,3 @@ export default function ProjectView({ projectId }: { projectId: string }) {
 }
 
 const PROJECT_STATUS: Record<ProjectRow["status"], string> = { active: "进行中", paused: "已暂停", completed: "已结束" };
-const TASK_STATUS: Record<TaskRow["status"], string> = { todo: "待办", doing: "进行中", blocked: "受阻", done: "已完成", cancelled: "已取消" };

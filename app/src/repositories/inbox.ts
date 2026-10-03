@@ -11,6 +11,8 @@ export type InboxSourceRow = {
   id: string;
   title: string;
   createdAt: string;
+  enabled: boolean;
+  version: number;
 };
 
 export type InboxRevisionRow = {
@@ -23,6 +25,8 @@ export type InboxRevisionRow = {
   sourceUrl: string | null;
   structured: NoticeStructured | null;
   createdAt: string;
+  legacyTitle: string | null;
+  legacyStatus: "open" | "completed" | "cancelled" | null;
 };
 
 export type InboxDecisionRow = {
@@ -59,29 +63,30 @@ function now(): string {
 export function listSources(): InboxSourceRow[] {
   const db = getDb();
   return (
-    db.prepare(`SELECT id, title, created_at FROM inbox_sources ORDER BY created_at`).all() as Array<
+    db.prepare(`SELECT id, title, created_at,enabled,version FROM inbox_sources ORDER BY created_at`).all() as Array<
       Record<string, unknown>
     >
   ).map((r) => ({
     id: r.id as string,
     title: r.title as string,
     createdAt: r.created_at as string,
+    enabled: r.enabled === 1, version: r.version as number,
   }));
 }
 
 export function getSource(id: string): InboxSourceRow | null {
   const db = getDb();
   const r = db
-    .prepare(`SELECT id, title, created_at FROM inbox_sources WHERE id = ?`)
+    .prepare(`SELECT id, title, created_at,enabled,version FROM inbox_sources WHERE id = ?`)
     .get(id) as Record<string, unknown> | undefined;
-  return r ? { id: r.id as string, title: r.title as string, createdAt: r.created_at as string } : null;
+  return r ? { id: r.id as string, title: r.title as string, createdAt: r.created_at as string, enabled: r.enabled === 1, version: r.version as number } : null;
 }
 
 export function sourceTokenMatches(id: string, token: string): boolean {
   const db = getDb();
   const digest = crypto.createHash("sha256").update(token).digest("hex");
   const r = db
-    .prepare(`SELECT 1 FROM inbox_sources WHERE id = ? AND token_digest = ?`)
+    .prepare(`SELECT 1 FROM inbox_sources WHERE id = ? AND enabled = 1 AND token_digest = ?`)
     .get(id, digest);
   return Boolean(r);
 }
@@ -126,10 +131,27 @@ export function listMessages(filter: { status?: string } = {}): InboxMessageRow[
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT * FROM inbox_messages ${filter.status ? "WHERE status = ?" : ""} ORDER BY updated_at DESC LIMIT 200`,
+      `SELECT * FROM inbox_messages ${filter.status ? "WHERE status = ?" : ""} ORDER BY updated_at DESC,id DESC`,
     )
     .all(...(filter.status ? [filter.status] : [])) as Array<Record<string, unknown>>;
   return rows.map(mapMessage);
+}
+
+/** Public lists are bounded; internal identity reevaluation must cover every current revision. */
+export function listMessagePage(filter: { status?: string; partition?: string; cursor?: { updatedAt: string; id: string }; limit?: number } = {}) {
+  const db = getDb(), limit = Math.min(200, Math.max(1, filter.limit ?? 100));
+  const conditions: string[] = [], values: string[] = [];
+  if (filter.status) { conditions.push("m.status=?"); values.push(filter.status); }
+  if (filter.partition) { conditions.push("d.partition=?"); values.push(filter.partition); }
+  const join = "FROM inbox_messages m LEFT JOIN inbox_decisions d ON d.revision_id=m.current_revision_id";
+  const where = () => conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  return db.transaction(() => {
+    const total = (db.prepare(`SELECT COUNT(*) AS n ${join} ${where()}`).get(...values) as { n: number }).n;
+    if (filter.cursor) { conditions.push("(m.updated_at<? OR (m.updated_at=? AND m.id<?))"); values.push(filter.cursor.updatedAt, filter.cursor.updatedAt, filter.cursor.id); }
+    const rows = db.prepare(`SELECT m.* ${join} ${where()} ORDER BY m.updated_at DESC,m.id DESC LIMIT ?`).all(...values, limit + 1) as Array<Record<string, unknown>>;
+    const messages = rows.slice(0, limit).map(mapMessage), last = messages.at(-1);
+    return { messages, total, next: rows.length > limit && last ? { updatedAt: last.updatedAt, id: last.id } : null };
+  })();
 }
 
 function mapMessage(r: Record<string, unknown>): InboxMessageRow {
@@ -222,6 +244,9 @@ export function createRevision(input: {
 }
 
 function mapRevision(r: Record<string, unknown>): InboxRevisionRow {
+  const text = r.text as string;
+  const bridged = r.extraction_text !== null && r.extraction_text !== undefined && text.startsWith("【旧校园插件桥接】");
+  const upstream = bridged ? /^上游状态：(open|completed|cancelled)$/m.exec(text)?.[1] : null;
   return {
     id: r.id as string,
     messageId: r.message_id as string,
@@ -234,6 +259,8 @@ function mapRevision(r: Record<string, unknown>): InboxRevisionRow {
       ? (JSON.parse(r.structured_json as string) as NoticeStructured)
       : null,
     createdAt: r.created_at as string,
+    legacyTitle: bridged ? /^上游标题：(.*)$/m.exec(text)?.[1]?.slice(0, 200) ?? null : null,
+    legacyStatus: upstream === "open" || upstream === "completed" || upstream === "cancelled" ? upstream : null,
   };
 }
 
@@ -251,7 +278,7 @@ export function listDecisions(filter: { partition?: string } = {}): InboxDecisio
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT * FROM inbox_decisions ${filter.partition ? "WHERE partition = ?" : ""} ORDER BY updated_at DESC LIMIT 200`,
+      `SELECT * FROM inbox_decisions ${filter.partition ? "WHERE partition = ?" : ""} ORDER BY updated_at DESC,id DESC`,
     )
     .all(...(filter.partition ? [filter.partition] : [])) as Array<Record<string, unknown>>;
   return rows.map(mapDecision);

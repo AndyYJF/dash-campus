@@ -11,14 +11,14 @@ import { wallTimeToUtc } from "@/domain/time";
  * 触发点已过去的不再建 job，进入"今日待处理"（由 notifications 查询呈现）。
  */
 
-export function reminderTriggerUtc(due: Due): string | null {
+export function reminderTriggerUtc(due: Due, leadMinutes?: number | null): string | null {
   if (due.kind === "none") return null;
   if (due.kind === "date") {
-    return wallTimeToUtc(due.localDate, DATE_DUE_REMINDER_LOCAL_TIME, due.timezone).toISOString();
+    return new Date(wallTimeToUtc(due.localDate, DATE_DUE_REMINDER_LOCAL_TIME, due.timezone).getTime() - (leadMinutes ?? 0) * 60_000).toISOString();
   }
   const at = new Date(due.at);
   if (Number.isNaN(at.getTime())) return null;
-  return new Date(at.getTime() - INSTANT_DUE_LEAD_MINUTES * 60_000).toISOString();
+  return new Date(at.getTime() - (leadMinutes ?? INSTANT_DUE_LEAD_MINUTES) * 60_000).toISOString();
 }
 
 /** 任务当前是否还可能需要提醒：未归档且未进入终态 */

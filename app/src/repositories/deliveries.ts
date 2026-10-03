@@ -31,7 +31,7 @@ export type DeliveryRow = {
     taskTitle: string;
     dueLabel: string;
     generatedAt: string;
-    kind: "reminder" | "test";
+    kind: "reminder" | "test" | "daily" | "weekly" | "system";
   };
   status: DeliveryStatus;
   attempt: number;

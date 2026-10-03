@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll campus notices every ten minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=10min
+AccuracySec=30s
+Unit=dash-campus-campus-bridge.service
+
+[Install]
+WantedBy=timers.target

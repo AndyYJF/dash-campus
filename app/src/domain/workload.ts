@@ -1,9 +1,9 @@
+import { occurrences } from './calendar-occurrences';
 import crypto from "node:crypto";
 import { getDb } from "@/repositories/db";
 import {
   addDays,
   instanceTimezone,
-  localDateInTz,
   mondayOf,
   wallTimeToUtc,
 } from "@/domain/time";
@@ -20,6 +20,7 @@ import type { TaskRow } from "@/repositories/planning";
 export const BUFFER_PERCENT = 20;
 
 export type AvailabilityRow = {
+  version?: number;
   id: string;
   title: string;
   weekday: number;
@@ -31,6 +32,7 @@ export type AvailabilityRow = {
 };
 
 export type FixedEventRow = {
+  version?: number;
   id: string;
   title: string;
   weekday: number;
@@ -86,7 +88,7 @@ export function computeWorkload(
     futureCapacityMinutes: hasAnyTimeData
       ? netAvailableMinutes(localMonday, asOf, true, blocks, events)
       : null,
-    bufferPercent: BUFFER_PERCENT,
+    bufferPercent: bufferPercent(),
     estimateMode: "full_estimate_for_unfinished",
     hasAnyTimeData,
   };
@@ -94,85 +96,23 @@ export function computeWorkload(
 
 /** 净可用分钟：可用窗口并集 − 固定事件，预留 bufferPercent%；futureOnly 只算当前时刻之后的部分 */
 function netAvailableMinutes(
-  localMonday: string,
-  asOf: Date,
-  futureOnly: boolean,
-  blocks: AvailabilityRow[],
-  events: FixedEventRow[],
-): number | null {
+  localMonday: string, asOf: Date, futureOnly: boolean,
+  blocks: AvailabilityRow[], events: FixedEventRow[],
+): number {
   const tz = instanceTimezone();
-  const todayLocal = localDateInTz(asOf, tz);
-  let total = 0;
-
-  for (let i = 0; i < 7; i++) {
-    const date = addDays(localMonday, i);
-    const dow = ((new Date(`${date}T00:00:00Z`).getUTCDay() + 6) % 7) + 1; // 周一=1
-
-    // 当日可用窗口（合并并集）
-    const dayWindows: Array<[number, number]> = blocks
-      .filter((b) => b.weekday === dow && inValidRange(date, b.validFrom, b.validUntil))
-      .map((b) => [toMinutes(b.localStart), toMinutes(b.localEnd)] as [number, number])
-      .sort((a, b) => a[0] - b[0]);
-    const merged = mergeWindows(dayWindows);
-
-    // 当日固定事件占用（合并并集，重叠事件只扣一次）
-    const busy = mergeWindows(
-      events
-        .filter(
-          (e) =>
-            e.weekday === dow &&
-            inValidRange(date, e.validFrom, e.validUntil) &&
-            (e.eventDate === null || e.eventDate === date),
-        )
-        .map((e) => [toMinutes(e.localStart), toMinutes(e.localEnd)] as [number, number])
-        .sort((a, b) => a[0] - b[0]),
-    );
-
-    for (const [s, e] of merged) {
-      let start = s;
-      const end = e;
-      if (futureOnly) {
-        if (date < todayLocal) continue; // 过去的空闲不再利用
-        if (date === todayLocal) {
-          const nowMin = minutesOfInstantInTz(asOf, tz);
-          start = Math.max(start, nowMin);
-          if (start >= end) continue;
-        }
-      }
-      let minutes = end - start;
-      for (const [bs, be] of busy) {
-        const overlap = Math.max(0, Math.min(end, be) - Math.max(start, bs));
-        minutes -= overlap;
-      }
-      total += Math.max(0, minutes);
-    }
+  const first = wallTimeToUtc(localMonday, '00:00', tz).getTime();
+  const last = wallTimeToUtc(addDays(localMonday, 7), '00:00', tz).getTime();
+  const windows = mergeWindows(blocks.flatMap(b => occurrences(b, first, last)).sort((a,b) => a[0]-b[0]));
+  const busy = mergeWindows(events.flatMap(e => occurrences(e, first, last)).sort((a,b) => a[0]-b[0]));
+  let milliseconds = 0;
+  for (const [s,e] of windows) {
+    const start = Math.max(s,first,futureOnly ? asOf.getTime() : first), end = Math.min(e,last);
+    if (end <= start) continue;
+    let free = end-start;
+    for (const [bs,be] of busy) free -= Math.max(0,Math.min(end,be)-Math.max(start,bs));
+    milliseconds += Math.max(0,free);
   }
-
-  return Math.floor(total * (1 - BUFFER_PERCENT / 100));
-}
-
-function minutesOfInstantInTz(instant: Date, tz: string): number {
-  const dtf = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  const parts = dtf.formatToParts(instant);
-  const h = Number(parts.find((p) => p.type === "hour")!.value) % 24;
-  const m = Number(parts.find((p) => p.type === "minute")!.value);
-  return h * 60 + m;
-}
-
-function toMinutes(hhmm: string): number {
-  const [h, m] = hhmm.split(":").map(Number);
-  return h * 60 + m;
-}
-
-function inValidRange(date: string, from: string | null, until: string | null): boolean {
-  if (from && date < from) return false;
-  if (until && date > until) return false;
-  return true;
+  return Math.floor(milliseconds/60000*(1-bufferPercent()/100));
 }
 
 /** 有效期 [from, until] 与 [first, last] 是否有交集（null 表示不限） */
@@ -213,6 +153,7 @@ export function listFixedEvents(): FixedEventRow[] {
 
 function mapAvailability(r: Record<string, unknown>): AvailabilityRow {
   return {
+    version: Number(r.version ?? 1),
     id: r.id as string,
     title: r.title as string,
     weekday: r.weekday as number,
@@ -226,6 +167,7 @@ function mapAvailability(r: Record<string, unknown>): AvailabilityRow {
 
 function mapFixedEvent(r: Record<string, unknown>): FixedEventRow {
   return {
+    version: Number(r.version ?? 1),
     id: r.id as string,
     title: r.title as string,
     weekday: r.weekday as number,
@@ -244,3 +186,4 @@ export function weekRange(localMonday: string): { localMonday: string; endsAt: s
 
 export { mondayOf, wallTimeToUtc };
 export const newId = () => crypto.randomUUID();
+export function bufferPercent(): number { return (getDb().prepare('SELECT buffer_percent FROM planning_state WHERE id=1').get() as {buffer_percent:number}).buffer_percent; }

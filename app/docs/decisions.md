@@ -82,7 +82,7 @@
 - 预算只做次数：每日模型调用、每日搜索调用（实例时区自然日），默认 40/30，可在设置改；不估算金额。结构修复按实际请求数计入。达到上限：探索/卡点 429 BUDGET_EXCEEDED，复盘只出事实；截止提醒不受影响。`scheduledEnabled=false` 时定期探索与定期复盘只推进时间不入队。
 - 定期周复盘：设置里开启并选每周几/时间，到点生成"上周"复盘；下次时间存 settings（`weeklyReviewNextRun`），错过多个周期只生成一次。
 - 真实联调发现模型会把 status 写成 `in_progress` 等别名，导致整份输出 SCHEMA_INVALID；status 改为先归一化别名（含中文）再校验，并在指令里写明枚举。
-- 提案表增加 source_kind/source_id/project_id/version/rejection_reason；reject/snooze 接受可选 expectedVersion；暂缓默认到实例时区次日 09:00。
+- 提案表增加 source_kind/source_id/project_id/version/rejection_reason；reject 接受可选 expectedVersion，snooze API 必须带 expectedVersion。暂缓默认由服务端计算实例时区次日 09:00；自定义时间必须在未来。期满显示前使用与 apply 相同的只读校验，检查任务读集与操作版本、计划 revision、项目/目标是否归档和完整排程。失效提案在回顾中保留理由并禁用应用，不再占首页待决策，不自动改写或拒绝。
 - 阶段报告（Markdown 导出）按计划属于 T7 导出，本轮未做。
 
 ## 2026-09-29 T7
@@ -159,3 +159,10 @@
 - "写记录"改成一个整体的输入框（进展、卡点、底部工具条放日期/关联/保存）。控件的 id、标签、状态文字和 Ctrl+Enter 都没变，草稿与幂等逻辑没有动。
 - 时长的大字写法抽成 `Duration`（数字大、单位小）；`formatMinutes` 保留给句子和 aria 文本。
 - 复选框和下拉箭头改为全局自绘（`:where()`，不增加优先级）：系统默认外观在两种主题下和新风格不搭。
+
+
+## 2026-10-03 原规范补齐（schema16）
+
+在线日志/成果均按版本保存历史；resources及其历史属于正式业务导出白名单。探索采用复制原文+不可变资源版本/hash引用，不自动抓取用户任意URL。旧提案缺记录版本时采用迁移基线判断过期；新提案版本在模型调用前捕获，初版指纹不破坏既有14天拒绝冷却。
+
+补独立notifications页面和fixed-events API兼容路径。此前未提供的DST occurrence标记现作为派生结果返回：rule ID/version、local date、选择的首尾offset、exception version唯一标识；共享展开函数供容量、排程与本周时段UI使用，不引入另一套排程存储。坍缩窗口不计入有效时长。

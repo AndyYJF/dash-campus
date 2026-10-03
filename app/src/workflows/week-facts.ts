@@ -15,10 +15,10 @@ export type WeekFacts = {
   timezone: string;
   range: { startsAt: string; endsAt: string };
   focus: { title: string } | null;
-  logs: Array<{ id: string; occurredOn: string; progress: string; blocker: string; taskId: string | null; projectId: string | null }>;
+  logs: Array<{ id: string; occurredOn: string; progress: string; blocker: string; taskId: string | null; projectId: string | null; version: number }>;
   completedTasks: Array<{ id: string; title: string; projectId: string | null; completedAt: string; estimateMinutes: number | null }>;
   openTasks: Array<{ id: string; title: string; status: string; projectId: string | null; estimateMinutes: number | null; version: number; plannedWeek: string | null }>;
-  artifacts: Array<{ id: string; projectId: string; title: string; kind: string; createdAt: string }>;
+  artifacts: Array<{ id: string; projectId: string; title: string; kind: string; createdAt: string; version: number }>;
   projects: Array<{ id: string; title: string; question: string }>;
   workload: { committedMinutes: number; committedUnknownCount: number; weekCapacityMinutes: number | null };
   lastWeekProposals: Array<{ id: string; reason: string; status: string; rejectionReason: string | null }>;
@@ -36,8 +36,8 @@ export function weekFacts(localMonday: string, tz = instanceTimezone()): WeekFac
   const logs = (
     db
       .prepare(
-        `SELECT id, occurred_on, progress, blocker, task_id, project_id FROM daily_logs
-         WHERE occurred_on >= ? AND occurred_on <= ? ORDER BY occurred_on, created_at`,
+        `SELECT id, occurred_on, progress, blocker, task_id, project_id,version FROM daily_logs
+         WHERE archived_at IS NULL AND occurred_on >= ? AND occurred_on <= ? ORDER BY occurred_on, created_at`,
       )
       .all(localMonday, weekEnd) as Array<Record<string, unknown>>
   ).map((r) => ({
@@ -47,6 +47,7 @@ export function weekFacts(localMonday: string, tz = instanceTimezone()): WeekFac
     blocker: r.blocker as string,
     taskId: (r.task_id as string | null) ?? null,
     projectId: (r.project_id as string | null) ?? null,
+    version: r.version as number,
   }));
 
   const all = listTasks();
@@ -75,7 +76,7 @@ export function weekFacts(localMonday: string, tz = instanceTimezone()): WeekFac
   const artifacts = (
     db
       .prepare(
-        `SELECT id, project_id, title, kind, created_at FROM artifacts
+        `SELECT id, project_id, title, kind, created_at,version FROM artifacts
          WHERE archived_at IS NULL AND created_at >= ? AND created_at < ? ORDER BY created_at`,
       )
       .all(startsAt, endsAt) as Array<Record<string, unknown>>
@@ -85,6 +86,7 @@ export function weekFacts(localMonday: string, tz = instanceTimezone()): WeekFac
     title: r.title as string,
     kind: r.kind as string,
     createdAt: r.created_at as string,
+    version: r.version as number,
   }));
 
   const projectIds = new Set<string>([

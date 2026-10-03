@@ -269,8 +269,37 @@ function commandForItem(intake: IntakeRow, item: IntakeItemRow): unknown | null 
     };
   }
   if (item.kind === "task") {
-    return { command: "create_or_update_task", title: ((item.payload.summary as string) ?? "未命名事项").slice(0, 200) };
+    const summary = ((item.payload.summary as string) ?? "未命名事项").slice(0, 200);
+    const text = `${summary} ${(item.evidence?.excerpt as string) ?? ""}`;
+    return { command: "create_or_update_task", title: summary, estimateMinutes: estimateFromText(text), dueLocalDate: dueFromText(text, intake.referenceDate) };
   }
+  return null;
+}
+
+/** 从用户原文确定性解析估时：「2小时/两小时/一个半小时/40分钟」 */
+const CN_NUM: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+
+function numeric(raw: string): number {
+  if (/^\d+(?:\.\d+)?$/.test(raw)) return Number(raw);
+  return CN_NUM[raw] ?? NaN;
+}
+
+function estimateFromText(text: string): number | null {
+  const hours = /(\d+(?:\.\d+)?|[一二两三四五六七八九十])\s*(?:个)?\s*(?:小时|钟头|h(?![a-zA-Z]))/i.exec(text);
+  if (hours) {
+    const n = numeric(hours[1]!);
+    if (!Number.isNaN(n)) return Math.round(n * 60);
+  }
+  if (/半小时|半个钟头/.test(text)) return 30;
+  const minutes = /(\d{1,3})\s*分钟/.exec(text);
+  return minutes ? Number(minutes[1]) : null;
+}
+
+/** 从用户原文确定性解析截止：今天/明天/后天（以投递参照日为基准） */
+function dueFromText(text: string, referenceDate: string): string | null {
+  if (/后天/.test(text)) return addDays(referenceDate, 2);
+  if (/明天|明日/.test(text)) return addDays(referenceDate, 1);
+  if (/今天|今日|今晚/.test(text)) return referenceDate;
   return null;
 }
 

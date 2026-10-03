@@ -76,16 +76,18 @@ test("P2：practice 事项经 record_practice 落实践记录（分钟来自用�
   assert.equal(rows[0]!.minutes_origin, "user_reported");
 });
 
-test("P2：task 事项经 create_or_update_task 落任务", async () => {
-  const intakeId = await submitIntake("下周要交操作系统实验报告", "idem-i2-task-1");
+test("P2：task 事项经 create_or_update_task 落任务（估时/截止从原文解析）", async () => {
+  const intakeId = await submitIntake("明天前要交操作系统实验报告，预计两小时", "idem-i2-task-1");
   for (let i = 0; i < 3; i++) await runDueJobsOnce();
   const item = listItems(intakeId)[0]!;
   assert.equal(item.state, "applied");
   const applied = item.payload.applied as { batchId: string };
   taskBatchId = applied.batchId;
-  const rows = getDb().prepare(`SELECT * FROM tasks WHERE title LIKE '%操作系统%'`).all() as Array<{ id: string; status: string; version: number }>;
+  const rows = getDb().prepare(`SELECT * FROM tasks WHERE title LIKE '%操作系统%'`).all() as Array<{ id: string; status: string; version: number; estimate_minutes: number | null; due_local_date: string | null }>;
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.status, "todo");
+  assert.equal(rows[0]!.estimate_minutes, 120, "两小时 \u2192 120 分钟");
+  assert.ok(rows[0]!.due_local_date, "明天 \u2192 有截止");
   taskId = rows[0]!.id;
 });
 

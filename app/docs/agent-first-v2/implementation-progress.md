@@ -193,3 +193,23 @@
 
 - commit `b43f529`，CI run 37120278993 绿；备份 `dash-campus-backup-20261003-113936`，无新迁移（schema 21）。
 - 线上验证：plan_maintenance job 已排队执行（done, plan:rebuilt）；/api/v2/direction 返回 3 个真实 proposed candidates（含 deliverable/来源）；健康检查 schemaVersion 21。
+
+## P6 切换、恢复、旧界面退休与交付（2026-10-03）
+
+### 交付
+
+- A16 SSRF 主动防护（私网/环回/链路本地拒绝，重定向逐跳校验）。
+- A03 `apply_event_exception` 命令 + `course_event_exceptions`（0022，schema 22），eventsForDay 排除例外，可 undo。
+- A09/A17 验收测试（锁定块保留、恶意指令只作原文）。
+- A18 `restore-drill.ts` 恢复演练脚本（WAL checkpoint→隔离拷贝→blob hash 校验→hold 列验证），本地 dev 库演练通过。
+- `acceptance-map.md`：A01–A22 逐项映射（17 ✅ / 5 🟡 带差距说明与保留方案）。
+- 旧界面退休第一步：导航移除 v1「计划」页（/plan 路由保留兼容，不进导航）。
+
+### 验证证据
+
+- 新增 `acceptance-v2.test.ts` 4 项；全套 **191/191 通过**，typecheck/lint/build 无错。
+- 部署：commit `4fceb10`+`ccf15ab`（CI 37120… failure 为 lint require，已修并复绿）；备份 `dash-campus-backup-20261003-115952`；线上 schemaVersion 22。
+
+### 保留差距（验收映射 §已知限制）
+
+focus 计时器未实现、PDF/XLSX 待依赖批准、vision 无坐标、A20 需人工走查、A21 引导组未做、域名→私网 DNS 防护未做。

@@ -99,6 +99,9 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   agent_action_batches: {},
   agent_action_changes: {},
   practice_entries: {},
+  // Agent-first V2（迁移 0019）：规划偏好与学习块排程
+  planning_preferences: {},
+  plan_sessions: {},
   // 非敏感设置（邮件模板、预算）；调度内部状态不导出
   settings: {},
 };

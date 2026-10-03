@@ -1,5 +1,5 @@
 /** 线上 P2 冒烟核对：课程语义模型/投影/实践/journal 落库情况（只读） */
-import { getDb } from "/app/src/repositories/db";
+import { getDb } from "../../src/repositories/db";
 
 const db = getDb();
 console.log("semesters:", JSON.stringify(db.prepare("SELECT first_monday, total_weeks FROM semesters").all()));

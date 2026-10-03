@@ -10,6 +10,8 @@ import UniversalIntake from "./UniversalIntake";
 
 const NAV_ITEMS: Array<{ href: string; label: string; icon: IconName }> = [
   { href: "/today", label: "今天", icon: "today" },
+  { href: "/week", label: "本周", icon: "calendar" },
+  { href: "/direction", label: "方向", icon: "target" },
   { href: "/plan", label: "计划", icon: "plan" },
   { href: "/explore", label: "探索", icon: "explore" },
   { href: "/inbox", label: "收件箱", icon: "inbox" },

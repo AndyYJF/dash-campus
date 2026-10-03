@@ -2,6 +2,34 @@
 
 本页按阶段记录事实、缺口和下一步。开工指令见 [CODING-AGENT.md](./CODING-AGENT.md)，完整契约见 [MASTER-PLAN.md](./MASTER-PLAN.md)。每条结论注明验证方式；无证据的能力标为缺口。
 
+## P3 课表、生活预算与学习行动闭环（已完成，2026-10-03）
+
+### 交付
+
+- 迁移 `0019_planning_v2.sql`：planning_preferences（模板起始 tentative：工作日 08:00–22:00、周末 09:00–22:00、三餐、通勤 15、日上限 180、最小块 25、缓冲 20%）+ plan_sessions（唯一排程来源）；schema 19；两表进导出白名单。
+- 确定性预算（`domain/budget.ts` 纯函数）：W = A − (F ∪ L)，C_day=min(W×(1−buffer), 日上限)；futureBudget/futureCapacity 按 §6.1 公式，buffer 只在各自范围应用一次。
+- 确定性排程（`domain/scheduler.ts` 纯函数）：截止优先→高优→创建时间；块 25–90、间隔 10 分钟、每项最多 3 个未来块；不可行给 deadline_unfeasible/insufficient_capacity/unknown_requirement，不顺延截止。
+- 重排（`workflows/plan.ts` rebuildPlan）：supersede 旧未来块 + 新块 + journal（plan_sessions batch）单事务；课表 upsert 后自动触发有限重排。
+- 端点：GET /api/v2/dashboard、/api/v2/week、/api/v2/direction（同一 snapshotRevision，GET 纯读取）；POST /api/v2/sessions/:id/{start,complete,skip,lock}（幂等+版本）；POST /api/v2/preferences/confirm（一句话确认模板）。
+- 页面：/today 换 V2（课程占用/预算账本/学习块操作/待答/最近变化）、新增 /week（7 天账本+未排原因+确认按钮）、/direction（目标/实践/诚实声明）；导航加“本周”“方向”。
+
+### 验证证据
+
+- 新增 `test/pages-v2.test.ts` 6 项：课表导入后 dashboard 课程占用 100 分钟+C_day=180(tentative)；2h 任务 90+30 落入合法时段避开课程；week 与 dashboard 同 snapshotRevision、weekBudget=1260；start/complete 只完成块不完成任务；600 分钟任务截止不可行进 unscheduled 且截止不顺延；direction 诚实证据状态。
+- 全套 **176/176 通过**，typecheck/lint/build 无错。
+
+### 本阶段决策（最小一致选择）
+
+- 通勤只加在课程投影事件上，手工固定事件不加。
+- B_day 最小口径：完成块按计划分钟暂扣（estimated）+ 当日实践已记录分钟；尚无 focus 计时器，无双计来源。
+- 未排原因存在最近一次 plan_sessions batch 的 reason JSON，week 端点读取，保证 snapshot 一致。
+- 旧 TodayView（v1 任务清单）保留文件但 /today 已切 V2；旧 /plan 等页面不动。
+
+### 已知限制
+
+- focus_sessions（计时器）未做，无双计合并场景；“记录 40 分钟不重复计时”在 P4/P5 有计时器后补验收。
+- 实践记录与学习块尚未自动关联（预算账本分开累计）。
+
 ## P2 执行策略、实体关联与可撤销变更（已完成，2026-10-03）
 
 ### 交付

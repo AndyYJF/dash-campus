@@ -27,6 +27,7 @@ import { budgetCheck, meteredModel } from "@/workflows/ai-budget";
 import { instanceTimezone, localDateInTz, mondayOf, addDays } from "@/domain/time";
 import { parseTimetable, TimetableError } from "@/domain/timetable";
 import { executeCommand } from "@/workflows/commands";
+import { rebuildPlan } from "@/workflows/plan";
 import {
   INTAKE_JOB_TYPE,
   SEMESTER_FIRST_MONDAY_KEY,
@@ -219,10 +220,15 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
   }
 
   // 第三阶段：ready 事项经白名单命令落领域（§4.2）；notice/note 只保留事实不行动
+  let courseApplied = false;
   for (const item of listItems(intakeId)) {
     if (item.state !== "ready") continue;
+    if (item.kind === "timetable") courseApplied = true;
     applyItem(intake, item);
   }
+  // 课表变化触发有限范围重排（§6.2-8）：supersede 旧未来块并按新课程重放
+  const applied = listItems(intakeId).some((i) => i.kind === "timetable" && i.state === "applied");
+  if (courseApplied && applied) rebuildPlan(new Date());
   return finish("done", null);
 }
 

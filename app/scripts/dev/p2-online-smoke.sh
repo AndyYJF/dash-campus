@@ -4,7 +4,7 @@
 set -uo pipefail
 cd /opt/dash-campus
 
-SESSION=$(docker compose --profile ops run --rm -v /opt/dash-campus/scripts/dev:/scripts-dev ops -c "node --import tsx /scripts-dev/make-online-session.ts" 2>/dev/null | tail -1)
+SESSION=$(docker compose --profile ops run --rm -v /opt/dash-campus/scripts/dev:/app/scripts/dev ops -c "node --import tsx /app/scripts/dev/make-online-session.ts" 2>/dev/null | tail -1)
 TOKEN=$(echo "$SESSION" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
 CSRF=$(echo "$SESSION" | grep -o '"csrf":"[^"]*"' | cut -d'"' -f4)
 [ -z "$TOKEN" ] && { echo "会话创建失败: $SESSION"; exit 1; }
@@ -43,4 +43,4 @@ for i in $(seq 1 30); do
   sleep 2
 done
 echo "final status: $ST"
-docker compose --profile ops run --rm -v /opt/dash-campus/scripts/dev:/scripts-dev ops -c "node --import tsx /scripts-dev/p2-online-verify.ts" 2>/dev/null | tail -6
+docker compose --profile ops run --rm -v /opt/dash-campus/scripts/dev:/app/scripts/dev ops -c "node --import tsx /app/scripts/dev/p2-online-verify.ts" 2>/dev/null | tail -6

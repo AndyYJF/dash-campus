@@ -2,7 +2,7 @@
 
 对应 [REPAIR-PLAN §7](./REPAIR-PLAN-2026-10-04.md)、[AGENT-INTERFACE-CONTRACT §9](./AGENT-INTERFACE-CONTRACT.md)、[ACADEMIC-CALENDAR-AND-HOLIDAYS §8](./ACADEMIC-CALENDAR-AND-HOLIDAYS.md)。旧 A01–A22 见 [历史验收映射](./acceptance-map.md)，不能替代本页。
 
-代码位置：分支 `agentbox/dashcampus`（本地提交，**未推送、未部署**）。schema 28。
+当前补充：分支 `agentbox/dashcampus` 已推送，业务 `95c8cf1` 已验证部署/schema29，337项测试通过。真实模型/生产的逐层证据及剩余缺口见 [STATUS](../STATUS.md) 和 [模糊调整记录](../flexible-adjustments-2026-10-04.md)。以下证据表及各行是初始修复完成时的历史快照（schema28、308项测试），保留其原始证据边界，不代表目前所有真实模型/生产验证均未做。
 
 ## 证据层的含义
 
@@ -17,7 +17,7 @@
 
 状态记号：**隔离通过** = 实现 + 隔离行为用例通过；**+网页** = 另有本地网页走查；**部分** = 有明确缺口，见说明；**未完成** = 验收要求的关键证据缺失。
 
-没有任何一项达到“真实模型 / 生产 / 主人试用”层。下表的“隔离通过”不等于验收完成。
+历史表编写时没有项目达到“真实模型 / 生产 / 主人试用”层；此后真实模型和生产已有部分验证，主人试用仍未完成。下表的“隔离通过”不能据新测试总数自动升级为验收完成。
 
 ## E01–E29（易用性修复）
 

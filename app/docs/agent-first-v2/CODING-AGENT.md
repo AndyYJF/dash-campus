@@ -1,5 +1,7 @@
 # Coding Agent 开工指令
 
+当前接手补充（2026-10-04）：业务 `95c8cf1` 已验证部署，schema29；代码与文档已推送 `agentbox/dashcampus`。先读 [STATUS](../STATUS.md)、[decisions](../decisions.md)、[模糊调整的实现与证据](../flexible-adjustments-2026-10-04.md) 与 [START-HERE](./START-HERE.md)。后续从实际缺口继续；下文P0–P6是历史建设上下文，不能按其旧状态重建或重复迁移。时间调整允许Agent补合理方案，具体范围/冲突仍由程序核对；查看请求只读。
+
 你要在现有Dash Campus工程继续修复Agent-first V2。先读 [START-HERE.md](./START-HERE.md)，基础契约见 [MASTER-PLAN.md](./MASTER-PLAN.md)。新修复/接口/校历规格优先于初始规格和旧Plan/T0–T8中的冲突规定。
 
 **2026-10-04 修复入口：** 已有 V2 实施后的易用性修复，以及新增课表可视化与每日智能安排，按 [REPAIR-PLAN-2026-10-04.md](./REPAIR-PLAN-2026-10-04.md) 的 R0–R5 推进。下文 P0–P6 保留为初始建设历史；不要重新建空壳，不把旧验收全绿当作真实流程已完成。修复计划状态为待实施。

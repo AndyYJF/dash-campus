@@ -2,6 +2,12 @@
 
 本页按阶段记录事实、缺口和下一步。开工指令见 [CODING-AGENT.md](./CODING-AGENT.md)，完整契约见 [MASTER-PLAN.md](./MASTER-PLAN.md)。每条结论注明验证方式；无证据的能力标为缺口。
 
+## 2026-10-04 后续交互修复与决策同步（当前补充）
+
+业务版本 `95c8cf1` 已部署/schema29，代码及文档在 `agentbox/dashcampus`。全局 Agent 栏、查看只读、模糊调整的事实决策/日期范围核对已完成。337项测试通过；真实模型及生产原句验证通过，计算后无需移动，Todo未写。具体证据见 [当前状态](../STATUS.md)、[决策记录](../decisions.md) 和 [模糊调整记录](../flexible-adjustments-2026-10-04.md)。真实模型追问续答只有假件验证，真实邮件和主人七天试用仍未完成。
+
+下文“尚未实施”“未部署”和旧测试数为当时记录，不是当前结论。
+
 ## 2026-10-04 易用性修复规格发布（尚未实施）
 
 - 当前交接从 [START-HERE](./START-HERE.md) 和 [STATUS](../STATUS.md) 开始；业务审计基线cbbaeee/schema23，九项失败路径见 [审计摘要](./REPAIR-BASELINE-2026-10-04.md)。

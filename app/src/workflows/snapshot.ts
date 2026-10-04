@@ -5,7 +5,7 @@ import { getPrefs, listSessionsInRange } from "@/repositories/plan";
 import { listOpenQuestions } from "@/repositories/questions";
 import { getInProgressFocus } from "@/repositories/focus-timer";
 import { getPlanningRevision } from "@/repositories/proposals";
-import { dayLedger, eventsForDay, latestPlanConflicts, latestPlanUnscheduled, type DayLedger } from "./plan";
+import { dayLedger, eventsForDay, latestPlanConflicts, latestPlanUnscheduled, openBlocker, type DayLedger } from "./plan";
 
 /**
  * 统一 snapshot（MASTER-PLAN §6.1/§8）：dashboard/week/direction 共用同一预算账本与会话数据；
@@ -22,7 +22,10 @@ function dayRangeUtc(date: string, tz: string): [string, string] {
   return [wallTimeToUtc(date, "00:00", tz).toISOString(), wallTimeToUtc(addDays(date, 1), "00:00", tz).toISOString()];
 }
 
-function sessionView(s: { id: string; taskId: string; startUtc: string; endUtc: string; status: string; locked: boolean; version: number }) {
+function sessionView(s: { id: string; taskId: string; startUtc: string; endUtc: string; status: string; locked: boolean; version: number; reason: string; kind: string; origin: string }) {
+  // 近期块受保护不会被自动改短；但任务有未解决的卡点时，这一段该做的是处理卡点，要说清楚
+  const blocker = ["planned", "tentative", "in_progress"].includes(s.status) ? openBlocker(s.taskId) : "";
+  const reason = blocker && !s.reason.includes(blocker.slice(0, 20)) ? `上次卡在“${blocker.slice(0, 40)}”，这一段先处理卡点${s.reason ? `；${s.reason}` : ""}` : s.reason;
   return {
     id: s.id,
     taskId: s.taskId,
@@ -33,6 +36,9 @@ function sessionView(s: { id: string; taskId: string; startUtc: string; endUtc: 
     status: s.status,
     locked: s.locked,
     version: s.version,
+    reason,
+    kind: s.kind,
+    origin: s.origin,
   };
 }
 

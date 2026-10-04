@@ -15,6 +15,7 @@ import { getPrefs } from "@/repositories/plan";
 import { POST as createIntakeRoute } from "@/app/api/v2/intakes/route";
 import { GET as getIntakeRoute } from "@/app/api/v2/intakes/[id]/route";
 import { GET as directionRoute } from "@/app/api/v2/direction/route";
+import { GET as dashboardRoute } from "@/app/api/v2/dashboard/route";
 import { POST as focusStartRoute } from "@/app/api/v2/focus/route";
 import { POST as focusActionRoute } from "@/app/api/v2/focus/[id]/[action]/route";
 
@@ -141,9 +142,10 @@ test("E21/E13：做一次尝试并反馈卡点 → 记录关联到项目，建�
   const taskId = (getDb().prepare(`SELECT id FROM tasks WHERE title = '跑通逻辑回归基线'`).get() as { id: string }).id;
   const blocks = () => getDb().prepare(`SELECT id, reason, (julianday(end_utc) - julianday(start_utc)) * 1440 AS m FROM plan_sessions WHERE task_id = ? AND status IN ('planned','tentative') ORDER BY start_utc`).all(taskId) as Array<{ id: string; reason: string; m: number }>;
   const now1 = blocks();
-  assert.equal(now1.length, 1, "卡住时不照旧排满剩余估时");
-  assert.equal(Math.round(now1[0]!.m), 25);
-  assert.match(now1[0]!.reason, /上次卡在“环境一直报错”，先安排 25 分钟处理这个卡点/);
+  assert.equal(now1.length, 1, "卡住时不再追加新的块");
+  assert.equal(now1[0]!.id, p.nextSessions.length ? now1[0]!.id : "", "今天已有的那一段在 24 小时内，不被擅自改动");
+  const dash = (await (await dashboardRoute(req("/api/v2/dashboard", "GET"))).json()) as { today: { sessions: Array<{ id: string; reason: string }> } };
+  assert.match(dash.today.sessions.find((x) => x.id === now1[0]!.id)!.reason, /上次卡在“环境一直报错”，这一段先处理卡点/, "但说明这一段该先处理卡点，不伪装成照常推进");
 
   getDb().prepare(`UPDATE plan_sessions SET status = 'completed', updated_at = ? WHERE id = ?`).run(new Date(Date.now() + 1000).toISOString(), now1[0]!.id);
   const plan = rebuildPlan(new Date("2026-10-13T09:00:00+08:00"));

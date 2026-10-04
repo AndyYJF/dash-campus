@@ -249,3 +249,24 @@ test("R0：没有课程语义来源的旧固定活动仍扣空档，并单独计
   rebuildPlan(asOf);
   for (const s of activeSessions(taskId)) assert.ok(Date.parse(s.end_utc) <= at("2026-10-05T08:15").getTime() || Date.parse(s.start_utc) >= at("2026-10-05T09:55").getTime(), "旧活动仍然占位");
 });
+
+test("E13：有未解决的卡点时，24h 之外的安排收成一个 25 分钟排障步骤；卡点消除后恢复按剩余安排", () => {
+  const asOf = at("2026-10-05T07:00");
+  const taskId = addTask("环境搭建", 270);
+  rebuildPlan(asOf);
+  const before = activeSessions(taskId);
+  assert.equal(total(before), 270);
+  assert.ok(before.some((s) => Date.parse(s.start_utc) > asOf.getTime() + 86_400_000), "有排到 24h 之外的块");
+  // 两天前记录过卡点
+  getDb().prepare(`INSERT INTO practice_entries (id, task_id, occurred_on, actual_minutes, minutes_origin, note, category, blocker, created_at, updated_at) VALUES (?, ?, '2026-10-04', 30, 'user_reported', '', 'study', '依赖装不上', ?, ?)`).run(crypto.randomUUID(), taskId, "2026-10-04T10:00:00.000Z", "2026-10-04T10:00:00.000Z");
+  rebuildPlan(asOf);
+  const blocked = activeSessions(taskId);
+  const near = blocked.filter((s) => Date.parse(s.start_utc) <= asOf.getTime() + 86_400_000);
+  const far = blocked.filter((s) => Date.parse(s.start_utc) > asOf.getTime() + 86_400_000);
+  assert.deepEqual(near.map((s) => s.id), before.filter((s) => Date.parse(s.start_utc) <= asOf.getTime() + 86_400_000).map((s) => s.id), "24h 内的块不擅自动");
+  assert.equal(far.length, 0, "卡着的时候不照旧把后面的时间排满");
+
+  getDb().prepare(`INSERT INTO practice_entries (id, task_id, occurred_on, actual_minutes, minutes_origin, note, category, blocker, created_at, updated_at) VALUES (?, ?, '2026-10-05', 20, 'user_reported', '装好了', 'study', '', ?, ?)`).run(crypto.randomUUID(), taskId, "2026-10-05T01:00:00.000Z", "2026-10-05T01:00:00.000Z");
+  rebuildPlan(asOf);
+  assert.equal(total(activeSessions(taskId)), 220, "卡点消除：按估时 270 − 已投入 50 继续安排");
+});

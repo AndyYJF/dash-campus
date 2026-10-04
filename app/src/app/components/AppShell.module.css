@@ -86,6 +86,9 @@
 }
 
 .quickLog {
+  border: none;
+  font: inherit;
+  cursor: pointer;
   flex: 1;
   display: inline-flex;
   align-items: center;
@@ -277,7 +280,7 @@
   width: 100%;
   max-width: var(--content-max);
   margin: 0 auto;
-  padding: var(--space-10) var(--space-10) 72px;
+  padding: var(--space-10) var(--space-10) 260px;
   animation: rise 420ms var(--ease) both;
 }
 
@@ -378,7 +381,7 @@
   }
 
   .content {
-    padding: var(--space-8) var(--space-6) 64px;
+    padding: var(--space-8) var(--space-6) 260px;
   }
 }
 
@@ -515,6 +518,6 @@
 
   .content {
     padding: var(--space-5) var(--space-4)
-      calc(var(--dock-height) + var(--space-10) + env(safe-area-inset-bottom));
+      calc(var(--dock-height) + 270px + env(safe-area-inset-bottom));
   }
 }

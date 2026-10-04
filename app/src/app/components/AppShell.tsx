@@ -6,7 +6,7 @@ import Icon, { type IconName } from "./Icon";
 import SessionGuard from "./SessionGuard";
 import ShellExtras, { RestoreHoldBanner } from "./ShellExtras";
 import ThemeToggle from "./ThemeToggle";
-import UniversalIntake from "./UniversalIntake";
+import AgentLauncher from "./AgentLauncher";
 
 /** 主导航只保留今天、本周、方向；收件箱/回顾/探索记录作为旧版入口放在方向页底部 */
 const NAV_ITEMS: Array<{ href: string; label: string; icon: IconName }> = [
@@ -50,10 +50,10 @@ export default function AppShell({
             >
               <Icon name="settings" size={20} />
             </Link>
-            <a href="#intake" className={styles.quickLog}>
+            <AgentLauncher className={styles.quickLog}>
               <Icon name="pencil" size={16} />
               <span>说一句</span>
-            </a>
+            </AgentLauncher>
           </div>
         </div>
         <nav className={styles.nav} aria-label="主导航">
@@ -93,7 +93,6 @@ export default function AppShell({
       <main id="main" className={styles.main} tabIndex={-1}>
         <div className={styles.content}>
           <RestoreHoldBanner />
-          <UniversalIntake />
           {children}
         </div>
       </main>

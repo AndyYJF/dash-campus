@@ -1,10 +1,43 @@
 /* 全局统一输入：一条输入 + 待答问题 + 每条输入的结果卡。token 全部来自 globals.css。 */
 
 .intake {
-  margin-bottom: 16px;
+  position: fixed;
+  z-index: 40;
+  left: calc(var(--sidebar-width) + 24px);
+  right: 32px;
+  bottom: 20px;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 10px 12px;
+  max-height: calc(100dvh - 100px);
+  overflow-y: auto;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
   display: grid;
-  gap: 10px;
+  gap: 6px;
   min-width: 0;
+}
+
+.dockHead { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; }
+.dockStatus { flex: 1; color: var(--color-text-muted); min-width: 0; }
+.headButton { appearance: none; border: none; font: inherit; color: var(--color-text); background: var(--color-surface-muted); border-radius: var(--radius-sm); padding: 6px 8px; cursor: pointer; white-space: nowrap; }
+.commands { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; max-height: 200px; overflow-y: auto; }
+.commands button { display: flex; gap: 8px; align-items: center; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-text); font: inherit; font-size: 12px; padding: 10px 8px; cursor: pointer; }
+.commands button:hover { background: var(--color-surface-muted); }
+.recover { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--color-text-muted); }
+.feedback { margin: 0; font-size: 12px; color: var(--color-text-muted); white-space: pre-line; overflow-wrap: anywhere; max-height: 70px; overflow: auto; }
+.transcript { display: grid; gap: 10px; max-height: 38dvh; overflow-y: auto; overscroll-behavior: contain; padding-top: 8px; border-top: 1px solid var(--color-border); }
+.context span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.context .chipClose { flex: none; }
+
+@media (max-width: 1099px) { .intake { left: calc(var(--rail-width) + 20px); right: 24px; } }
+@media (max-width: 767px) {
+  .intake { left: 12px; right: 12px; bottom: calc(var(--dock-height) + 24px + env(safe-area-inset-bottom)); padding: 8px; max-height: calc(100dvh - var(--dock-height) - 100px); }
+  .dockStatus { display: none; }
+  .dockHead strong { flex: 1; }
+  .transcript { max-height: 32dvh; }
 }
 
 .dragging .composer {
@@ -41,7 +74,8 @@
 .box {
   display: block;
   width: 100%;
-  resize: vertical;
+  resize: none;
+  max-height: 130px;
   min-height: 44px;
   padding: 11px 14px 4px;
   border: none;

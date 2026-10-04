@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
+import GlobalAgent from "./components/GlobalAgent";
 
 // 拉丁字母与数字用 Geist（OFL 许可，字体文件随仓库，本机提供，不发外部字体请求）；中文仍用系统无衬线（globals.css）
 const geist = localFont({ src: "./fonts/Geist-Variable.woff2", variable: "--font-geist", weight: "100 900", display: "swap" });
@@ -40,6 +41,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         {children}
+        <GlobalAgent />
       </body>
     </html>
   );

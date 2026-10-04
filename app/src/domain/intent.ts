@@ -116,7 +116,7 @@ function isShortName(subject: string): boolean {
 }
 
 function refOf(subject: string, referenceDate: string): Ref {
-  if (/^(这条|那条|这项|那项)$/.test(subject.trim())) return { kind: "recent" };
+  if (/^(这条|那条|这项|那项|这段|那段)$/.test(subject.trim())) return { kind: "recent" };
   if (/刚才|刚刚|上一个|上面那个|那个$|^那个|^它$|^这个$|^这条$|^那条$|^这项$|^那项$/.test(subject) && nameOf(subject.replace(/刚才|刚刚|上一个|上面/g, "")).length < 2) return { kind: "recent" };
   const text = nameOf(subject);
   if (!text) return { kind: "recent" };

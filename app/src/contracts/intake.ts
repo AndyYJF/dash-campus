@@ -43,6 +43,8 @@ export const intakeCreateSchema = z.object({
   conversationId: z.string().uuid().optional(),
   /** 这句话是在回答哪个问题（点着问题卡回答） */
   questionId: z.string().uuid().optional(),
+  /** Version shown on the question card: never silently answer a newer question. */
+  questionVersion: z.number().int().min(1).optional(),
   /** 从哪张卡片/哪个对象发起：只作上下文（“这个”指谁），不是授权 */
   selectedEntityRef: entityRefSchema.optional(),
   /** 从时间轴的哪个空档发起：当地日期与起止钟点 */

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { NextRequest } from "next/server";
 import { requireOwner } from "@/workflows/auth-guard";
-import { errorResponse, runIdempotent } from "@/workflows/http";
+import { errorResponse, runIdempotent, HttpError } from "@/workflows/http";
 import { intakeCreateSchema, type IntakeCreateInput } from "@/contracts/intake";
 import { receiveIntake, submitAnswer } from "@/workflows/intake";
 import { listIntakes } from "@/repositories/intakes";
@@ -9,6 +9,8 @@ import { getQuestion } from "@/repositories/questions";
 import { intakeResultView } from "@/workflows/results";
 import { NextResponse } from "next/server";
 import { saveAttachments, type IncomingFile } from "@/workflows/intake-files";
+
+import { parseAgentText, agentInputIssue } from "@/domain/agent-input";
 
 export const dynamic = "force-dynamic";
 
@@ -24,21 +26,27 @@ export async function POST(request: NextRequest) {
   const parsed = isMultipart ? await parseMultipart(request) : await parseJsonBody(request);
   if (!parsed.ok) return parsed.response;
   const { input, files, raw } = parsed;
+  const agentText = parseAgentText(input.text);
+  const issue = agentInputIssue(agentText, { hasFiles: files.length > 0, hasUrls: input.urls.length > 0, hasTask: input.selectedEntityRef?.kind === "task", hasQuestion: Boolean(input.questionId), hasSlot: Boolean(input.slot) });
+  if (issue) return errorResponse("INVALID_AGENT_INPUT", issue, 422);
 
   return runIdempotent(request, raw, {
     actorScope: `owner:${auth.session.ownerId}`,
     route: "v2.intakes.create",
     execute: () => {
       // 点着问题卡在统一入口回答：按那个问题的用途解析，不当成一份新材料
-      if (input.questionId && !files.length) {
+      if (input.questionId) {
         const q = getQuestion(input.questionId);
-        if (q && q.status === "open") {
-          const r = submitAnswer({ questionId: q.id, expectedVersion: q.version, text: input.text });
+        if (!q || q.status !== "open") throw new HttpError(409, "QUESTION_NOT_OPEN", "该问题已回答或失效，请重新选择；这句话没有作为新任务提交");
+        if (input.questionVersion !== undefined && input.questionVersion !== q.version) throw new HttpError(409, "STALE_ANSWER", "问题已更新，请按最新问题重新回答");
+        if (q.status === "open") {
+          const r = submitAnswer({ questionId: q.id, expectedVersion: input.questionVersion ?? q.version, text: agentText.body });
           if (r.kind === "answered") return { statusCode: 202, body: { answered: true, questionId: q.id, results: r.results, note: r.note }, resourceType: "clarification_answer", resourceId: q.id };
           if (r.kind === "unparseable") return { statusCode: 422, body: { error: { code: "ANSWER_UNPARSEABLE", message: `没看懂这个回答。${r.hint}` } }, resourceType: null, resourceId: null };
         }
       }
       const context: Record<string, unknown> = {};
+      if (agentText.command) context.agentCommand = agentText.command;
       if (input.selectedEntityRef) context.selectedEntityRef = input.selectedEntityRef;
       if (input.slot) context.slot = input.slot;
       const r = receiveIntake({ channel: "web", text: input.text, referenceDate: input.referenceDate, urls: input.urls, conversationId: input.conversationId, context });
@@ -93,6 +101,7 @@ async function parseMultipart(request: NextRequest): Promise<ParsedInput> {
     urls: form.getAll("urls").map(String).filter(Boolean),
     conversationId: (form.get("conversationId") as string) || undefined,
     questionId: (form.get("questionId") as string) || undefined,
+    questionVersion: form.get("questionVersion") ? Number(form.get("questionVersion")) : undefined,
     selectedEntityRef: json("selectedEntityRef"),
     slot: json("slot"),
   };
@@ -107,6 +116,6 @@ async function parseMultipart(request: NextRequest): Promise<ParsedInput> {
   // 幂等键去重按规范化摘要：multipart 原始字节含随机 boundary，不能直接做请求体比对
   // 文件按内容摘要参与比对：同名同大小但内容不同不是重试（E38）
   const digests = files.map((f) => `${f.name}:${f.bytes.length}:${crypto.createHash("sha256").update(f.bytes).digest("hex")}`);
-  const raw = JSON.stringify({ text: fields.text, urls: fields.urls, referenceDate: fields.referenceDate, conversationId: fields.conversationId, questionId: fields.questionId, selectedEntityRef: fields.selectedEntityRef, slot: fields.slot, files: digests });
+  const raw = JSON.stringify({ text: fields.text, urls: fields.urls, referenceDate: fields.referenceDate, conversationId: fields.conversationId, questionId: fields.questionId, questionVersion: fields.questionVersion, selectedEntityRef: fields.selectedEntityRef, slot: fields.slot, files: digests });
   return { ok: true, input: parsed.data, files, raw };
 }

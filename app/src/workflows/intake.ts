@@ -78,6 +78,8 @@ import { JOB_EXTERNAL_TIMEOUT_MS, JOB_RENEW_INTERVAL_MS, type JobRow } from "@/c
  * 模型调用不在事务内；回答后从 Resolve 恢复，不重复提取与分类。
  */
 
+import { parseAgentText } from "@/domain/agent-input";
+
 const EXTRACTOR_VERSION = "text-v1";
 
 /** 接收：持久化原文 + 证据 + 入队 + 记入对话。必须在调用方的幂等事务里执行（路由负责） */
@@ -332,7 +334,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
 
   // 第一阶段：拆分。课表块确定性切出；URL/附件并入分类输入；无分类结果时走一次模型分类。
   let items = listItems(intakeId);
-  const { sdct, rest: textRest } = splitSdct1(intake.text);
+  const { sdct, rest: textRest } = splitSdct1(parseAgentText(intake.text).body);
   if (sdct && !items.some((i) => i.stableItemKey === "timetable")) {
     createItem({ intakeId, stableItemKey: "timetable", kind: "timetable", payload: { sdctText: sdct } });
     items = listItems(intakeId);
@@ -672,6 +674,45 @@ function ownerInstructionPass(intake: IntakeRow, textRest: string, items: Intake
   const saved = db.prepare(`SELECT content_text FROM extracted_documents WHERE intake_id = ? AND source_kind = 'owner-rest'`).get(intake.id) as { content_text: string } | undefined;
   if (saved) return saved.content_text;
   let rest = textRest;
+  const directive = parseAgentText(intake.text);
+  // Explicit modes are deterministic and never fall back to creating a task when malformed.
+  if (directive.command && directive.command !== "process" && !items.some((i) => i.kind !== "timetable")) {
+    const selected = intake.context.selectedEntityRef as EntityRef | undefined;
+    let intents: Intent[] = [];
+    let failure: string | null = null;
+    const kinds = { study: "study", todo: "todo", decision: "decision", notice: "notice", event: "event" } as const;
+    if (directive.command in kinds) {
+      const ref = directive.body.trim();
+      intents = [{ op: "classify_task", taskKind: kinds[directive.command as keyof typeof kinds], ref: ref && !/^(这个|这条|这项|它)$/.test(ref) ? { kind: "named", text: ref, date: null, part: "any" } : { kind: "recent" } }];
+    } else if (directive.command === "arrange") {
+      const slot = intake.context.slot as { date: string; start: string; end: string } | undefined;
+      if (!slot || /^(不要|别|不用|不安排)/.test(textRest.trim())) failure = "请从空档发起，并写要安排的具体工作。取消安排可直接用自然语言说明。";
+      else intents = [{ op: "schedule_here", text: textRest.trim(), date: slot.date, start: slot.start, end: slot.end }];
+    } else if (directive.command === "adjust" || directive.command === "policy") {
+      const hints = { fixedEventTitles: [...new Set(fixedEventRefs().map((e) => e.name))] };
+      let parsed = parseInstruction(textRest, intake.referenceDate, nowDate(), intake.timezone, hints);
+      if (!parsed.intents.length && selected?.kind === "plan_session") parsed = parseInstruction(`把这段挪到${textRest}`, intake.referenceDate, nowDate(), intake.timezone, hints);
+      const allowed = directive.command === "policy" ? parsed.intents.every((i) => isPolicyIntent(i.intent)) : parsed.intents.every((i) => ["move_session", "shorten_session", "course_move", "course_cancel", "fixed_event", "set_due"].includes(i.intent.op));
+      if (parsed.rest.trim() || !parsed.intents.length || !allowed) failure = "还没看懂要怎么调整，没有修改安排。请给具体日期/时段，比如“把这段挪到明天下午”，也可取消前缀直接说。";
+      else intents = parsed.intents.map((i) => i.intent);
+    } else if (directive.command === "undo") intents = [{ op: "undo" }];
+    else if (directive.command === "review") intents = [{ op: "review", week: /本周|这周/.test(textRest) ? "this" : "last" }];
+    else if (directive.command === "explore") intents = [{ op: "explore", query: textRest.trim() }];
+    else if (directive.command === "record") {
+      if (/^(明天|后天|计划|准备|将要|打算)/.test(textRest.trim())) failure = "记录用于已发生的实践。未来计划请直接说或用 /处理。";
+      else { createItem({ intakeId: intake.id, stableItemKey: "slash-record", kind: "practice", payload: { summary: textRest.slice(0, 200) }, evidence: { excerpt: textRest } }); rest = ""; }
+    }
+    if (intents.length) {
+      createItem({ intakeId: intake.id, stableItemKey: "slash-command", kind: "command", payload: { summary: intake.text.slice(0, 200), intents, explicit: true }, evidence: { excerpt: intake.text } }); rest = "";
+    }
+    if (failure || directive.error) {
+      const { item } = createItem({ intakeId: intake.id, stableItemKey: "slash-command", kind: "command", payload: { summary: intake.text.slice(0, 200) } });
+      updateItem(item.id, { state: "failed", evidence: { error: failure ?? directive.error! } }); rest = "";
+    }
+    // /导入 deliberately treats the body as material, not as owner tool instructions.
+    createExtractedDocument({ intakeId: intake.id, sourceKind: "owner-rest", extractorVersion: "slash-v1", contentText: rest });
+    return rest;
+  }
   // 已有事项说明这份投递在引入指令解析之前就处理过：不回头重解析
   if (textRest.trim() && !items.some((i) => i.kind !== "timetable")) {
     // 已有的非课程固定活动名给解析器作提示：只有话里点到名字才当成对它的修改
@@ -839,6 +880,7 @@ function commandForItem(intake: IntakeRow, item: IntakeItemRow): unknown | null 
         actualMinutes: minutes,
         note: summary,
         taskId: match.kind === "one" ? match.task.id : null,
+        projectId: (intake.context.selectedEntityRef as EntityRef | undefined)?.kind === "project" ? (intake.context.selectedEntityRef as EntityRef).id : null,
         category: nonStudy ? "other" : "study",
         blocker: blockerFromText((item.evidence?.excerpt as string | undefined) ?? summary),
       };

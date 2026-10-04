@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import type { AgentCommandName } from "@/domain/agent-input";
 
 /**
  * 页面间的轻量通知：统一输入、问题回答、卡片操作完成后发一次“数据变了”，三页据此重新读共享快照；
@@ -11,7 +12,7 @@ export const DASH_CHANGED = "dash:changed";
 export const DASH_COMPOSE = "dash:compose";
 
 export type EntityRef = { kind: string; id: string };
-export type ComposeDetail = { label: string; text?: string; selectedEntityRef?: EntityRef; slot?: { date: string; start: string; end: string } };
+export type ComposeDetail = { label: string; text?: string; command?: AgentCommandName; question?: { id: string; version: number; prompt: string }; selectedEntityRef?: EntityRef; slot?: { date: string; start: string; end: string } };
 
 export function emitChanged(): void {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(DASH_CHANGED));

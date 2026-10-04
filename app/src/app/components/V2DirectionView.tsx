@@ -144,7 +144,7 @@ export default function V2DirectionView() {
             <button type="button" className={styles.btn} onClick={() => act("update_project_state", { projectId: p.id, status: "paused" })}>
               先暂停
             </button>
-            <button type="button" className={styles.btnGhost} onClick={() => compose({ label: p.title, text: "", selectedEntityRef: { kind: "project", id: p.id } })}>
+            <button type="button" className={styles.btnGhost} onClick={() => compose({ label: p.title, command: "record", text: "", selectedEntityRef: { kind: "project", id: p.id } })}>
               说说进展…
             </button>
           </div>

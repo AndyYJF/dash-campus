@@ -21,8 +21,8 @@ export default function PendingItems({ items, timezone }: { items: PendingItem[]
           <p className={styles.why}>{TASK_KIND_LABEL[item.kind]} · {item.reason}</p>
           {(item.dueAt || item.dueLocalDate) && <p className={styles.muted}>截止：{item.dueAt ? new Intl.DateTimeFormat("zh-CN", { timeZone: timezone, month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(item.dueAt)) : item.dueLocalDate}</p>}
           <div className={styles.detailActions}>
-            <button type="button" className={styles.btn} onClick={() => compose({ label: item.title, selectedEntityRef: { kind: "task", id: item.taskId }, text: "把这个作为学习任务安排" })}>作为学习任务</button>
-            <button type="button" className={styles.btnGhost} onClick={() => compose({ label: item.title, selectedEntityRef: { kind: "task", id: item.taskId }, text: "" })}>告诉 Agent 怎么处理</button>
+            <button type="button" className={styles.btn} onClick={() => compose({ label: item.title, selectedEntityRef: { kind: "task", id: item.taskId }, command: "study", text: "" })}>作为学习任务</button>
+            <button type="button" className={styles.btnGhost} onClick={() => compose({ label: item.title, selectedEntityRef: { kind: "task", id: item.taskId }, command: "process", text: "" })}>告诉 Agent 怎么处理</button>
           </div>
         </div>
       ))}

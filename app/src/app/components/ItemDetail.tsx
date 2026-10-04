@@ -56,7 +56,7 @@ export default function ItemDetail(props: { picked: Picked; date: string; timezo
           {props.budgetLeft === 0 ? "不过这天的学习预算已经排满了：要在这里再加，得先挪走别的安排，或者告诉我这天的上限调高。" : props.budgetLeft !== undefined ? `这天还能新排 ${props.budgetLeft} 分钟学习。` : ""}
         </p>
         <div className={styles.detailActions}>
-          <button type="button" className={styles.btnPrimary} onClick={() => compose({ label: `${dateLabel(s.date)} ${s.start}–${s.end} 的空档`, text: "这里安排", slot: { date: s.date, start: s.start, end: s.end } })}>
+          <button type="button" className={styles.btnPrimary} onClick={() => compose({ label: `${dateLabel(s.date)} ${s.start}–${s.end} 的空档`, command: "arrange", text: "", slot: { date: s.date, start: s.start, end: s.end } })}>
             在这里安排…
           </button>
         </div>
@@ -98,7 +98,7 @@ export default function ItemDetail(props: { picked: Picked; date: string; timezo
             >
               这次停课
             </button>
-            <button type="button" className={styles.btn} onClick={() => compose({ label: `${dateLabel(date)} ${name}`, text: `把${dateLabel(e.sourceDate ?? date).split(" ")[0]}的${name}课改到` })}>
+            <button type="button" className={styles.btn} onClick={() => compose({ label: `${dateLabel(date)} ${name}`, command: "adjust", selectedEntityRef: { kind: "course", id: e.courseId! }, text: `把${dateLabel(e.sourceDate ?? date).split(" ")[0]}的${name}课改到` })}>
               调到…
             </button>
           </div>
@@ -113,17 +113,17 @@ export default function ItemDetail(props: { picked: Picked; date: string; timezo
             >
               这次不去
             </button>
-            <button type="button" className={styles.btn} onClick={() => compose({ label: e.title, text: `把${e.title}改到每周` })}>
+            <button type="button" className={styles.btn} onClick={() => compose({ label: e.title, command: "adjust", selectedEntityRef: { kind: "fixed_event", id: e.id }, text: `把${e.title}改到每周` })}>
               改时间…
             </button>
-            <button type="button" className={styles.btnGhost} onClick={() => compose({ label: e.title, text: `以后不去${e.title}了` })}>
+            <button type="button" className={styles.btnGhost} onClick={() => compose({ label: e.title, command: "process", selectedEntityRef: { kind: "fixed_event", id: e.id }, text: `以后不去${e.title}了` })}>
               以后不去了…
             </button>
           </div>
         )}
         {e.kind === "pending" && (
           <div className={styles.detailActions}>
-            <button type="button" className={styles.btn} onClick={() => compose({ label: `${dateLabel(date)} 的上课安排`, text: `${dateLabel(date).split(" ")[0]}补` })}>
+            <button type="button" className={styles.btn} onClick={() => compose({ label: `${dateLabel(date)} 的上课安排`, command: "adjust", text: `${dateLabel(date).split(" ")[0]}补` })}>
               告诉我补哪天的课…
             </button>
           </div>
@@ -183,7 +183,7 @@ export default function ItemDetail(props: { picked: Picked; date: string; timezo
             <button type="button" className={styles.btn} disabled={busy} onClick={() => act(s.locked ? "unlock" : "lock")}>
               {s.locked ? "解除锁定" : "锁定"}
             </button>
-            <button type="button" className={styles.btn} onClick={() => compose({ label: `${dateLabel(date)} ${range} ${s.title}`, text: "把这段挪到", selectedEntityRef: { kind: "plan_session", id: s.id } })}>
+            <button type="button" className={styles.btn} onClick={() => compose({ label: `${dateLabel(date)} ${range} ${s.title}`, command: "adjust", text: "把这段挪到", selectedEntityRef: { kind: "plan_session", id: s.id } })}>
               挪到…
             </button>
           </div>

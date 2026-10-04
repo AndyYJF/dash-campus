@@ -3,6 +3,7 @@ import { taskKindSchema } from "@/domain/task-admission";
 import { addDays } from "./time";
 import { dateFromText, estimateFromText, isCompletionReport, parseNumber, timeFromText } from "./task-text";
 import { normalizeProfileValue, profileFactsFromText } from "./identity";
+import { isReadRequest } from "./read-request";
 
 /**
  * 主人指令的结构化意图（REPAIR-PLAN §5.1.1，AGENT-INTERFACE-CONTRACT §5.1）。
@@ -23,6 +24,7 @@ export const refSchema = z.discriminatedUnion("kind", [
 export type Ref = z.infer<typeof refSchema>;
 
 export const intentSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("inspect"), query: z.string().min(1).max(2000) }),
   z.object({ op: z.literal("undo") }),
   z.object({ op: z.literal("move_session"), ref: refSchema, targetDate: dateStr.nullable().default(null), part: part.default("any"), startLocalTime: timeStr.nullable().default(null) }),
   z.object({ op: z.literal("shorten_session"), ref: refSchema, durationMinutes: z.number().int().min(5).max(240) }),
@@ -180,6 +182,7 @@ export type ParseHints = { fixedEventTitles?: string[] };
 function parseClause(clause: string, referenceDate: string, now: Date, tz: string, hints: ParseHints = {}): Intent | "ignore" | null {
   const c = clause.trim();
   if (!c) return "ignore";
+  if (isReadRequest(c) && !/^为什么/.test(c)) return { op: "inspect", query: c.slice(0, 2000) };
   // 只是限定语，不产生动作
   if (/^(其他|别的|其余|另外的)(的)?(都)?(不动|不变|不用动|不要动|保持|照旧)/.test(c)) return "ignore";
 
@@ -308,6 +311,7 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
     if (/(没|不)(有)?(提醒|收到|发)/.test(c)) return { op: "explain", topic: "reminders" };
     if (/(这样|这么)(安排|排)|排在/.test(c)) return { op: "explain", topic: "plan" };
   }
+  if (isReadRequest(c)) return { op: "inspect", query: c.slice(0, 2000) };
   if (/(打包|导出|备份)(我的)?.{0,8}(成果|数据|记录|全部)/.test(c)) return { op: "export" };
 
   // 主动程度与模型预算

@@ -156,8 +156,9 @@ export type IntakeResultView = {
   createdAt: string;
   text: string;
   /** accepted 已收到 / working 处理中 / needs_input 等你回答 / applied 已更新 / partly_applied 部分完成 / no_change 只存了资料 / failed / cancelled */
-  state: "accepted" | "working" | "needs_input" | "applied" | "partly_applied" | "no_change" | "failed" | "cancelled";
+  state: "accepted" | "working" | "needs_input" | "applied" | "partly_applied" | "no_change" | "answered" | "failed" | "cancelled";
   summary: string;
+  links: Array<{ label: string; href: string }>;
   items: Array<{ id: string; kind: string; state: string; summary: string; error: string | null }>;
   changes: ChangeView[];
   questions: Array<{ id: string; prompt: string; reason: string; options: string[]; purpose: string; version: number }>;
@@ -270,6 +271,8 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
     error: (i.evidence?.error as string | undefined) ?? null,
   }));
   const failed = itemViews.filter((i) => i.state === "failed");
+  const visibleItems = items.filter((i) => i.state !== "cancelled");
+  const readOnly = visibleItems.length > 0 && visibleItems.every((i) => i.state === "applied" && i.payload.readOnly === true) && batches.every((b) => b.status === "undone");
   const state: IntakeResultView["state"] =
     intake.status === "received"
       ? "accepted"
@@ -283,7 +286,9 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
               ? "failed"
               : intake.status === "partially_applied"
                 ? "partly_applied"
-                : applied.length || items.some((i) => i.state === "applied" && (i.payload.applied as { noChange?: boolean } | undefined)?.noChange === false)
+                : readOnly
+                  ? "answered"
+                  : applied.length || items.some((i) => i.state === "applied" && (i.payload.applied as { noChange?: boolean } | undefined)?.noChange === false)
                   ? "applied"
                   : "no_change";
   const done = items.filter((i) => i.state === "applied").map((i) => (i.payload.applied as { summary?: string } | undefined)?.summary).filter((x): x is string => Boolean(x));
@@ -293,6 +298,7 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
       ? "已收到，正在整理"
       : [...done, ...(saved.length ? [`已存为资料 ${saved.length} 条（没有需要你行动的事项）`] : []), ...failed.map((f) => `没有办成：${f.error ?? "处理失败"}`)].join("；") || (state === "needs_input" ? "需要你回答一个问题才能继续" : "已处理");
   const undoable = applied.filter((b) => OPERATIONS[b.command as Command["command"]]?.undo !== "none").map((b) => b.id);
+  const correctedRead = items.some((i) => i.payload.readCorrection === true);
   return {
     intakeId: intake.id,
     conversationId: intake.conversationId,
@@ -300,13 +306,14 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
     text: intake.text.slice(0, 500),
     state,
     summary,
+    links: items.flatMap((i) => i.state === "applied" ? (i.payload.readLinks as Array<{ label: string; href: string }> | undefined) ?? [] : []).filter((l) => typeof l.label === "string" && ["/today", "/week", "/direction", "/settings"].includes(l.href)),
     items: itemViews,
     changes: changes.slice(0, 30),
     questions,
     nextActions: nextActions.slice(0, 8),
     affectedDates: [...dates].sort(),
     followUps,
-    undo: { available: undoable.length > 0, batchIds: undoable, note: commandBatches.some((b) => b.status === "undone") ? "部分变更已撤销" : "" },
+    undo: { available: !correctedRead && undoable.length > 0, batchIds: correctedRead ? [] : undoable, note: correctedRead ? "误建任务与学习块已取消，原始变更记录保留" : commandBatches.some((b) => b.status === "undone") ? "部分变更已撤销" : "" },
     snapshotRevision: snapshotRevision(),
     error: state === "failed" ? { message: failed[0]?.error ?? intake.lastError ?? "处理失败", recoverable: items.some((i) => i.state === "failed" && i.payload.retryable === true) } : null,
   };

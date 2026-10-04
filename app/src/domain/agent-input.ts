@@ -1,5 +1,6 @@
 /** Human commands are shared by buttons, the composer and server admission. */
 export const AGENT_COMMANDS = [
+  { name: "view", token: "/查看", label: "查看现状", hint: "例如：本周时间安排、明天课表、剩余学习时间" },
   { name: "process", token: "/处理", label: "处理事项", hint: "写下希望 Agent 怎么处理" },
   { name: "arrange", token: "/安排", label: "在空档安排", hint: "从空档发起，再写要做的事" },
   { name: "adjust", token: "/调整", label: "调整安排", hint: "例如：把这段挪到明天下午" },
@@ -45,8 +46,9 @@ export function agentInputIssue(input: AgentText, ctx: { hasFiles: boolean; hasU
   if (input.command === "arrange" && !ctx.hasSlot) return "先点时间线中的空档，再告诉我在这里安排什么；也可以去掉前缀直接说你的计划。";
   if (input.command === "undo") return input.body.trim() ? "撤销最近变化只需 /撤销，不需要额外参数。" : null;
   if (input.command === "review") return /^(上周|本周|这周)?$/.test(input.body.trim()) ? null : "复盘范围请写“上周”或“本周”。";
+  if (input.command === "view" && !input.body.trim() && !ctx.hasFiles && !ctx.hasUrls) return null;
   if (input.command === "import" || input.command === null) return input.body.trim() || ctx.hasFiles || ctx.hasUrls ? null : "内容不能为空。";
   if (!input.body.trim()) return "请在指令后写下具体内容。";
-  if (["arrange", "adjust", "policy", "record", "explore", "answer"].includes(input.command) && (ctx.hasFiles || ctx.hasUrls)) return "这条操作请用文字说明；新材料可通过 /导入 单独提交。";
+  if (["view", "arrange", "adjust", "policy", "record", "explore", "answer"].includes(input.command) && (ctx.hasFiles || ctx.hasUrls)) return "这条操作请用文字说明；新材料可通过 /导入 单独提交。";
   return null;
 }

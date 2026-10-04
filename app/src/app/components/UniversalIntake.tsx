@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { api, ApiError, newIdempotencyKey } from "./api";
 import { DASH_COMPOSE, emitChanged, useDashRefresh, type ComposeDetail } from "./dashBus";
 import styles from "./intake.module.css";
@@ -17,8 +18,9 @@ type Result = {
   intakeId: string;
   createdAt: string;
   text: string;
-  state: "accepted" | "working" | "needs_input" | "applied" | "partly_applied" | "no_change" | "failed" | "cancelled";
+  state: "accepted" | "working" | "needs_input" | "applied" | "partly_applied" | "no_change" | "answered" | "failed" | "cancelled";
   summary: string;
+  links?: Array<{ label: string; href: string }>;
   items: Array<{ id: string; kind: string; state: string; summary: string; error: string | null }>;
   changes: Array<{ label: string; detail: string }>;
   questions: Question[];
@@ -35,6 +37,7 @@ const STATE_LABEL: Record<Result["state"], string> = {
   applied: "已更新",
   partly_applied: "部分完成",
   no_change: "已保存",
+  answered: "已回答",
   failed: "没有办成",
   cancelled: "已取消",
 };
@@ -385,6 +388,7 @@ export default function UniversalIntake() {
                 </ul>
               )}
               <div className={styles.resultActions}>
+                {r.links?.map((l) => <Link key={`${l.href}-${l.label}`} href={l.href} className={styles.linkBtn}>{l.label}</Link>)}
                 {r.changes.length > 0 && (
                   <button type="button" className={styles.linkBtn} onClick={() => setOpen((o) => ({ ...o, [r.intakeId]: !o[r.intakeId] }))} aria-expanded={Boolean(open[r.intakeId])}>
                     {open[r.intakeId] ? "收起变化" : `看变化（${r.changes.length}）`}

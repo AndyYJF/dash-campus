@@ -1,4 +1,5 @@
 import { getDb } from "@/repositories/db";
+import { answerReadRequest, type ReadLink } from "./read-answer";
 import { pendingTasks, taskAdmitted } from "@/repositories/task-admission";
 import { supersedeQuestion } from "@/repositories/questions";
 import type { Intent, Ref } from "@/domain/intent";
@@ -43,7 +44,7 @@ export type QuestionSpec = { key: string; purpose: string; fieldPath: string; pr
 export type Bound =
   | { kind: "run"; command: Record<string, unknown>; replanDates?: string[] }
   /** 只读回答：解释状态，不改任何数据 */
-  | { kind: "answer"; text: string }
+  | { kind: "answer"; text: string; links?: ReadLink[] }
   | { kind: "ask"; question: QuestionSpec }
   | { kind: "fail"; error: string };
 
@@ -355,6 +356,11 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
     return { kind: "run", command: { command: "upsert_notice_rule", field: intent.field, value: intent.value, remove: intent.remove } };
   }
   if (intent.op === "export") return { kind: "run", command: { command: "request_export" } };
+  if (intent.op === "inspect") {
+    if (/提醒|邮件/.test(intent.query)) return { kind: "answer", text: explainReminders(env), links: [{ href: "/settings", label: "打开提醒设置" }] };
+    if (/为什么.*(?:安排|排)|(?:这样|这么)(?:安排|排)/.test(intent.query)) return { kind: "answer", text: explainPlan(env), links: [{ href: "/week", label: "打开本周时间轴" }] };
+    return { kind: "answer", ...answerReadRequest(intent.query, env) };
+  }
   if (intent.op === "explain") return { kind: "answer", text: intent.topic === "reminders" ? explainReminders(env) : explainPlan(env) };
   if (intent.op === "schedule_here") {
     // 从时间轴空档发起：对得上已有任务就给它排，对不上就按这句话新建一个

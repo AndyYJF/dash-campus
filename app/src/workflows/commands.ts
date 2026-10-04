@@ -4,7 +4,7 @@ import { commandSchema, COMMAND_POLICY_VERSION, OPERATIONS, type Command, type C
 import { getInstanceState } from "@/repositories/instance";
 import { applyArchive, applyCourseSet, applyException, applyFixedEvents } from "@/workflows/ops/courses";
 import { applyCompleteTask, applyCorrectPractice, applyPauseTask, applyPractice, applyTask } from "@/workflows/ops/tasks";
-import { applyRescheduleSession, applySessionState } from "@/workflows/ops/sessions";
+import { applyRescheduleSession, applyScheduleSession, applySessionState } from "@/workflows/ops/sessions";
 import { listCausedBatches } from "@/repositories/journal";
 import { undoBatch, type UndoResult } from "@/workflows/undo";
 import { HttpError } from "@/workflows/http";
@@ -102,6 +102,7 @@ const HANDLERS: { [N in Command["command"]]: Handler<N> } = {
   correct_practice: applyCorrectPractice,
   reschedule_session: applyRescheduleSession,
   set_session_state: applySessionState,
+  schedule_session: applyScheduleSession,
   undo_batch: applyUndoBatch,
   update_reminder_policy: applyReminderPolicy,
   update_digest_policy: applyDigestPolicy,

@@ -6,6 +6,7 @@ import { addDays, instanceTimezone, localDateInTz, wallTimeToUtc } from "@/domai
 import { subtractIntervals, type Interval } from "@/domain/budget";
 import { getPrefs, getSession, insertSession, listSessionsInRange } from "@/repositories/plan";
 import { insertPracticeEntry } from "@/repositories/practice";
+import crypto from "node:crypto";
 import { HttpError } from "@/workflows/http";
 import { nowDate } from "@/domain/clock";
 import { dayLedger, eventsForDay } from "@/workflows/plan";
@@ -157,4 +158,42 @@ export function applySessionState(cmd: Cmd<"set_session_state">, ctx: CommandCon
   void ctx;
   bumpPlanningRevision();
   return `「${taskOf(session.taskId).title}」${action.label}${extra}`;
+}
+
+/** 主人指定“这段时间做这件事”：校验不撞课程/别的安排、不超当日预算、不晚于截止，然后原样排上 */
+export function applyScheduleSession(cmd: Cmd<"schedule_session">, ctx: CommandContext, changes: ChangeInput[]): string {
+  const db = getDb();
+  const tz = instanceTimezone();
+  const now = ctx.now ?? nowDate();
+  let taskId = cmd.taskId;
+  let title = cmd.title ?? "";
+  if (taskId) {
+    const t = db.prepare(`SELECT title FROM tasks WHERE id = ? AND archived_at IS NULL AND status IN ('todo','doing')`).get(taskId) as { title: string } | undefined;
+    if (!t) throw new HttpError(404, "NOT_FOUND", "要安排的任务不存在或已结束");
+    title = t.title;
+  } else {
+    if (!cmd.title) throw new HttpError(422, "VALIDATION", "需要说明安排什么");
+    taskId = crypto.randomUUID();
+    const iso = new Date().toISOString();
+    db.prepare(`INSERT INTO tasks (id, title, description, status, priority, estimate_minutes, due_kind, created_at, updated_at) VALUES (?, ?, '', 'todo', 'normal', ?, 'none', ?, ?)`).run(taskId, cmd.title, cmd.durationMinutes, iso, iso);
+    changes.push({ entityKind: "task", entityId: taskId, action: "create", after: { title: cmd.title }, afterVersion: 1 });
+  }
+  const start = wall(cmd.date, cmd.startLocalTime, tz);
+  const end = start + cmd.durationMinutes * 60000;
+  if (start < now.getTime()) throw new HttpError(422, "IN_THE_PAST", `${label(start, tz)} 已经过去了`);
+  const clash = eventsForDay(cmd.date, tz).find((e) => e.kind !== "pending" && e.interval[0] < end && e.interval[1] > start);
+  if (clash) throw new HttpError(409, "SLOT_CONFLICT", `这段时间会撞上「${clash.title}」`);
+  const [dayStart, dayEnd] = [wall(cmd.date, "00:00", tz), wall(cmd.date, "24:00", tz)];
+  const others = listSessionsInRange(new Date(dayStart).toISOString(), new Date(dayEnd).toISOString()).filter((s) => ["planned", "tentative", "in_progress"].includes(s.status));
+  if (others.some((s) => Date.parse(s.startUtc) < end && Date.parse(s.endUtc) > start)) throw new HttpError(409, "SLOT_CONFLICT", "这段时间已经有别的学习安排");
+  const ledger = dayLedger(cmd.date, now, getPrefs(), tz);
+  if (ledger.futureCapacity < cmd.durationMinutes) {
+    throw new HttpError(409, "OVER_BUDGET", `${Number(cmd.date.slice(5, 7))}/${Number(cmd.date.slice(8, 10))} 的学习预算只剩 ${ledger.futureCapacity} 分钟，放不下 ${cmd.durationMinutes} 分钟；可以缩短、换一天，或告诉我这天的上限要调高`);
+  }
+  const task = taskOf(taskId);
+  if (task.dueAtMs !== null && end > task.dueAtMs) throw new HttpError(409, "DEADLINE_CONFLICT", `「${title}」${label(task.dueAtMs, tz)} 截止，排在这里会晚于截止`);
+  const id = insertSession({ taskId, startUtc: new Date(start).toISOString(), endUtc: new Date(end).toISOString(), timezone: tz, batchId: "", reason: "你指定排在这里", origin: "user" });
+  changes.push({ entityKind: "plan_session", entityId: id, action: "create", after: { taskId, startUtc: new Date(start).toISOString(), endUtc: new Date(end).toISOString() }, afterVersion: 1 });
+  bumpPlanningRevision();
+  return `「${title}」排在 ${label(start, tz)}–${label(end, tz).slice(-5)}`;
 }

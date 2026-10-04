@@ -654,6 +654,13 @@ function ownerInstructionPass(intake: IntakeRow, textRest: string, items: Intake
         last.clauses.push(clause);
       } else groups.push({ intents: [intent], clauses: [clause] });
     }
+    // 从时间轴空档发起、且只是一句“这里安排什么”：直接排进那个时段
+    const slot = intake.context.slot as { date: string; start: string; end: string } | undefined;
+    const what = textRest.trim().replace(/^(在)?(这里|这段时间?|这个空档)?(帮我)?(安排|排上?|放|做|学)/, "").replace(/[。.!！]$/, "").trim();
+    if (slot && !groups.length && !kept.length && what.length >= 2 && what.length <= 40 && !/[\n，,；;]/.test(what)) {
+      groups.push({ intents: [{ op: "schedule_here", text: what, date: slot.date, start: slot.start, end: slot.end }], clauses: [textRest.trim()] });
+      parsed.rest = "";
+    }
     if (groups.length) {
       rest = [parsed.rest, ...kept].filter(Boolean).join("\n");
       groups.forEach((g, n) => {

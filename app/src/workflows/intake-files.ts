@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import { getDb } from "@/repositories/db";
 import { HttpError } from "@/workflows/http";
-import { parseIcs, type IcsEvent } from "@/domain/ics";
+import { parseIcs, type IcsEvent, type IcsUnsupported } from "@/domain/ics";
+import { instanceTimezone } from "@/domain/time";
 import { createItem, updateItem } from "@/repositories/intakes";
 
 /**
@@ -64,7 +65,7 @@ function setExtraction(id: string, state: string): void {
 }
 
 export type AttachmentOutcome =
-  | { kind: "ics"; events: IcsEvent[]; skippedRecurring: number }
+  | { kind: "ics"; events: IcsEvent[]; skippedRecurring: number; unsupported: IcsUnsupported[] }
   | { kind: "text"; text: string }
   | { kind: "image"; dataUrl: string }
   | { kind: "pdf"; bytes: Uint8Array }
@@ -76,10 +77,13 @@ export function extractAttachment(att: AttachmentRow): AttachmentOutcome {
   if (!blob) return { kind: "unsupported", error: "附件内容缺失" };
   const mt = att.mediaType;
   if (mt === "text/calendar" || att.originalName.endsWith(".ics")) {
-    const parsed = parseIcs(blob.bytes.toString("utf8"));
-    if (!parsed.events.length) return { kind: "unsupported", error: "ICS 里没有可识别的一次性事件（RRULE 重复事件暂不支持）" };
+    const parsed = parseIcs(blob.bytes.toString("utf8"), instanceTimezone());
+    if (!parsed.events.length) {
+      const why = parsed.unsupported.slice(0, 3).map((u) => `「${u.title}」${u.reason}`).join("；");
+      return { kind: "unsupported", error: `ICS 里没有能导入的事件${why ? `：${why}` : ""}。原件已保留` };
+    }
     setExtraction(att.id, "done");
-    return { kind: "ics", events: parsed.events, skippedRecurring: parsed.skippedRecurring };
+    return { kind: "ics", events: parsed.events, skippedRecurring: parsed.skippedRecurring, unsupported: parsed.unsupported };
   }
   if (mt.startsWith("text/") || /\.(csv|txt|md)$/i.test(att.originalName)) {
     setExtraction(att.id, "done");
@@ -295,7 +299,8 @@ export function materializeAttachment(intakeId: string, att: AttachmentRow, outc
       intakeId,
       stableItemKey: `ics-${att.id.slice(0, 8)}`,
       kind: "ics",
-      payload: { events: outcome.events, skippedRecurring: outcome.skippedRecurring, file: att.originalName },
+      // 没导入的事件逐条说明原因（全天/跨夜/不支持的重复规则），不静默丢
+      payload: { events: outcome.events, skippedRecurring: outcome.skippedRecurring, file: att.originalName, unclear: outcome.unsupported.map((u) => `「${u.title}」${u.reason}`) },
     });
     return;
   }

@@ -332,6 +332,18 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
   }
   if (intent.op === "export") return { kind: "run", command: { command: "request_export" } };
   if (intent.op === "explain") return { kind: "answer", text: intent.topic === "reminders" ? explainReminders(env) : explainPlan(env) };
+  if (intent.op === "schedule_here") {
+    // 从时间轴空档发起：对得上已有任务就给它排，对不上就按这句话新建一个
+    const slotMinutes = (Number(intent.end.slice(0, 2)) * 60 + Number(intent.end.slice(3))) - (Number(intent.start.slice(0, 2)) * 60 + Number(intent.start.slice(3)));
+    const m = matchTask(intent.text, openTasks());
+    if (m.kind === "ambiguous") {
+      const c = chooseOrAsk({ kind: "many", values: m.candidates }, env, "task", (v) => v.title, "任务");
+      if (c.kind !== "one") return c;
+      return { kind: "run", command: { command: "schedule_session", taskId: c.value.id, date: intent.date, startLocalTime: intent.start, durationMinutes: Math.max(5, Math.min(slotMinutes, 90)) } };
+    }
+    const duration = Math.max(5, Math.min(slotMinutes, 90, estimateFromText(intent.text) ?? 60));
+    return { kind: "run", command: { command: "schedule_session", ...(m.kind === "one" ? { taskId: m.task.id } : { title: intent.text }), date: intent.date, startLocalTime: intent.start, durationMinutes: duration } };
+  }
   if (intent.op === "agent_policy") {
     return { kind: "run", command: { command: "update_agent_policy", ...(intent.dailyModelCalls !== undefined ? { dailyModelCalls: intent.dailyModelCalls } : {}), ...(intent.scheduledEnabled !== undefined ? { scheduledEnabled: intent.scheduledEnabled } : {}) } };
   }

@@ -235,6 +235,16 @@ export const rescheduleSessionSchema = z.object({
   expectedVersion: z.number().int().min(1).nullable().default(null),
 });
 
+/** 在指定时段安排一段学习（从时间轴空档发起）：给已有任务排，或带 title 新建任务再排 */
+export const scheduleSessionSchema = z.object({
+  command: z.literal("schedule_session"),
+  taskId: z.string().uuid().nullable().default(null),
+  title: z.string().trim().min(1).max(200).optional(),
+  date: dateStr,
+  startLocalTime: timeStr,
+  durationMinutes: z.number().int().min(5).max(240),
+});
+
 export const setSessionStateSchema = z.object({
   command: z.literal("set_session_state"),
   sessionId: z.string().min(1).max(64),
@@ -371,6 +381,7 @@ export const commandSchema = z.discriminatedUnion("command", [
   correctPracticeSchema,
   rescheduleSessionSchema,
   setSessionStateSchema,
+  scheduleSessionSchema,
   undoBatchSchema,
   updateReminderPolicySchema,
   updateDigestPolicySchema,
@@ -420,6 +431,7 @@ export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   pause_task: { title: "暂停任务", description: "把任务先放一放（到某天或先不定），让出未执行的学习块；resume 恢复。", group: "task", authorization: "owner_explicit", undo: "journal", affects: ["plan", "reminders"] },
   correct_practice: { title: "纠正实践记录", description: "修改一条已有实践记录的分钟、日期、说明或关联任务。", group: "practice", authorization: "owner_explicit", undo: "journal", affects: ["plan", "direction"] },
   reschedule_session: { title: "调整学习安排", description: "把一个具体学习块挪到别的日期/时段/钟点，或只改这一段的长度。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
+  schedule_session: { title: "安排学习", description: "在指定日期和钟点给某个任务安排一段学习（可新建任务）。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
   set_session_state: { title: "学习块状态", description: "开始、完成、跳过、锁定或解锁一个学习块。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
   undo_batch: { title: "撤销", description: "撤销最近一次（或指定的）变更。", group: "recovery", authorization: "owner_explicit", undo: "none", affects: ["plan", "calendar"] },
   update_reminder_policy: { title: "提醒设置", description: "开关截止提醒、默认提前量、安静时段；或设置某个任务提前多久提醒。", group: "reminder", authorization: "owner_explicit", undo: "journal", affects: ["reminders"] },

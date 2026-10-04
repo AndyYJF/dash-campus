@@ -54,6 +54,7 @@ export const intentSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("notice_filter"), field: z.enum(["education_level", "program", "campus", "grade_year", "study_year"]), value: z.string().min(1).max(200), remove: z.boolean().default(false) }),
   z.object({ op: z.literal("explain"), topic: z.enum(["reminders", "plan"]) }),
   z.object({ op: z.literal("export") }),
+  z.object({ op: z.literal("schedule_here"), text: z.string().min(1).max(200), date: dateStr, start: timeStr, end: timeStr }),
   z.object({ op: z.literal("agent_policy"), dailyModelCalls: z.number().int().min(0).max(1000).optional(), scheduledEnabled: z.boolean().optional() }),
   z.object({ op: z.literal("digest"), dailyEnabled: z.boolean().optional(), dailyTime: timeStr.optional(), weekdaysOnly: z.boolean().optional(), weeklyEnabled: z.boolean().optional(), weeklyWeekday: z.number().int().min(1).max(7).optional(), weeklyTime: timeStr.optional() }),
   z.object({ op: z.literal("reminders"), enabled: z.boolean().optional(), quietStart: timeStr.optional(), quietEnd: timeStr.optional() }),

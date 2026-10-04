@@ -30,6 +30,13 @@
   - 多轮目标核对 `eval-goal-flows` **6/6**，共 12 次请求：结果后“改成下周吧”续到同一目标第 2 版并按下周重排；“周末别排数学”续到同一目标（改提示后改为追问，不再声称做到）；“记一下今天跑步跑了30分钟”另立新目标、旧目标不变；有问题在等时“那就先顾数学吧，英语往后放放”被判为回答、原投递继续；“明天有什么课”不当作回答、问题保持待答；两个问题在等时“周末留半天休息吧”只答周末那个。
   - 验收集（提示词变更后重录）**56/58（96.6%）**：act precision 97.6% / recall 88.9%，意图 97.5%，字段 100%，查看误写 0，缺钟点拒绝 0，平均 2.02 次请求，p50/p95 9.6s/31.9s；追问率 53.4%、确认率 34.5% 仍偏高。失败 `u022`（同 P3）；`u188`“先别做了”改由确定性停止处理，评分修正后计通过（该例 0 次模型请求，录制里的判定随之更新）。`u148` 首录时一次网络失败未被记下，修录制后单独重录合并。明细 `.planning/eval-live-holdout-p4.json`、`.planning/eval-goals-*.json`（不入库）。开发集本阶段未重跑。
 
+### 发布与生产冒烟（2026-10-05 05:20 +08）
+
+- 提交 `cb64d10` 推送 `main`；按 [deploy.md](../deploy.md) §4 发布：停桥接 timer 与 web/worker → 备份 `backups/production-20261005-p4-cb64d10`（schema30，sha256 `b6a5d23e…`）→ 清掉旧 `src/` 后覆盖源码（删除的 `adjustment-decision.ts` 不残留）→ 构建 → 迁移 `0031_agent_goals.sql`（30 → 31）→ 启动 → 恢复 timer。回退材料：`/opt/dash-campus-src-85d6143.tgz` 与镜像 `dash-campus:rollback-85d6143`（回退需先用上述备份恢复 schema30 数据）。
+- 生产源码散列与 `git -c core.autocrlf=false archive cb64d10` 一致（`669ea6fe…`）。
+- 冒烟（只读，未往生产写测试数据）：health `schemaVersion 31`；80 端口 301 到 HTTPS；`/login` 200；owner 接口、新 `GET /api/v2/goals`、`POST /api/v2/intakes`、`POST /api/v2/feedback` 未登录均 401；生产源码无 `adjustment-decision.ts`。生产 ops 容器里用已部署代码跑纯函数核对：决策 workflow 名 `agent_decide`、停止短语（“先别做了/停一下/取消吧”命中，“先别做数学”不命中）、“下周”范围与沿用标记、90 天前的实践被拒、无选项的追问可解析、路由 `reply` 结果、`goalId`/`expectedGoalRevision` 输入校验、两张目标表在导出分类中。生产库只读：schema 31，`agent_goals`/`agent_goal_revisions` 与 `intakes.goal_id/goal_revision` 存在，目标 0 行（发布后无主人投递）；web healthy、worker 恢复扫描 0 项、web 日志无错误。
+- 未做：登录态网页“继续这个目标”走查与生产真实多轮投递（需主人会话）。
+
 ### 未验证 / 未完成
 
 - 真实模型多轮核对是 6 条合成流程，不覆盖任意对话；开发集未在 P4 提示词上重跑。

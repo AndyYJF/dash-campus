@@ -3,6 +3,8 @@ import { getDb } from "@/repositories/db";
 import { HttpError } from "@/workflows/http";
 import { parseIcs, type IcsEvent, type IcsUnsupported } from "@/domain/ics";
 import { instanceTimezone } from "@/domain/time";
+import { parseCsv, parseXlsx, sheetsToText } from "@/domain/spreadsheet";
+import { downscale, encodePng, type RawImage } from "@/domain/png";
 import { createItem, updateItem } from "@/repositories/intakes";
 
 /**
@@ -66,7 +68,7 @@ function setExtraction(id: string, state: string): void {
 
 export type AttachmentOutcome =
   | { kind: "ics"; events: IcsEvent[]; skippedRecurring: number; unsupported: IcsUnsupported[] }
-  | { kind: "text"; text: string }
+  | { kind: "text"; text: string; locator?: string; sourceKind?: string }
   | { kind: "image"; dataUrl: string }
   | { kind: "pdf"; bytes: Uint8Array }
   | { kind: "unsupported"; error: string };
@@ -85,7 +87,23 @@ export function extractAttachment(att: AttachmentRow): AttachmentOutcome {
     setExtraction(att.id, "done");
     return { kind: "ics", events: parsed.events, skippedRecurring: parsed.skippedRecurring, unsupported: parsed.unsupported };
   }
-  if (mt.startsWith("text/") || /\.(csv|txt|md)$/i.test(att.originalName)) {
+  // 表格：本地读出单元格和行列位置；不执行公式/宏
+  const isCsv = mt === "text/csv" || /\.csv$/i.test(att.originalName);
+  const isXlsx = mt === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || /\.xls[xm]$/i.test(att.originalName);
+  if (isCsv || isXlsx) {
+    const parsed = isCsv ? parseCsv(new Uint8Array(blob.bytes), att.originalName.replace(/\.csv$/i, "")) : parseXlsx(new Uint8Array(blob.bytes));
+    if (!parsed.ok) {
+      setExtraction(att.id, "unsupported");
+      return { kind: "unsupported", error: `${parsed.error}。原件已保留` };
+    }
+    setExtraction(att.id, "done");
+    return { kind: "text", text: `附件「${att.originalName}」的表格内容（带行号和列字母）：\n${sheetsToText(parsed.sheets, parsed.notes)}`.slice(0, 100_000), locator: parsed.sheets.map((s) => `${s.name}!A${s.firstRow}:${s.firstRow + s.rows.length - 1}`).join("; "), sourceKind: isCsv ? "csv" : "xlsx" };
+  }
+  if (mt === "application/vnd.ms-excel" || /\.xls$/i.test(att.originalName)) {
+    setExtraction(att.id, "unsupported");
+    return { kind: "unsupported", error: "旧版 .xls 表格读不了：请在表格软件里另存为 .xlsx 或 .csv 再发。原件已保留" };
+  }
+  if (mt.startsWith("text/") || /\.(txt|md)$/i.test(att.originalName)) {
     setExtraction(att.id, "done");
     return { kind: "text", text: blob.bytes.toString("utf8").slice(0, 100_000) };
   }
@@ -100,13 +118,55 @@ export function extractAttachment(att: AttachmentRow): AttachmentOutcome {
   return { kind: "unsupported", error: `类型 ${mt} 暂不支持：已保留原件，可先复制其中的文字投递` };
 }
 
-/** PDF 文本层提取（unpdf，A14）。无文本层（扫描件）或解析失败返回 null——调用方提示改走图片投递 */
-export async function extractPdfText(bytes: Uint8Array): Promise<string | null> {
+export const MAX_PDF_PAGES = 30;
+/** 扫描页图像长边上限：够看清课表文字，又不至于把一页发成几兆 */
+const SCAN_MAX_SIDE = 1800;
+
+export type PdfExtraction = {
+  pages: number;
+  /** 有文字层的页：逐页保留页码 */
+  textPages: Array<{ page: number; text: string }>;
+  /** 没有文字层的页（扫描件）：取页面里最大的那张图，交给图片识别 */
+  scannedPages: Array<{ page: number; dataUrl: string }>;
+  /** 既没有文字、也取不出图像的页 */
+  unreadablePages: number[];
+  skippedPages: number;
+};
+
+/**
+ * PDF 逐页提取（MASTER-PLAN §3.1）：可复制文字本地取；扫描页走同一条图片识别管线并保留页码。
+ * 不读脚本/表单动作。超过 30 页只处理前 30 页并说明。解析失败返回 null。
+ */
+export async function extractPdf(bytes: Uint8Array): Promise<PdfExtraction | null> {
   try {
-    const { extractText } = await import("unpdf");
-    const r = await extractText(bytes);
-    const text = r.text.join("\n").trim();
-    return text.length >= 4 ? text.slice(0, 100_000) : null;
+    const { getDocumentProxy, extractText, extractImages } = await import("unpdf");
+    const pdf = await getDocumentProxy(new Uint8Array(bytes));
+    const total = pdf.numPages;
+    const limit = Math.min(total, MAX_PDF_PAGES);
+    const texts = (await extractText(pdf, { mergePages: false })).text as string[];
+    const out: PdfExtraction = { pages: total, textPages: [], scannedPages: [], unreadablePages: [], skippedPages: total - limit };
+    for (let page = 1; page <= limit; page++) {
+      const text = (texts[page - 1] ?? "").trim();
+      if (text.length >= 4) {
+        out.textPages.push({ page, text });
+        continue;
+      }
+      let best: RawImage | null = null;
+      try {
+        for (const img of await extractImages(pdf, page)) {
+          if (!best || img.width * img.height > best.width * best.height) best = { data: img.data, width: img.width, height: img.height, channels: img.channels };
+        }
+      } catch {
+        best = null;
+      }
+      // 太小的图是图标/印章，不是页面扫描
+      if (!best || best.width < 200 || best.height < 200) {
+        out.unreadablePages.push(page);
+        continue;
+      }
+      out.scannedPages.push({ page, dataUrl: `data:image/png;base64,${encodePng(downscale(best, SCAN_MAX_SIDE)).toString("base64")}` });
+    }
+    return out;
   } catch {
     return null;
   }
@@ -115,6 +175,14 @@ export async function extractPdfText(bytes: Uint8Array): Promise<string | null> 
 /** 标记附件提取完成（PDF 异步路径用） */
 export function markExtractionDone(id: string): void {
   setExtraction(id, "done");
+}
+
+/** 附件的本地提取结果存为证据（带定位：页码或工作表行范围）；同一附件同一定位只存一次 */
+export function recordFileDocument(intakeId: string, sourceKind: string, fileName: string, locator: string | null, text: string): void {
+  const db = getDb();
+  const loc = locator ? `${fileName}#${locator}` : fileName;
+  if (db.prepare(`SELECT 1 FROM extracted_documents WHERE intake_id = ? AND source_kind = ? AND locator = ?`).get(intakeId, sourceKind, loc)) return;
+  db.prepare(`INSERT INTO extracted_documents (id, intake_id, source_kind, extractor_version, content_text, content_hash, locator, status, created_at) VALUES (?, ?, ?, 'file-v1', ?, ?, ?, 'done', ?)`).run(crypto.randomUUID(), intakeId, sourceKind, text, crypto.createHash("sha256").update(text).digest("hex"), loc, new Date().toISOString());
 }
 
 /** 保存 URL 抓取结果为提取证据 + 返回正文 */

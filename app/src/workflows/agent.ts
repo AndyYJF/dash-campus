@@ -334,15 +334,29 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
   if (intent.op === "explain") return { kind: "answer", text: intent.topic === "reminders" ? explainReminders(env) : explainPlan(env) };
   if (intent.op === "schedule_here") {
     // 从时间轴空档发起：对得上已有任务就给它排，对不上就按这句话新建一个
-    const slotMinutes = (Number(intent.end.slice(0, 2)) * 60 + Number(intent.end.slice(3))) - (Number(intent.start.slice(0, 2)) * 60 + Number(intent.start.slice(3)));
+    const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
+    const endMin = intent.end >= "24:00" ? 1440 : toMin(intent.end);
+    // 今天的空档可能已经过去一截：从现在之后的整 5 分钟开始
+    let startMin = toMin(intent.start);
+    if (localDateInTz(env.now, env.tz) === intent.date) {
+      const nowMin = Math.ceil(((env.now.getTime() - wallTimeToUtc(intent.date, "00:00", env.tz).getTime()) / 60000) / 5) * 5;
+      startMin = Math.max(startMin, nowMin);
+    }
+    const slotMinutes = endMin - startMin;
+    if (slotMinutes < 5) return { kind: "fail", error: "这个空档已经过去了，换一个时段再安排" };
+    const startLocalTime = `${String(Math.floor(startMin / 60)).padStart(2, "0")}:${String(startMin % 60).padStart(2, "0")}`;
+    const said = estimateFromText(intent.text);
     const m = matchTask(intent.text, openTasks());
+    let taskId: string | null = m.kind === "one" ? m.task.id : null;
     if (m.kind === "ambiguous") {
       const c = chooseOrAsk({ kind: "many", values: m.candidates }, env, "task", (v) => v.title, "任务");
       if (c.kind !== "one") return c;
-      return { kind: "run", command: { command: "schedule_session", taskId: c.value.id, date: intent.date, startLocalTime: intent.start, durationMinutes: Math.max(5, Math.min(slotMinutes, 90)) } };
+      taskId = c.value.id;
     }
-    const duration = Math.max(5, Math.min(slotMinutes, 90, estimateFromText(intent.text) ?? 60));
-    return { kind: "run", command: { command: "schedule_session", ...(m.kind === "one" ? { taskId: m.task.id } : { title: intent.text }), date: intent.date, startLocalTime: intent.start, durationMinutes: duration } };
+    // 时长：话里说了按话里的；否则已有任务按它的估时，最多 90 分钟一段，都不超过空档
+    const known = taskId ? ((getDb().prepare(`SELECT estimate_minutes FROM tasks WHERE id = ?`).get(taskId) as { estimate_minutes: number | null } | undefined)?.estimate_minutes ?? null) : null;
+    const durationMinutes = Math.max(5, Math.min(slotMinutes, said ?? Math.min(90, known ?? 60)));
+    return { kind: "run", command: { command: "schedule_session", ...(taskId ? { taskId } : { title: intent.text }), date: intent.date, startLocalTime, durationMinutes } };
   }
   if (intent.op === "agent_policy") {
     return { kind: "run", command: { command: "update_agent_policy", ...(intent.dailyModelCalls !== undefined ? { dailyModelCalls: intent.dailyModelCalls } : {}), ...(intent.scheduledEnabled !== undefined ? { scheduledEnabled: intent.scheduledEnabled } : {}) } };

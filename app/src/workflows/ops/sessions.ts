@@ -168,7 +168,7 @@ export function applyScheduleSession(cmd: Cmd<"schedule_session">, ctx: CommandC
   let taskId = cmd.taskId;
   let title = cmd.title ?? "";
   if (taskId) {
-    const t = db.prepare(`SELECT title FROM tasks WHERE id = ? AND archived_at IS NULL AND status IN ('todo','doing')`).get(taskId) as { title: string } | undefined;
+    const t = db.prepare(`SELECT title FROM tasks WHERE id = ? AND archived_at IS NULL AND status IN ('todo','doing','blocked')`).get(taskId) as { title: string } | undefined;
     if (!t) throw new HttpError(404, "NOT_FOUND", "要安排的任务不存在或已结束");
     title = t.title;
   } else {

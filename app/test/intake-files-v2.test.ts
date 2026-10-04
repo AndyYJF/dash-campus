@@ -144,7 +144,7 @@ test("P4：URL 提取正文进入分类（data: URL 确定性）", async () => {
   assert.equal(docs.n, 1);
 });
 
-test("P4：无文本层 PDF 明确失败且原文保留（扫描件提示走图片）", async () => {
+test("P4：打不开的 PDF 明确失败且原件保留（扫描页的处理见 materials-files）", async () => {
   const form = new FormData();
   form.append("files", fileOf("doc.pdf", "application/pdf", "%PDF-1.4 fake"));
   const res = await createIntakeRoute(multipartReq("/api/v2/intakes", form, "idem-p4-pdf"));
@@ -152,8 +152,8 @@ test("P4：无文本层 PDF 明确失败且原文保留（扫描件提示走图�
   const { intakeId } = (await res.json()) as { intakeId: string };
   for (let i = 0; i < 4; i++) await runDueJobsOnce();
   const item = listItems(intakeId).find((i) => i.state === "failed");
-  assert.ok(item, "无文本层 PDF 应产生明确的失败事项");
-  assert.match(item!.evidence?.error as string, /文本层|扫描件|截图/);
+  assert.ok(item, "打不开的 PDF 应产生明确的失败事项");
+  assert.match(item!.evidence?.error as string, /PDF 打不开（可能加了密码或已损坏）。原件已保留/);
 });
 
 test("A14：带文本层 PDF 提取文本进入分类", async () => {

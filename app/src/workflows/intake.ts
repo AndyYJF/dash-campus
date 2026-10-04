@@ -37,7 +37,7 @@ import { bindIntents, commandsForStandaloneAnswer, completionHasTarget, isPolicy
 import { appendTurn, conversationExists, currentConversationId, upsertAgentTurn, type EntityRef } from "@/repositories/conversations";
 import { listChanges } from "@/repositories/journal";
 import { followUpView, operationResultView, type OperationResultView } from "@/workflows/results";
-import { extractAttachment, extractPdfText, fetchImageDataUrl, fetchUrl, listAttachments, markExtractionDone, materializeAttachment, recordUrlDocument } from "@/workflows/intake-files";
+import { extractAttachment, extractPdf, fetchImageDataUrl, fetchUrl, listAttachments, markExtractionDone, materializeAttachment, recordFileDocument, recordUrlDocument } from "@/workflows/intake-files";
 import { isOfficialHolidaySource, parseHolidayNotice } from "@/domain/holiday-notice";
 import {
   ADJUSTMENT_EXTRACT_INSTRUCTIONS,
@@ -160,17 +160,43 @@ async function collectExtraInputs(intakeId: string): Promise<{ sources: ExtraSou
   for (const att of listAttachments(intakeId)) {
     if (att.extractionState === "unsupported") continue;
     const outcome = extractAttachment(att);
-    if (outcome.kind === "text") sources.push({ kind: "file", ref: att.originalName, text: outcome.text });
-    else if (outcome.kind === "image") {
+    if (outcome.kind === "text") {
+      // 表格等本地解析结果连同定位（工作表/行范围）存为证据
+      if (outcome.sourceKind) recordFileDocument(intakeId, outcome.sourceKind, att.originalName, outcome.locator ?? null, outcome.text);
+      sources.push({ kind: "file", ref: att.originalName, text: outcome.text });
+    } else if (outcome.kind === "image") {
       if (images.length < MAX_MODEL_IMAGES) images.push(outcome.dataUrl);
+      else materializeAttachment(intakeId, att, { kind: "unsupported", error: `一次最多看 ${MAX_MODEL_IMAGES} 张图，「${att.originalName}」这次没有处理：请单独再发一次。原件已保留` });
     } else if (outcome.kind === "pdf") {
-      const text = await extractPdfText(outcome.bytes);
-      if (text) {
-        markExtractionDone(att.id);
-        sources.push({ kind: "file", ref: att.originalName, text });
-      } else {
-        materializeAttachment(intakeId, att, { kind: "unsupported", error: "PDF 没有可提取的文本层（可能是扫描件）：请截图投递，或复制其中的文字" });
+      const pdf = await extractPdf(outcome.bytes);
+      if (!pdf || (!pdf.textPages.length && !pdf.scannedPages.length)) {
+        materializeAttachment(intakeId, att, { kind: "unsupported", error: pdf ? "PDF 里既没有可复制的文字，也取不出页面图像：请截图投递，或复制其中的文字。原件已保留" : "PDF 打不开（可能加了密码或已损坏）。原件已保留" });
+        continue;
       }
+      markExtractionDone(att.id);
+      const parts: string[] = [];
+      for (const p of pdf.textPages) {
+        recordFileDocument(intakeId, "pdf", att.originalName, `page=${p.page}`, p.text);
+        parts.push(`【${att.originalName} 第 ${p.page} 页】\n${p.text}`);
+      }
+      // 扫描页：页面图像走图片识别，页码留在文字里供定位
+      const taken: number[] = [];
+      const pending: number[] = [];
+      for (const p of pdf.scannedPages) {
+        if (images.length < MAX_MODEL_IMAGES) {
+          images.push(p.dataUrl);
+          taken.push(p.page);
+          recordFileDocument(intakeId, "pdf-scan", att.originalName, `page=${p.page}`, `（扫描页，作为第 ${images.length} 张图片交给识别）`);
+        } else pending.push(p.page);
+      }
+      if (taken.length) parts.push(`【${att.originalName} 第 ${taken.join("、")} 页是扫描页：内容见随附图片（按页码顺序）】`);
+      if (parts.length) sources.push({ kind: "file", ref: att.originalName, text: parts.join("\n\n").slice(0, 100_000) });
+      // 没处理到的范围如实说，不当成整份已读
+      const gaps: string[] = [];
+      if (pending.length) gaps.push(`第 ${pending.join("、")} 页是扫描页，这次没有处理（一次最多看 ${MAX_MODEL_IMAGES} 张图）`);
+      if (pdf.unreadablePages.length) gaps.push(`第 ${pdf.unreadablePages.join("、")} 页没有文字也取不出图像`);
+      if (pdf.skippedPages) gaps.push(`共 ${pdf.pages} 页，只处理了前 ${pdf.pages - pdf.skippedPages} 页`);
+      if (gaps.length) materializeAttachment(intakeId, att, { kind: "unsupported", error: `「${att.originalName}」${gaps.join("；")}：请把这些页单独再发一次。原件已保留` });
     } else materializeAttachment(intakeId, att, outcome);
   }
   return { sources, images };

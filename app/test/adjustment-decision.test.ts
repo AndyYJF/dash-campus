@@ -13,7 +13,7 @@ import { runDueJobsOnce } from "@/worker/runner";
 import { intakeResultById } from "@/workflows/results";
 import { executeOperation } from "@/workflows/commands";
 import { dashboardSnapshot } from "@/workflows/snapshot";
-import { isFlexibleAdjustment, validateAdjustment } from "@/workflows/adjustment-decision";
+import { isFlexibleAdjustment, adjustmentScope, validateAdjustment } from "@/workflows/adjustment-decision";
 import type { ModelRequest } from "@/contracts/model";
 const NOW = new Date("2026-10-04T08:00:00+08:00");
 let token="",csrf="",seq=0,calls=0;
@@ -38,7 +38,7 @@ test("plain and slash ambiguous requests use real context and apply bounded repl
  const tasks=getDb().prepare("SELECT * FROM tasks ORDER BY id").all(),courses=getDb().prepare("SELECT * FROM courses ORDER BY id").all();
  const manual=getDb().prepare("SELECT * FROM plan_sessions WHERE origin='user' ORDER BY id").all();
  reply=r=>{assert.equal(r.workflow,"adjustment_decision");assert.equal(((r.context as Record<string,unknown>).days as unknown[]).length,7);assert.match(JSON.stringify(r.context),/微积分/);assert.match(JSON.stringify(r.context),/09:00/);assert.deepEqual((r.context as Record<string,unknown>).defaultScope,{dateFrom:"2026-10-04",dateTo:"2026-10-10"});return replan();};
- for(const text of ["根据每天的课程重新安排时间","/调整 根据每天的课程重新安排时间","这周学习安排优化一下，课多的日子轻松些"]){const r=await say(text);assert.ok(["applied","no_change"].includes(r.state),JSON.stringify(r));assert.match(r.summary,/七天/);assert.ok(r.followUps.some(f=>f.kind==="plan"));}
+ for(const text of ["根据每天的课程重新安排时间","/调整 根据每天的课程重新安排时间","学习安排优化一下，课多的日子轻松些"]){const r=await say(text);assert.ok(["applied","no_change"].includes(r.state),JSON.stringify(r));assert.match(r.summary,/七天/);assert.ok(r.followUps.some(f=>f.kind==="plan"));}
  assert.deepEqual(getDb().prepare("SELECT * FROM tasks ORDER BY id").all(),tasks);assert.deepEqual(getDb().prepare("SELECT * FROM courses ORDER BY id").all(),courses);assert.deepEqual(getDb().prepare("SELECT * FROM plan_sessions WHERE origin='user' ORDER BY id").all(),manual);
  for(let i=4;i<=10;i++){const d=dashboardSnapshot(`2026-10-${String(i).padStart(2,"0")}`,NOW).today;for(const s of d.sessions.filter(s=>["planned","tentative"].includes(s.status)))for(const e of d.events)assert.ok(s.endUtc<=e.startUtc||s.startUtc>=e.endUtc);}
 });
@@ -61,4 +61,12 @@ test("read queries keep bypassing the decision model and slot context does not t
  const before=facts(),n=calls;const r=await say("看一下目前每天的时间安排");assert.equal(r.state,"answered");assert.equal(calls,n);assert.deepEqual(facts(),before);
  reply=()=>replan();const taskRows=getDb().prepare("SELECT * FROM tasks ORDER BY id").all();const adjusted=await say("根据每天的课程重新安排时间",{slot:{date:"2026-10-05",start:"15:00",end:"16:00"}});assert.ok(["applied","no_change"].includes(adjusted.state));assert.deepEqual(getDb().prepare("SELECT * FROM tasks ORDER BY id").all(),taskRows);
  for(const t of ["明天参加报名通知","导入这个重新安排时间的通知","提醒我优化学习计划"])assert.equal(isFlexibleAdjustment(t),false);
+});
+
+test("explicit weekly scope follows calendar weeks, rejects silent expansion, and covers the last day of next week",async()=>{
+ assert.deepEqual(adjustmentScope("这周按课表调整安排","2026-10-04"),{dateFrom:"2026-10-04",dateTo:"2026-10-04",explicit:true});
+ assert.deepEqual(adjustmentScope("下周按课表调整安排","2026-10-04"),{dateFrom:"2026-10-05",dateTo:"2026-10-11",explicit:true});
+ reply=()=>replan();const before=facts();const rejected=await say("/调整 本周重新安排时间");assert.equal(rejected.state,"failed");assert.match(rejected.summary,/超出/);assert.deepEqual(facts(),before);
+ reply=()=>({kind:"act",rationale:"下周10月5日至11日按实际课程重新排程",intents:[{op:"replan",dateFrom:"2026-10-05",dateTo:"2026-10-11"}]});
+ const r=await say("/调整 下周重新安排时间");assert.ok(["applied","no_change"].includes(r.state),JSON.stringify(r));assert.ok(r.followUps.some(f=>f.kind==="plan"));
 });

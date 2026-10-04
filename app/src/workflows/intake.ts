@@ -63,7 +63,7 @@ import { createSource, getMessage, getMessageByExternalId, getRevision, getSourc
 import { firstUnknownLeaf, normalizeCondition, normalizeProfileValue, PROFILE_LABEL } from "@/domain/identity";
 import { noticeOutcome } from "@/workflows/ops/notices";
 import type { z } from "zod";
-import { ADJUSTMENT_DECISION_WORKFLOW, ADJUSTMENT_DECISION_INSTRUCTIONS, adjustmentDecisionSchema, adjustmentContext, adjustmentNeedsConfirmation, isFlexibleAdjustment, validateAdjustment, type AdjustmentDecision } from "./adjustment-decision";
+import { ADJUSTMENT_DECISION_WORKFLOW, ADJUSTMENT_DECISION_INSTRUCTIONS, adjustmentDecisionSchema, adjustmentContext, adjustmentScope, adjustmentNeedsConfirmation, isFlexibleAdjustment, validateAdjustment, type AdjustmentDecision } from "./adjustment-decision";
 import {
   INTAKE_JOB_TYPE,
   SEMESTER_FIRST_MONDAY_KEY,
@@ -452,7 +452,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
       const { question } = ensureOpenQuestion({ questionKey: key, intakeId, itemId: item.id, fieldPath: "adjustment.choice", purpose: "agent_clarification", prompt: decision.question, reason: decision.reason, options: decision.options, context: {}, conversationId: intake.conversationId });
       updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, decisionReplies: replies, decisionQuestionKey: key, decisionQuestionPrompt: decision.question } });
     } else {
-      const error = validateAdjustment(decision.intents, localDateInTz(nowDate(), intake.timezone));
+      const error = validateAdjustment(decision.intents, localDateInTz(nowDate(), intake.timezone), adjustmentScope(String(item.payload.decisionText), localDateInTz(nowDate(), intake.timezone), replies));
       if (error) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error } }); continue; }
       if (!item.payload.pendingDecision && adjustmentNeedsConfirmation(decision.intents)) {
         const { question } = ensureOpenQuestion({ questionKey: `decision-confirm:${item.id}`, intakeId, itemId: item.id, fieldPath: "adjustment.confirm", purpose: "confirm", prompt: `调整建议：${decision.rationale}${decision.intents.some(i => i.op === "no_study") ? "；不学习的时段内，未开始的手动或锁定块也会被让出" : ""}。是否采用？`, reason: "涉及规则、具体块或截止的推断，需要你确认；当前尚未修改", options: ["可以","先不要"], context: { proposedIntents: decision.intents }, conversationId: intake.conversationId });

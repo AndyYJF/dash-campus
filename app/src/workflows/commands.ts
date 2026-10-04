@@ -1,3 +1,4 @@
+import { localDateInTz, instanceTimezone } from "@/domain/time";
 import { getDb } from "@/repositories/db";
 import { addChange, createBatch, type ChangeInput } from "@/repositories/journal";
 import { commandSchema, COMMAND_POLICY_VERSION, OPERATIONS, type Command, type CommandContext, type OperationAffect } from "@/contracts/commands";
@@ -200,7 +201,10 @@ export function executeOperation(raw: unknown, ctx: CommandContext, opts: { repl
   const followUps: FollowUp[] = [];
   if (result.ok && ((!result.noChange && result.affects.includes("plan")) || (opts.replanDates?.length && ctx.explicit && (raw as { command?: string }).command === "update_planning_policy"))) {
     try {
-      const plan = rebuildPlan(ctx.now ?? nowDate(), { causedBy: result.batchId, conversationId: ctx.conversationId ?? null, intakeId: ctx.intakeId, replanDates: opts.replanDates });
+      const asOf = ctx.now ?? nowDate();
+      const lastRequested = [...(opts.replanDates ?? [])].sort().at(-1);
+      const days = lastRequested ? Math.max(7, Math.ceil((Date.parse(lastRequested) - Date.parse(localDateInTz(asOf, instanceTimezone()))) / 86_400_000) + 1) : 7;
+      const plan = rebuildPlan(asOf, { horizonDays: days, causedBy: result.batchId, conversationId: ctx.conversationId ?? null, intakeId: ctx.intakeId, replanDates: opts.replanDates });
       followUps.push({ kind: "plan", state: plan.changed ? "updated" : "unchanged", batchId: plan.batchId, placed: plan.placed, superseded: plan.superseded, unscheduled: plan.unscheduled, conflicts: plan.conflicts });
     } catch (e) {
       followUps.push({ kind: "plan", state: "failed", batchId: null, placed: 0, superseded: 0, unscheduled: [], conflicts: [], error: e instanceof Error ? e.message : String(e) });

@@ -68,6 +68,8 @@ export type DayLedger = {
  */
 export type PlanConflict = { sessionId: string; taskId: string; reason: "overlaps_fixed" | "outside_policy" | "over_budget" };
 export type RebuildOptions = {
+  /** Explicit dated adjustments can extend the ordinary seven-day horizon, up to 31 days. */
+  horizonDays?: number;
   /** 主人明确要求重新安排的日期：这些天里未锁定、未开始的块全部重排（不受 24h 保护） */
   replanDates?: string[];
   /** 这次重排由哪个变更批次引起、属于哪次对话与投递（撤销与结果展示用） */
@@ -181,7 +183,7 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
   const prefs = getPrefs();
   const asOfMs = asOf.getTime();
   const fromLocal = localDateInTz(asOf, tz);
-  const horizon = next7Days(fromLocal);
+  const horizon = opts.horizonDays ? Array.from({ length: Math.min(31, Math.max(7, Math.floor(opts.horizonDays))) }, (_, i) => addDays(fromLocal,i)) : next7Days(fromLocal);
   const tasks = listSchedulableTasks(tz, fromLocal);
   const taskById = new Map(tasks.map((t) => [t.id, t]));
   const spent = new Map(tasks.map((t) => [t.id, spentMinutes(t.id, t.remainingReportedAt)] as const));

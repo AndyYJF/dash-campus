@@ -24,6 +24,12 @@
 - 隔离层：新增 `test/agent-p6.test.ts` 3 项（空窗口如实说明、指标与真实管线结果一致且计算不写任何表、接口仅主人）与 G10 伪授权 1 项。全套 **400/400 通过**；`next typegen && tsc --noEmit`、eslint 0 错误。
 - 真实模型（仅 `gemini-3.8-flash-high`；独立临时库）：`g04-revise-before-confirm` 通过（3 次请求）：旧确认作废、同一目标第 2 版、旧一轮 0 批次、只重排工作日，周六块与课程保留；新方案同时把周末收工时间设为 21:30（已有周末块不受影响）。首次运行时夹具没有周末块、核对无意义，加预置后重跑，以重跑为准。连同 P5 的全量运行，`eval-goal-flows` 10 条全部通过。
 
+### 发布与生产冒烟（2026-10-05 06:04 +08）
+
+- 提交 `521aeaa` 推送 `main`；按 [deploy.md](../deploy.md) §4 发布：停桥接 timer 与 web/worker → 备份 `backups/production-20261005-p6-521aeaa`（schema32，sha256 `d02e85d3…`）→ 清掉旧 `src/` 后覆盖源码 → 构建 → 迁移（已是 32，无新迁移）→ 启动 → 恢复 timer。回退材料：`/opt/dash-campus-src-eb8c9dd.tgz` 与镜像 `dash-campus:rollback-eb8c9dd`（schema 未变，回退不需恢复数据）。
+- 生产源码散列与 `git -c core.autocrlf=false archive 521aeaa` 一致（`3b7792b2…`）。
+- 冒烟（只读，未往生产写测试数据）：health `schemaVersion 32`；80 端口 301 到 HTTPS；`/login`、`/settings` 200；owner 接口与新 `GET /api/v2/agent-metrics` 未登录均 401；P6 源码在位。在 ops 容器里把生产库以只读方式备份到临时副本，用已部署代码对副本跑 `trialMetrics`（跑完删除副本）：近 7 天 16 条统一栏投递，全部提交于模型路由上线前，因此路由计为“未路由”16、核验计为“无核验”13、没办成 2、已取消 1，问过 2 条（学期锚点、作息），当日 5 次模型请求（P0 能力探测），注释 5 条——与历史记录一致，指标没有把旧投递美化成通过。web healthy、worker 恢复扫描 0 项、web 日志无错误。
+
 ### 未验证 / 未完成
 
 - 登录态网页走查（结果卡核验文字、“继续这个目标”、试用指标卡）与生产真实投递均未做：需要主人会话。

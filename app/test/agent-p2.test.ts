@@ -7,7 +7,7 @@ import { hashPassword } from "@/domain/password";
 import { setNowForTests } from "@/domain/clock";
 import { setProvidersForTests } from "@/integrations";
 import { ScriptedChatProvider } from "@/integrations/fake-model-provider";
-import { extractJson, type ChatMessage, type RawCallResult, type ToolExchangeOptions } from "@/integrations/model-json";
+import { extractJson, FINAL_ROUND_NOTE, type ChatMessage, type RawCallResult, type ToolExchangeOptions } from "@/integrations/model-json";
 import { POST } from "@/app/api/v2/intakes/route";
 import { POST as answerRoute } from "@/app/api/v2/questions/[id]/answers/route";
 import { recoverOnStartup, runDueJobsOnce } from "@/worker/runner";
@@ -95,19 +95,28 @@ before(() => {
 });
 after(() => setNowForTests(null));
 
-test("原两例：查看每天安排走只读快路径、按课表优化走调整决策，都不额外花路由请求；模糊 /调整 同样直达决策", async () => {
-  const before = routeExchanges().length;
+test("原两例：普通自然语言模型优先，规则解析只作提示——查看每天安排只读、按课表优化进入调整决策；模糊 /调整 直达决策不调路由", async () => {
+  let hints: unknown = null;
+  onRoute = (messages) => {
+    hints = (JSON.parse(String(messages[1]!.content)) as { context: { ruleHints?: unknown } }).context.ruleHints ?? null;
+    return final({ items: [act("看一下目前每天的时间安排", [{ op: "inspect", query: "目前每天的时间安排" }], "查看每天安排")] });
+  };
   const view = await say("看一下目前每天的时间安排");
   assert.equal(view.state, "answered", JSON.stringify(view));
   assert.equal(view.undo.available, false);
-  assert.equal(view.understanding.routedBy, "fast");
+  assert.equal(view.understanding.routedBy, "model");
+  assert.match(JSON.stringify(hints), /"op":"inspect"/, "规则解析结果作为提示交给路由");
 
+  onRoute = () => final({ items: [{ itemKey: "opt", excerpt: "按课表帮我优化一下这周的学习安排", outcome: { kind: "decide", objective: "按课表重新平衡本周学习", rationale: "目标明确、方案需权衡" } }] });
   onDecide = () => ({ kind: "ask", question: "这周想优先保证哪门课？", reason: "课程负担不均", options: ["数学", "英语"] });
   const optimize = await say("按课表帮我优化一下这周的学习安排");
   assert.equal(optimize.state, "needs_input", JSON.stringify(optimize));
+  assert.equal(optimize.questions[0]!.prompt, "这周想优先保证哪门课？");
+
+  const before = routeExchanges().length;
   const slash = await say("/调整 学习安排帮我调得均衡一点");
   assert.equal(slash.state, "needs_input", JSON.stringify(slash));
-  assert.equal(routeExchanges().length, before, "快路径与调整决策都没有调用路由");
+  assert.equal(routeExchanges().length, before, "slash 命令不调用路由");
 });
 
 test("两轮只读：先查本周安排，再问为什么周三排得少；回答有工具依据，任务与学习块逐行不变，没有业务撤销", async () => {
@@ -170,13 +179,17 @@ test("多次 tool_calls：先找对象、再看详情，用见过的 ID 执行�
 
 test("第四次请求必须终结：一直申请工具的模型在第 4 次请求时不再获得工具，决策失败后按规则降级并标注原因", async () => {
   const seen: ToolExchangeOptions[] = [];
-  onRoute = (_m, options) => {
+  const tails: string[] = [];
+  onRoute = (m, options) => {
     seen.push(options);
+    tails.push(String(m[m.length - 1]!.content ?? ""));
     return calls([{ name: "get_context", args: {} }]);
   };
   onClassify = (text) => ({ items: [{ itemKey: "note-1", kind: "note", summary: "主人的话", excerpt: text.slice(0, 20) }] });
   const r = await say("随便聊聊最近的学习状态吧");
   assert.deepEqual(seen.map((o) => [o.final, o.toolChoice ?? null]), [[false, "auto"], [false, "auto"], [false, "auto"], [true, "none"]]);
+  assert.equal(tails[3], FINAL_ROUND_NOTE, "最后一次请求明确告知轮次已用完、按原话本意给结果");
+  assert.ok(!tails.slice(0, 3).includes(FINAL_ROUND_NOTE));
   assert.equal(routeRequests(r.intakeId), 4, "单次决策最多 4 次 HTTP");
   assert.equal(r.understanding.routedBy, "rules");
   assert.match(r.understanding.fallbackReason ?? "", /第 4 次请求仍在申请工具/);

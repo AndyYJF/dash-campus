@@ -26,7 +26,10 @@ export const REF_ENTITY_KINDS = ["task", "plan_session", "project", "goal", "pra
  */
 export const refSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("recent") }),
-  z.object({ kind: z.literal("named"), text: z.string().min(1).max(100), date: dateStr.nullable().default(null), part: part.default("any") }),
+  z
+    .object({ kind: z.literal("named"), text: z.string().min(1).max(100).optional(), name: z.string().min(1).max(100).optional(), date: dateStr.nullable().default(null), part: part.default("any") })
+    .refine((r) => Boolean(r.text ?? r.name), { message: "named 引用需要 text（对象名称）", path: ["text"] })
+    .transform(({ name, ...r }) => ({ ...r, text: (r.text ?? name)! })),
   z.object({ kind: z.literal("id"), entityKind: z.enum(REF_ENTITY_KINDS), id: z.string().min(1).max(64) }),
   z.object({ kind: z.literal("step"), step: z.number().int().min(1).max(8) }),
 ]);

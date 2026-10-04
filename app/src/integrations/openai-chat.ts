@@ -36,10 +36,11 @@ export class OpenAIChatProvider implements ModelProvider {
 
   call(request: ModelRequest): Promise<ModelResult> {
     if (request.tools) {
-      // 原生 tool_calls 只在探测确认支持时使用；否则走 JSON next-tool 兼容协议。工具轮不发 response_format，终结轮才发
+      // 原生 tool_calls 只在探测确认支持时使用；否则走 JSON next-tool 兼容协议。工具轮不发 response_format，终结轮只要求 JSON 对象：
+      // 意图是几十个分支的大联合，按 json_schema 约束解码时真实端点会偏到第一个分支（inspect），丢掉前几轮已经形成的判断
       return completeWithTools(
         request,
-        (messages, o) => this.rawExchange(messages, request, { responseFormat: o.final ? this.responseFormat(request) : null, tools: o.tools, toolChoice: o.toolChoice }),
+        (messages, o) => this.rawExchange(messages, request, { responseFormat: o.final ? { type: "json_object" } : null, tools: o.tools, toolChoice: o.toolChoice }),
         this.cfg.tools === "supported",
       );
     }

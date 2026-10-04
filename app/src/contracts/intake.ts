@@ -100,6 +100,16 @@ export const answerSubmitSchema = z.object({
 });
 export type AnswerSubmitInput = z.infer<typeof answerSubmitSchema>;
 
+/** 结果卡“理解错了”（Agent 方案 §6 P3）：只收主人判断与期望说明，理解快照由服务器从投递记录取 */
+export const FEEDBACK_VERDICTS = ["wrong_intent", "wrong_object", "should_ask", "should_not_ask", "other"] as const;
+export const feedbackSubmitSchema = z.object({
+  intakeId: z.string().uuid(),
+  itemId: z.string().uuid().optional(),
+  verdict: z.enum(FEEDBACK_VERDICTS),
+  expectedText: z.string().trim().max(1000).optional(),
+});
+export type FeedbackSubmitInput = z.infer<typeof feedbackSubmitSchema>;
+
 /** intake job payload */
 export const intakeJobPayloadSchema = z.object({
   intakeId: z.string().uuid(),

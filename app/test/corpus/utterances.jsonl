@@ -203,6 +203,6 @@
 {"id":"u203","split":"dev","text":"今天的摘要现在发我一份","expect":{"kind":"act","ops":["digest_now"],"fields":{"kind":"daily"}},"source":"synthetic","tags":["settings","digest"]}
 {"id":"u204","split":"dev","text":"给我解释一下这周是怎么排的","expect":{"kind":"act","ops":["explain"],"fields":{"topic":"plan"},"readOnly":true},"source":"synthetic","tags":["inspect","explain"]}
 {"id":"u205","split":"dev","text":"/规则 晚上十点后不排","expect":{"kind":"act","ops":["window_end"],"fields":{"time":"22:00"}},"source":"global-agent-bar","tags":["slash","policy"],"fallback":true}
-{"id":"u206","split":"dev","text":"/学习 线代复习一小时","expect":{"kind":"act","ops":["practice"],"fields":{"actualMinutes":60}},"source":"global-agent-bar","tags":["slash","practice"]}
+{"id":"u206","split":"dev","text":"/学习 读论文","expect":{"kind":"act","ops":["classify_task"],"fields":{"taskKind":"study"}},"source":"global-agent-bar","tags":["slash","classify"]}
 {"id":"u207","split":"holdout","text":"/处理 这条通知跟我无关","expect":{"kind":"act","ops":["resolve_notice"],"allowAsk":true},"source":"plan-p1","tags":["slash","notice"]}
 {"id":"u208","split":"holdout","text":"把那个讲座通知归档","expect":{"kind":"act","ops":["archive"],"allowAsk":true},"source":"plan-p1","tags":["archive","notice"]}

@@ -517,6 +517,14 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
   for (const item of listItems(intakeId)) {
     if (item.state !== "extracted" || !item.payload.fromModel) continue;
     const context = { text: rest, images: extra.images, referenceDate: intake.referenceDate, timezone: intake.timezone, about: item.payload.summary };
+    // 只有一句“这是校历/课表”而没有图片或带日期/星期的正文：没有可读的材料，不让模型凭印象补
+    const emptyMaterial = !extra.images.length && !(item.kind === "timetable" ? TIMETABLE_TEXT : CALENDAR_TEXT).test(rest);
+    if ((item.kind === "timetable" && !item.payload.sdctText) || (item.kind === "calendar" && !item.payload.calendar)) {
+      if (emptyMaterial) {
+        updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: `没有看到${item.kind === "timetable" ? "课表" : "校历"}内容（图片、文件、链接或带日期的正文），没有据此修改任何安排；请把材料一起发来` } });
+        continue;
+      }
+    }
     if (item.kind === "timetable" && !item.payload.sdctText) {
       const r = await callModel<TimetableExtraction>(TIMETABLE_EXTRACT_WORKFLOW, context, TIMETABLE_EXTRACT_INSTRUCTIONS, timetableExtractionSchema, item.id);
       if (getJob(job.id)?.cancelRequested) return cancel();
@@ -767,7 +775,11 @@ function resolveCalendarItem(intake: IntakeRow, item: IntakeItemRow): void {
   updateItem(item.id, { state: "ready", waitingQuestionId: null, payload: { ...payload, adjustment: adj } });
 }
 
+const TIMETABLE_TEXT = /(周|星期)[一二三四五六日天1-7]|第?\s*\d+\s*[-–~至]\s*\d+\s*节/;
+const CALENDAR_TEXT = /\d{1,4}\s*[年月/.\-]\s*\d{1,2}|第\s*[一二三四五六七八九十\d]+\s*周/;
 const ROUTED_REST_VERSION = "route-v1";
+/** slash 指令已处理完主人的指令部分：剩余正文只当资料，分类出的“指令”不算主人授权 */
+const SLASH_REST_VERSION = "slash-v1";
 
 function toolEnvOf(intake: IntakeRow): ToolEnv {
   return { intakeId: intake.id, conversationId: intake.conversationId, referenceDate: intake.referenceDate, now: nowDate(), tz: intake.timezone, selected: (intake.context.selectedEntityRef as EntityRef | undefined) ?? null };
@@ -781,7 +793,7 @@ function toolEnvOf(intake: IntakeRow): ToolEnv {
 async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: IntakeItemRow[], router: RouteCall | null, guard: () => "ok" | "cancel" | "fenced"): Promise<{ rest: string; routed: boolean } | "cancel" | "fenced"> {
   const db = getDb();
   const saved = db.prepare(`SELECT content_text, extractor_version FROM extracted_documents WHERE intake_id = ? AND source_kind = 'owner-rest'`).get(intake.id) as { content_text: string; extractor_version: string } | undefined;
-  if (saved) return { rest: saved.content_text, routed: saved.extractor_version === ROUTED_REST_VERSION };
+  if (saved) return { rest: saved.content_text, routed: saved.extractor_version === ROUTED_REST_VERSION || saved.extractor_version === SLASH_REST_VERSION };
   let rest = textRest;
   const directive = parseAgentText(intake.text);
   // Explicit modes are deterministic and never fall back to creating a task when malformed.
@@ -823,8 +835,8 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
       updateItem(item.id, { state: "failed", evidence: { error: failure ?? directive.error! } }); rest = "";
     }
     // /导入 deliberately treats the body as material, not as owner tool instructions.
-    createExtractedDocument({ intakeId: intake.id, sourceKind: "owner-rest", extractorVersion: "slash-v1", contentText: rest });
-    return { rest, routed: false };
+    createExtractedDocument({ intakeId: intake.id, sourceKind: "owner-rest", extractorVersion: SLASH_REST_VERSION, contentText: rest });
+    return { rest, routed: true };
   }
   // 已有事项说明这份投递在引入指令解析之前就处理过：不回头重解析
   const fresh = Boolean(textRest.trim()) && !items.some((i) => i.kind !== "timetable");
@@ -865,28 +877,32 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
     }
   }
   const hasAttachments = listAttachments(intake.id).length > 0;
-  const flexible = isFlexibleAdjustment(rest.trim()) && !hasAttachments;
   // 附件/链接配一句很短的话（“这是课表”）只是让我处理材料：不额外花一次路由请求
-  const materialOnly = (hasAttachments || /https?:\/\//.test(textRest)) && rest.trim().length <= 60;
+  const materialOnly = (hasAttachments || /https?:\/\//.test(textRest)) && textRest.trim().length <= 60;
+  // 普通自然语言模型优先（方案 §2.2）：规则解析结果只作为提示交给路由；没有模型或路由失败时才按规则执行
   let route: RouteResult | null = null;
-  if (fresh && router && rest.trim() && !flexible && !materialOnly) {
-    route = await routeOwnerText(router, { text: rest, env: toolEnvOf(intake), slot: intake.context.slot });
+  if (fresh && router && !materialOnly) {
+    const hints = fastItems.map((f) => ({ clause: f.excerpt, intents: f.intents }));
+    route = await routeOwnerText(router, { text: textRest, env: toolEnvOf(intake), slot: intake.context.slot, hints });
     const g = guard();
     if (g !== "ok") return g;
   }
+  const flexible = !route?.ok && isFlexibleAdjustment(rest.trim()) && !hasAttachments;
   return db.transaction(() => {
-    for (const f of fastItems) {
-      createItem({ intakeId: intake.id, stableItemKey: f.key, kind: "command", payload: { summary: f.excerpt.slice(0, 200), intents: f.intents, explicit: true, routedBy: "fast" }, evidence: { excerpt: f.excerpt } });
-    }
     let routed = false;
-    if (flexible) {
-      createItem({ intakeId: intake.id, stableItemKey: "owner-adjustment", kind: "command", payload: { summary: rest.slice(0, 200), explicit: true, needsDecision: true, decisionText: rest, routedBy: "fast" }, evidence: { excerpt: rest } });
-      rest = "";
-    } else if (route?.ok) {
-      const materials = createRoutedItems(intake, route.items, route, "route");
+    if (route?.ok) {
+      const materials = createRoutedItems(intake, route.items, route, "route", fastItems.flatMap((f) => f.intents));
       // 没被任何事项认领的零散原话按资料保留（不算主人的指令），不丢
       rest = [...materials, ...(route.leftover.length >= 8 ? [route.leftover] : [])].join("\n\n");
       routed = true;
+    } else {
+      for (const f of fastItems) {
+        createItem({ intakeId: intake.id, stableItemKey: f.key, kind: "command", payload: { summary: f.excerpt.slice(0, 200), intents: f.intents, explicit: true, routedBy: "fast" }, evidence: { excerpt: f.excerpt } });
+      }
+      if (flexible) {
+        createItem({ intakeId: intake.id, stableItemKey: "owner-adjustment", kind: "command", payload: { summary: rest.slice(0, 200), explicit: true, needsDecision: true, decisionText: rest, routedBy: "fast" }, evidence: { excerpt: rest } });
+        rest = "";
+      }
     }
     if (route) {
       createExtractedDocument({
@@ -915,8 +931,23 @@ function routeBasePayload(item: RoutedItem, route: RouteOk): Record<string, unkn
   };
 }
 
-/** 路由事项 → intake 事项：act 成指令（模型理解即推断来源）、decide 进决策、ask 立即提问、material 交给分类 */
-function createRoutedItems(intake: IntakeRow, items: RoutedItem[], route: RouteOk, prefix: string): string[] {
+function stableJson(v: unknown): string {
+  const norm = (x: unknown): unknown => Array.isArray(x) ? x.map(norm) : x && typeof x === "object" ? Object.fromEntries(Object.keys(x as object).sort().map((k) => [k, norm((x as Record<string, unknown>)[k])])) : x;
+  return JSON.stringify(norm(v));
+}
+
+/** 模型给出的每个意图都与规则解析对原话的结果逐字段相同：这是主人明确给出的具体修改，按主人来源授权，不当推断反复确认 */
+function corroboratedByRules(intents: Intent[], hints: Intent[]): boolean {
+  if (!intents.length || !hints.length) return false;
+  const pool = hints.map((h) => intentSchema.safeParse(h)).filter((p) => p.success).map((p) => stableJson(p.data));
+  return intents.every((i) => {
+    const parsed = intentSchema.safeParse(i);
+    return parsed.success && pool.includes(stableJson(parsed.data));
+  });
+}
+
+/** 路由事项 → intake 事项：act 成指令（模型理解即推断来源，规则解析逐字段印证的除外）、decide 进决策、ask 立即提问、material 交给分类 */
+function createRoutedItems(intake: IntakeRow, items: RoutedItem[], route: RouteOk, prefix: string, hints: Intent[] = []): string[] {
   const materials: string[] = [];
   for (const it of items) {
     if (it.outcome.kind === "material") {
@@ -927,18 +958,19 @@ function createRoutedItems(intake: IntakeRow, items: RoutedItem[], route: RouteO
     const key = `${prefix}-${it.itemKey}`;
     const created = createItem({ intakeId: intake.id, stableItemKey: key, kind: "command", payload: routeBasePayload(it, route), evidence });
     if (!created.created) continue;
-    applyRouteOutcome(intake, created.item, it, route, []);
+    applyRouteOutcome(intake, created.item, it, route, [], hints);
   }
   return materials;
 }
 
-function applyRouteOutcome(intake: IntakeRow, item: IntakeItemRow, it: RoutedItem, route: RouteOk, replies: Array<{ question: string; answer: string }>): void {
+function applyRouteOutcome(intake: IntakeRow, item: IntakeItemRow, it: RoutedItem, route: RouteOk, replies: Array<{ question: string; answer: string }>, hints: Intent[] = []): void {
   const base = { ...item.payload, ...routeBasePayload(it, route), summary: item.payload.summary, routeAsk: null, routeReplies: replies };
   const outcome = it.outcome;
   if (it.rejected || outcome.kind === "material") {
     updateItem(item.id, { state: "failed", waitingQuestionId: null, payload: base, evidence: { ...item.evidence, error: it.rejected ?? "回答后判断这段话是资料而不是要求；原话已保留，没有执行" } });
   } else if (outcome.kind === "act") {
-    updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, intents: outcome.intents, inferred: !isReadOnlyAct(outcome), decisionRationale: outcome.rationale } });
+    const corroborated = corroboratedByRules(outcome.intents, hints);
+    updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, intents: outcome.intents, inferred: !isReadOnlyAct(outcome) && !corroborated, ...(corroborated ? { ruleCorroborated: true } : {}), decisionRationale: outcome.rationale } });
   } else if (outcome.kind === "decide") {
     updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, needsDecision: true, decisionText: [String(item.evidence?.excerpt ?? it.evidence.excerpt), ...replies.map((r) => r.answer)].join("\n"), objective: outcome.objective, decisionRationale: outcome.rationale, decisionReplies: [] } });
   } else {

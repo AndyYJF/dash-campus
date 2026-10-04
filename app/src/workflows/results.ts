@@ -60,7 +60,7 @@ export function statusForCode(code: string): number {
   return 409;
 }
 
-function entityLabel(kind: string, id: string): string {
+export function entityLabel(kind: string, id: string): string {
   const db = getDb();
   if (kind === "task") return (db.prepare(`SELECT title FROM tasks WHERE id = ?`).get(id) as { title: string } | undefined)?.title ?? "任务";
   if (kind === "plan_session") {

@@ -50,6 +50,14 @@ const STATE_LABEL: Record<Result["state"], string> = {
   cancelled: "已取消",
 };
 const ACTIVE = new Set(["accepted", "working"]);
+const VERDICTS = [
+  { id: "wrong_intent", label: "意思理解错了" },
+  { id: "wrong_object", label: "对象/时间找错了" },
+  { id: "should_ask", label: "应该先问我" },
+  { id: "should_not_ask", label: "不该问，直接办" },
+  { id: "other", label: "其他" },
+] as const;
+type Verdict = (typeof VERDICTS)[number]["id"];
 const ACCEPT = "image/png,image/jpeg,image/webp,application/pdf,text/plain,text/csv,text/calendar,.ics,.csv,.txt,.md";
 const MAX_FILES = 10;
 
@@ -88,6 +96,8 @@ export default function UniversalIntake() {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [showHistory, setShowHistory] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [wrong, setWrong] = useState<{ intakeId: string; verdict: Verdict; text: string; key: string } | null>(null);
+  const [wrongSent, setWrongSent] = useState<Record<string, boolean>>({});
   const idemKey = useRef(newIdempotencyKey());
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -226,6 +236,18 @@ export default function UniversalIntake() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "撤销失败");
       await load();
+    }
+  }
+
+  async function sendWrong() {
+    if (!wrong) return;
+    setError(null);
+    try {
+      await api("/api/v2/feedback", { method: "POST", body: { intakeId: wrong.intakeId, verdict: wrong.verdict, ...(wrong.text.trim() ? { expectedText: wrong.text.trim() } : {}) }, idempotencyKey: wrong.key });
+      setWrongSent((s) => ({ ...s, [wrong.intakeId]: true }));
+      setWrong(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "反馈没有发出去，可重试");
     }
   }
 
@@ -410,7 +432,27 @@ export default function UniversalIntake() {
                   </button>
                 )}
                 {r.undo.note && <span className={styles.when}>{r.undo.note}</span>}
+                {!ACTIVE.has(r.state) && (wrongSent[r.intakeId]
+                  ? <span className={styles.when}>已记下，谢谢纠正</span>
+                  : wrong?.intakeId !== r.intakeId && <button type="button" className={styles.linkBtn} onClick={() => setWrong({ intakeId: r.intakeId, verdict: "wrong_intent", text: "", key: newIdempotencyKey() })}>理解错了</button>)}
               </div>
+              {wrong?.intakeId === r.intakeId && (
+                <div className={styles.question} aria-label="反馈理解错误">
+                  <div className={styles.options}>
+                    {VERDICTS.map((v) => (
+                      <button key={v.id} type="button" className={styles.option} aria-pressed={wrong.verdict === v.id} onClick={() => setWrong({ ...wrong, verdict: v.id })}>
+                        {v.label}
+                      </button>
+                    ))}
+                  </div>
+                  <textarea className={styles.box} rows={2} maxLength={1000} value={wrong.text} onChange={(e) => setWrong({ ...wrong, text: e.target.value })} placeholder="本来想让它怎么做（可不填）" aria-label="本来想让它怎么做" />
+                  <div className={styles.resultActions}>
+                    <button type="button" className={styles.linkBtn} onClick={sendWrong}>提交反馈</button>
+                    <button type="button" className={styles.linkBtn} onClick={() => setWrong(null)}>取消</button>
+                  </div>
+                  <p className={styles.when}>只记录这次理解供改进，不会改动任何安排</p>
+                </div>
+              )}
               {open[r.intakeId] && (
                 <ul className={styles.changes}>
                   {r.changes.map((c, i) => (

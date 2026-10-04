@@ -38,6 +38,7 @@ async function main(): Promise<void> {
   console.log(`  取消旧后台任务 ${r.cancelledJobs} 个、未准入投递 ${r.cancelledDeliveries} 条`);
   console.log(`  按当前任务重建未来提醒 ${r.rebuiltReminders} 条；过去的 ${r.skippedPastReminders} 条只在"今日待处理"显示`);
   console.log(`  定期探索 ${r.topicsRescheduled} 个从下一周期开始；定期周复盘从下一周期开始`);
+  if (r.stoppedIntakes) console.log(`  恢复前没处理完的 ${r.stoppedIntakes} 份投递已停止（原件保留，需要的话重新发一次）`);
   console.log("现在可以启动 worker（scripts/start.sh 或 docker compose up -d worker）。");
 }
 

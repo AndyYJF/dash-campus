@@ -240,6 +240,7 @@ test("cancel_operation：停止一份还在等回答的材料——没执行的�
   assert.equal(stop.state, "applied", JSON.stringify(stop));
   assert.match(stop.summary, /已停止处理那份材料.*已经生效的变化保留/);
   assert.equal((getDb().prepare(`SELECT status FROM intakes WHERE id = ?`).get(pendingId) as { status: string }).status, "cancelled");
+  assert.equal((getDb().prepare(`SELECT COUNT(*) AS n FROM clarification_questions WHERE intake_id = ? AND status = 'open'`).get(pendingId) as { n: number }).n, 0, "挂着的问题不再出现在待回答里");
   assert.equal((getDb().prepare(`SELECT COUNT(*) AS n FROM fixed_events WHERE title = '排练'`).get() as { n: number }).n, 2, "没执行的没有被执行");
 
   // 更早那份“家教”的提问也还挂着：再说一次，停的是它

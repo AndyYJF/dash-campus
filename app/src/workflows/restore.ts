@@ -96,6 +96,8 @@ export type ResumeResult =
       rebuiltReminders: number;
       skippedPastReminders: number;
       topicsRescheduled: number;
+      /** 恢复前没处理完、现已停止的投递数 */
+      stoppedIntakes: number;
     };
 
 /** 显式确认后解除 hold（resume-after-restore）。同一事务内完成，任何一步失败整体回滚、hold 保持。 */
@@ -133,6 +135,19 @@ export function resumeAfterRestore(now = new Date()): ResumeResult {
        WHERE status IN ('queued', 'running')`,
     ).run(nowIso);
 
+    // 恢复之前还没处理完的投递：它们的后台任务已取消，epoch 也已过期，不会再执行。
+    // 没执行的事项和挂着的问题一并收掉并写明原因；已经生效的部分保留、仍可撤销。原件都还在，需要就重新发一次。
+    const staleIntakes = db.prepare(`SELECT id FROM intakes WHERE status IN ('received','processing','waiting_input') AND instance_epoch != ?`).all(st.deploymentEpoch) as Array<{ id: string }>;
+    for (const { id } of staleIntakes) {
+      db.prepare(
+        `UPDATE intake_items SET state = 'cancelled', waiting_question_id = NULL, evidence_json = json_set(COALESCE(evidence_json, '{}'), '$.note', '从备份恢复后停止处理：需要的话请重新发一次'), updated_at = ?
+         WHERE intake_id = ? AND state IN ('extracted','resolving','awaiting_input','ready')`,
+      ).run(nowIso, id);
+      db.prepare(`UPDATE clarification_questions SET status = 'superseded', version = version + 1, updated_at = ? WHERE intake_id = ? AND status = 'open'`).run(nowIso, id);
+      const applied = db.prepare(`SELECT 1 FROM intake_items WHERE intake_id = ? AND state = 'applied'`).get(id);
+      db.prepare(`UPDATE intakes SET status = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(applied ? "partially_applied" : "cancelled", nowIso, id);
+    }
+
     // 2. 按当前任务重建未来提醒：refreshReminders 只建触发时间晚于 now 的 job；过去的只进"今日待处理"
     let rebuiltReminders = 0;
     let skippedPastReminders = 0;
@@ -168,7 +183,7 @@ export function resumeAfterRestore(now = new Date()): ResumeResult {
     db.prepare("DELETE FROM settings WHERE key IN ('digestSchedule:daily','digestSchedule:weekly')").run();
 
     db.prepare(`UPDATE instance_state SET restored_hold = 0, resumed_at = ? WHERE id = 1`).run(nowIso);
-    return { ok: true, cancelledJobs, cancelledDeliveries, rebuiltReminders, skippedPastReminders, topicsRescheduled: topics.length };
+    return { ok: true, cancelledJobs, cancelledDeliveries, rebuiltReminders, skippedPastReminders, topicsRescheduled: topics.length, stoppedIntakes: staleIntakes.length };
   })();
 }
 

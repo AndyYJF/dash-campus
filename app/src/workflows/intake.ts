@@ -1020,6 +1020,8 @@ export function cancelIntake(intakeId: string, expectedVersion: number): CancelR
       for (const item of listItems(intakeId)) {
         if (["extracted", "resolving", "awaiting_input"].includes(item.state)) updateItem(item.id, { state: "cancelled", waitingQuestionId: null });
       }
+      // 这份投递挂着的问题一并收掉：不再出现在待回答里
+      getDb().prepare(`UPDATE clarification_questions SET status = 'superseded', version = version + 1, updated_at = ? WHERE intake_id = ? AND status = 'open'`).run(new Date().toISOString(), intakeId);
       setIntakeStatus(intakeId, "cancelled");
       return { kind: "cancelled" };
     })

@@ -264,7 +264,8 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
   const days: SchedDay[] = horizon.map((date) => {
     const ledger = base.get(date)!;
     let free = subtractIntervals(ledger.w, keptPadded);
-    if (date === fromLocal) free = free.map(([s, e]) => [Math.max(s, asOfMs), e] as Interval).filter(([s, e]) => e > s);
+    // 今天的新块从下一个整 5 分钟开始，不排出 14:52 这种零碎钟点
+    if (date === fromLocal) free = free.map(([s, e]) => [Math.max(s, Math.ceil(asOfMs / 300_000) * 300_000), e] as Interval).filter(([s, e]) => e > s);
     const weekend = ledger.calendar.weekday >= 6;
     const preferred: Interval[] =
       part && PART_WINDOWS[part]

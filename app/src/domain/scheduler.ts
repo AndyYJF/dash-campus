@@ -107,6 +107,8 @@ function placeOne(t: SchedTask, days: DayState[], placements: Placement[], opts:
       const remaining = progress.remaining;
       const want = remaining >= opts.minBlock ? Math.min(remaining, opts.maxBlock) : remaining; // 剩余不足最小块：作为有依据的收尾块
       let len = Math.min(want, day.cDay - day.usedMinutes);
+      // 被预算截短的块取整到 5 分钟，不排出 29 分钟这种零碎长度（恰好是收尾的除外）
+      if (len < want) len = neat(len, opts.minBlock);
       if (len <= 0 || (len < opts.minBlock && remaining > len)) {
         // 当天预算放不下有效块就换天；除非这就是收尾块
         if (day.intervals.length) note(progress, day.date, "budget");
@@ -115,8 +117,8 @@ function placeOne(t: SchedTask, days: DayState[], placements: Placement[], opts:
       let spot = findSpot(day, len, due);
       if (spot === null && mode.fragments) {
         const largest = Math.min(len, largestSpot(day.intervals, due));
-        if (largest >= opts.minBlock) {
-          len = largest;
+        if (neat(largest, opts.minBlock) >= opts.minBlock) {
+          len = neat(largest, opts.minBlock);
           spot = findSpot(day, len, due);
         }
       }
@@ -164,4 +166,10 @@ function largestSpot(intervals: Interval[], due: number): number {
   let best = 0;
   for (const w of intervals) best = Math.max(best, Math.floor((Math.min(w[1], due) - w[0]) / 60000));
   return best;
+}
+
+/** 取整到 5 分钟；取整后不够最小块就保持原值（由调用方按原规则判断） */
+function neat(minutes: number, minBlock: number): number {
+  const rounded = Math.floor(minutes / 5) * 5;
+  return rounded >= minBlock ? rounded : minutes;
 }

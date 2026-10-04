@@ -1,10 +1,12 @@
 # Coding Agent 开工指令
 
-你要在现有Dash Campus工程实施Agent-first V2。完整契约见 [MASTER-PLAN.md](./MASTER-PLAN.md)，它覆盖与旧Plan/T0–T8冲突的产品规定。
+你要在现有Dash Campus工程继续修复Agent-first V2。先读 [START-HERE.md](./START-HERE.md)，基础契约见 [MASTER-PLAN.md](./MASTER-PLAN.md)。新修复/接口/校历规格优先于初始规格和旧Plan/T0–T8中的冲突规定。
+
+**2026-10-04 修复入口：** 已有 V2 实施后的易用性修复，以及新增课表可视化与每日智能安排，按 [REPAIR-PLAN-2026-10-04.md](./REPAIR-PLAN-2026-10-04.md) 的 R0–R5 推进。下文 P0–P6 保留为初始建设历史；不要重新建空壳，不把旧验收全绿当作真实流程已完成。修复计划状态为待实施。
 
 ## 开工前必读
 
-1. 本文件和MASTER-PLAN全篇。
+1. 本文件和MASTER-PLAN全篇；已有 V2 的修复还须阅读 REPAIR-PLAN-2026-10-04、[AGENT-INTERFACE-CONTRACT.md](./AGENT-INTERFACE-CONTRACT.md) 与 [ACADEMIC-CALENDAR-AND-HOLIDAYS.md](./ACADEMIC-CALENDAR-AND-HOLIDAYS.md) 全篇，定义自研 Agent 的全业务操作、接口与校历/假日规则。
 2. 仓库适用AGENTS.md/用户指令、README、`app/docs/deploy.md`、`app/docs/legacy-compatibility-2026-10-03.md`。
 3. `app/src/domain/workload.ts`、`calendar-occurrences.ts`、`schedule.ts`、`app/src/worker/runner.ts`、`app/src/workflows/http.ts`、`app/src/contracts/exports.ts`、`app/src/integrations/openai-chat.ts`。
 
@@ -18,7 +20,9 @@
 - 新表纳入导出/恢复，附件也要实际恢复；hold期间无邮件/模型/搜索/拉源。
 - 不把原功能菜单全部搬进新界面，不只加聊天框；新界面必须使用统一事实、时间预算和行动结果。
 
-## 第一个工作包：P0 + P1的最小可运行切片
+## 初始建设历史：P0 + P1的最小可运行切片
+
+以下是历史开工顺序。当前第一工作包为 START-HERE 的R0/R1；只有核对源码后发现能力缺失，才按需补下列基础能力。
 
 先完成以下切片，再扩大：
 
@@ -58,6 +62,8 @@ P0/P1交付后立即继续P2/P3，目标是课表影响今天/周预算和安排
 - 验证了哪层，生产/真实provider/邮件到达哪些尚未验证。
 - Todo保护是否仍成立，下阶段具体补哪条断点。
 
-## 可直接粘贴的启动Prompt
+## 初始建设的历史启动Prompt
+
+已有 V2 的易用性修复请使用 REPAIR-PLAN-2026-10-04 第 9 节的启动指令，下文仅保留初始建设上下文。
 
 > 在dash-campus现有工程实施app/docs/agent-first-v2/MASTER-PLAN.md和CODING-AGENT.md。先核对基线、保留未提交改动、保护旧Todo只读，创建独立开发库。从P0/P1最小可运行切片开始，完成后按依赖推进P2–P6。目标是统一输入自动整理、关键缺口主动问答、课程/任务/实际投入共同驱动今天和本周、实践证据驱动方向。允许重建Dash业务数据但先备份和隔离切换，绝不修改或停止Todo。普通实现决策自主完成，不停在计划或空壳；按阶段真实验证并记录完成证据。规划文件不是生产功能证明；真实缺口明确标注。使用Git Bash，先写脚本再执行，不提交密钥、私人业务数据或生产连接信息，未要求不commit/push。

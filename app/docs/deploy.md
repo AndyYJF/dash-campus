@@ -2,7 +2,7 @@
 
 Dash Campus 是单用户自部署应用：一个镜像两个进程（web、worker），数据是一个 SQLite 文件，放在 `data/` 持久目录。
 
-当前生产要求 schema **16**，发布 `20261003-5b6c71b38362`，课表导入、真实旧工具迁移与校园桥接已上线。当前证据、备份及匹配回退见 [STATUS](STATUS.md)，历史专项记录见 [Web V1 最终交付记录](web-v1-final-acceptance-2026-10-03.md)，映射说明见 [旧工具兼容说明](legacy-compatibility-2026-10-03.md)。原文提取与摘要通知由 worker 执行，只有 web 时会一直排队；摘要默认关闭，需要在设置中启用。升级前先停机备份，不能用旧镜像连接迁移后的新库。首次使用流程见 [Web V1 修复与开发交付](v1-completion-2026-10-02.md)；下文带历史日期的生产记录保留原日期边界。
+当前状态与接手入口见 [STATUS](STATUS.md)。2026-10-04只读审计的数据库版本为 **23**；实际部署时以目标代码 EXPECTED_SCHEMA_VERSION、迁移和当前运行状态核对，不把schema16旧发布当当前要求。schema16发布/回退和Web V1说明保留为 [历史状态](web-v1-status-2026-10-03.md) 与 [Web V1交付记录](web-v1-final-acceptance-2026-10-03.md)，旧工具映射见 [兼容说明](legacy-compatibility-2026-10-03.md)。原文提取与摘要通知由 worker 执行，只有 web 时会一直排队；摘要默认关闭，需要按已确认策略启用。升级前先停机备份，不能用旧镜像连接迁移后的新库。下文带历史日期的生产记录保留当时边界，不等于当前可直接回退。
 
 已安装校园桥接的实例，**升级、备份、恢复前须先停止 `dash-campus-campus-bridge.timer` 和对应 `.service`，再停止 web/worker**。桥接也是数据库写入者，不能只停 Compose 后宣称完全停机。启动正常并确认非恢复暂停后再启动 timer；恢复时所有旧实例及其桥接必须停止，人工核对并执行 resume 后才启动 worker/timer。
 

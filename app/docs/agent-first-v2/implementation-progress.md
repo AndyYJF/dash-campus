@@ -28,6 +28,13 @@
 - 真实模型（仅 `gemini-3.8-flash-high`；独立临时库，凭证只在子进程环境变量）：`eval-goal-flows` **9/9**，共 25 次请求（P4 的 6 条 + P5 的 3 条）。G01 两句查看都直接回答、核验 verified、无批次；G03 “暂停科研项目，再把空出的时间用于数学”被拆为项目暂停 + 两个决策步骤，确认后三步都执行、核验 verified；G05 预置 900 分钟、明天截止的任务后说“概率论大作业明天就要交了，帮我优先安排”，执行优先后核验 `needs_action`（缺 900 分钟），结果显示需要你回答，截止/课程/预算未改。明细 `.planning/eval-goals-*.json`（不入库）。
 - 真实核对中发现并修掉：取舍问题还开着时结果卡显示“已更新”（改为“需要你回答”）；评测在两个确认同时在等时往统一栏打“可以”，被正确地追问“指哪一个”，改为按按钮逐个确认。
 
+### 发布与生产冒烟（2026-10-05 05:50 +08）
+
+- 提交 `eb8c9dd` 推送 `main`；按 [deploy.md](../deploy.md) §4 发布：停桥接 timer 与 web/worker → 备份 `backups/production-20261005-p5-eb8c9dd`（schema31，sha256 `b19e8863…`）→ 清掉旧 `src/` 后覆盖源码 → 构建 → 迁移 `0032_agent_verifications.sql`（31 → 32）→ 启动 → 恢复 timer。回退材料：`/opt/dash-campus-src-cb64d10.tgz` 与镜像 `dash-campus:rollback-cb64d10`（回退需先用上述备份恢复 schema31 数据）。
+- 生产源码散列与 `git -c core.autocrlf=false archive eb8c9dd` 一致（`b0cf3ab1…`）。
+- 冒烟（只读，未往生产写测试数据）：health `schemaVersion 32`；80 端口 301 到 HTTPS；`/login` 200；owner 接口与 `POST /api/v2/intakes`、`POST /api/v2/feedback` 未登录均 401；P5 源码与迁移在位。生产 ops 容器里用已部署代码核对：期望 schema 32、修正上限 2 次/4 步、核验表在导出分类中、36 个注册操作带核验模板。生产库只读：schema 32，`agent_verifications` 表、唯一约束与索引存在，核验 0 行、目标 0 行（发布后无主人投递）；web healthy、worker 恢复扫描 0 项、web 日志无错误。
+- 未做：登录态网页核验文字走查与生产真实投递（需主人会话）。
+
 ### 未验证 / 未完成
 
 - G03 第二步失败、G06 崩溃、G09 修正受阻、修正上限只有隔离验证（故障用测试库触发器模拟），真实模型不参与这些判断。

@@ -1,4 +1,5 @@
 import { addDays, wallTimeToUtc } from "./time";
+import type { DayPolicy } from "./day-policy";
 
 /**
  * 确定性时间预算（MASTER-PLAN §6.1）：纯函数，不碰 DB。
@@ -52,19 +53,37 @@ export function minutesOf(ws: Interval[]): number {
   return Math.floor(ws.reduce((a, [s, e]) => a + (e - s), 0) / 60000);
 }
 
-/** 本地日期是否周末（周六/周日），dateLocal = YYYY-MM-DD，tz 内解释 */
-function isWeekend(dateLocal: string, tz: string): boolean {
+/** 当地 HH:MM → UTC 毫秒；24:00 表示次日零点 */
+function wall(dateLocal: string, time: string, tz: string): number {
+  return time >= "24:00" ? wallTimeToUtc(addDays(dateLocal, 1), "00:00", tz).getTime() : wallTimeToUtc(dateLocal, time, tz).getTime();
+}
+
+/** 本地日期是否周末（周六/周日），dateLocal = YYYY-MM-DD */
+function isWeekend(dateLocal: string): boolean {
   const day = new Date(`${dateLocal}T12:00:00Z`).getUTCDay();
-  void tz;
   return day === 0 || day === 6;
 }
 
-/** 基础可安排窗口 A（模板） */
-export function baseWindows(dateLocal: string, prefs: Prefs, tz: string): Interval[] {
-  const [start, end] = isWeekend(dateLocal, tz)
-    ? [prefs.weekendStart, prefs.weekendEnd]
-    : [prefs.workdayStart, prefs.workdayEnd];
-  return [[wallTimeToUtc(dateLocal, start, tz).getTime(), wallTimeToUtc(dateLocal, end, tz).getTime()]];
+/** 没有显式政策时的模板口径：工作日/周末窗口 + 日上限 */
+function templatePolicy(dateLocal: string, prefs: Prefs): DayPolicy {
+  const weekend = isWeekend(dateLocal);
+  return {
+    template: weekend ? "weekend" : "workday",
+    windowStart: weekend ? prefs.weekendStart : prefs.workdayStart,
+    windowEnd: weekend ? prefs.weekendEnd : prefs.workdayEnd,
+    dailyLimit: prefs.dailyLimitMinutes,
+    closed: [],
+    noStudy: false,
+    notes: [],
+    tentative: prefs.status === "tentative",
+  };
+}
+
+/** 基础可安排窗口 A：政策窗口扣掉当天明确不学的时段 */
+export function baseWindows(dateLocal: string, prefs: Prefs, tz: string, policy: DayPolicy = templatePolicy(dateLocal, prefs)): Interval[] {
+  if (policy.noStudy) return [];
+  const a: Interval[] = [[wall(dateLocal, policy.windowStart, tz), wall(dateLocal, policy.windowEnd, tz)]];
+  return subtractIntervals(a, policy.closed.map(([s, e]) => [wall(dateLocal, s, tz), wall(dateLocal, e, tz)] as Interval).filter(([s, e]) => e > s));
 }
 
 /** 生活保留 L：餐饮时段与 A 的交集（只与 A 交集扣除） */
@@ -87,15 +106,16 @@ export function dayBudget(
   prefs: Prefs,
   tz: string,
   events: Array<{ interval: Interval; isCourse: boolean }>,
+  policy: DayPolicy = templatePolicy(dateLocal, prefs),
 ): { w: Interval[]; cDay: number; courseMinutes: number; eventMinutes: number } {
-  const a = baseWindows(dateLocal, prefs, tz);
+  const a = baseWindows(dateLocal, prefs, tz, policy);
   const l = lifeReserves(dateLocal, prefs, tz, a);
   const commute = prefs.commuteMinutes * 60000;
   const f = events.map(({ interval: [s, e], isCourse }) =>
     isCourse ? ([s - commute, e + commute] as Interval) : ([s, e] as Interval),
   );
   const w = subtractIntervals(subtractIntervals(a, f), l);
-  const cDay = Math.min(Math.floor(minutesOf(w) * (1 - prefs.bufferPercent / 100)), prefs.dailyLimitMinutes);
+  const cDay = policy.noStudy ? 0 : Math.min(Math.floor(minutesOf(w) * (1 - prefs.bufferPercent / 100)), policy.dailyLimit);
   const courseMinutes = minutesOf(mergeIntervals(events.filter((e) => e.isCourse).map((e) => e.interval)));
   const eventMinutes = minutesOf(mergeIntervals(events.map((e) => e.interval)));
   return { w, cDay, courseMinutes, eventMinutes };

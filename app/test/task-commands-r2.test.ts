@@ -90,7 +90,7 @@ test("U03：带 taskId 的 create_or_update_task 修改原任务，不新增副�
   assert.equal(after.estimate_minutes, 90);
   assert.equal(after.due_kind, "instant");
   assert.equal(after.version, t!.version + 1);
-  assert.deepEqual(undoBatch(r.batchId), { kind: "undone" });
+  assert.deepEqual(undoBatch(r.batchId!), { kind: "undone" });
   const undone = task(t!.id);
   assert.equal(undone.estimate_minutes, 60);
   assert.equal(undone.due_kind, "none");

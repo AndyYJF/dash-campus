@@ -1,9 +1,10 @@
 import { z } from "zod";
 
 /**
- * P2 白名单命令契约（MASTER-PLAN §4.2/§7）：
- * 领域写入只允许经这里的 schema 校验后由命令执行器落库；模型输出永远不能绕过。
- * P2 实现 3 个首版命令，其余（plan_sessions 等）在 P3 加入同一白名单。
+ * 操作注册表契约（MASTER-PLAN §4.2/§7，AGENT-INTERFACE-CONTRACT §4）：
+ * 领域写入只允许经这里的 schema 校验后由执行器落库；模型输出永远不能绕过。
+ * schema、OPERATIONS 元数据、执行 handler（workflows/commands.ts）一一对应；
+ * Agent 的工具说明与前端的可用操作都从 OPERATIONS 导出，未注册的不展示、不执行。
  */
 
 export const COMMAND_POLICY_VERSION = "v2-p2";
@@ -80,6 +81,124 @@ export const archiveEntitySchema = z.object({
   entityId: z.string().min(1).max(64),
 });
 
+const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const timeStr = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
+const audience = z.enum(["all", "undergraduate", "graduate"]);
+
+/** 国家年度节假日安排（由通知原文确定性解析得到）；third_party 会被执行器拒绝 */
+export const syncHolidayCalendarSchema = z.object({
+  command: z.literal("sync_holiday_calendar"),
+  year: z.number().int().min(2000).max(2100),
+  days: z.array(z.object({ localDate: dateStr, name: z.string().min(1).max(40), kind: z.enum(["holiday", "adjusted_workday"]) })).min(1).max(120),
+  sourceUrl: z.string().max(2048).default(""),
+  sourceTitle: z.string().max(200).default(""),
+  revisionHash: z.string().min(8).max(64),
+  origin: z.enum(["official", "user_upload", "third_party"]),
+  publishedAt: dateStr.nullable().default(null),
+});
+
+/** 一个学期的校历：报到日/授课日/首周周一分开；停课区间与补课映射都要有来源依据 */
+export const upsertAcademicCalendarSchema = z.object({
+  command: z.literal("upsert_academic_calendar"),
+  school: z.string().max(80).default(""),
+  audience: audience.default("all"),
+  academicYear: z.string().max(20).default(""),
+  termLabel: z.string().max(40).default(""),
+  registrationDate: dateStr.nullable().default(null),
+  teachingStart: dateStr.nullable().default(null),
+  firstMonday: dateStr.nullable().default(null),
+  totalWeeks: z.number().int().min(1).max(60).nullable().default(null),
+  termEnd: dateStr.nullable().default(null),
+  skippedWeeks: z.array(dateStr).max(10).default([]),
+  events: z
+    .array(
+      z.object({
+        kind: z.enum(["holiday", "exam", "registration", "teaching_start", "term_end", "training", "other"]),
+        title: z.string().min(1).max(100),
+        startDate: dateStr,
+        endDate: dateStr,
+        audience: audience.default("all"),
+        cancelsClasses: z.boolean().default(false),
+        evidence: z.string().max(500).default(""),
+      }),
+    )
+    .max(60)
+    .default([]),
+  overrides: z
+    .array(z.object({ targetDate: dateStr, sourceTeachingDate: dateStr, mode: z.enum(["replace", "add"]), cancelSource: z.boolean().default(false), evidence: z.string().max(500).default("") }))
+    .max(40)
+    .default([]),
+  source: z.string().max(2048).default(""),
+  sourceRevision: z.string().max(64).default(""),
+  origin: z.enum(["source", "user"]).default("source"),
+  /** 校历首周与现有课表不一致时，主人确认后才按校历修正课程日期 */
+  confirmAnchorChange: z.boolean().default(false),
+});
+
+/** 单次教学日例外：整天停课/按另一天的课上（school），或某门课取消/移动（course） */
+export const applyTeachingDayOverrideSchema = z.object({
+  command: z.literal("apply_teaching_day_override"),
+  scope: z.enum(["school", "course"]),
+  courseId: z.string().uuid().nullable().default(null),
+  courseName: z.string().max(100).nullable().default(null),
+  mode: z.enum(["cancel", "replace", "add", "move"]),
+  sourceTeachingDate: dateStr,
+  targetDate: dateStr.nullable().default(null),
+  targetStart: timeStr.nullable().default(null),
+  targetEnd: timeStr.nullable().default(null),
+  cancelSource: z.boolean().default(true),
+  origin: z.enum(["source", "user"]).default("user"),
+  note: z.string().max(200).default(""),
+  evidence: z.string().max(500).default(""),
+});
+
+export const updateCalendarSyncPolicySchema = z.object({
+  command: z.literal("update_calendar_sync_policy"),
+  enabled: z.boolean().optional(),
+  school: z.string().max(80).optional(),
+  audience: audience.optional(),
+  intervalDays: z.number().int().min(1).max(30).optional(),
+  holidayYear: z.number().int().min(2000).max(2100).optional(),
+  holidayUrl: z.string().url().max(2048).optional(),
+  academicUrl: z.string().url().max(2048).optional(),
+});
+
+/** 时间政策：base 只改给出的模板字段；rules 是有范围的规则（持久或临时）；revokeRuleIds 撤回 */
+export const updatePlanningPolicySchema = z.object({
+  command: z.literal("update_planning_policy"),
+  base: z
+    .object({
+      workdayStart: timeStr,
+      workdayEnd: timeStr,
+      weekendStart: timeStr,
+      weekendEnd: timeStr,
+      dailyLimitMinutes: z.number().int().min(0).max(960),
+      minBlockMinutes: z.number().int().min(10).max(120),
+      bufferPercent: z.number().int().min(0).max(80),
+      commuteMinutes: z.number().int().min(0).max(120),
+      meals: z.array(z.tuple([timeStr, timeStr])).max(6),
+    })
+    .partial()
+    .optional(),
+  rules: z
+    .array(
+      z.object({
+        kind: z.enum(["weekday_limit", "group_limit", "no_study", "holiday_policy", "preferred_window", "auto_reschedule"]),
+        weekday: z.number().int().min(1).max(7).nullable().optional(),
+        dateFrom: dateStr.nullable().optional(),
+        dateTo: dateStr.nullable().optional(),
+        value: z.record(z.string(), z.unknown()).default({}),
+        scope: z.enum(["persistent", "temporary"]).default("persistent"),
+        origin: z.enum(["user", "assumed"]).default("user"),
+      }),
+    )
+    .max(10)
+    .default([]),
+  revokeRuleIds: z.array(z.string().uuid()).max(20).default([]),
+  confirm: z.boolean().default(false),
+  evidence: z.string().max(500).default(""),
+});
+
 export const commandSchema = z.discriminatedUnion("command", [
   upsertCourseSetSchema,
   recordPracticeSchema,
@@ -88,17 +207,58 @@ export const commandSchema = z.discriminatedUnion("command", [
   applyEventExceptionSchema,
   archiveEntitySchema,
   completeTaskSchema,
+  syncHolidayCalendarSchema,
+  upsertAcademicCalendarSchema,
+  applyTeachingDayOverrideSchema,
+  updateCalendarSyncPolicySchema,
+  updatePlanningPolicySchema,
 ]);
 
 export type Command = z.infer<typeof commandSchema>;
 
-export const COMMAND_WHITELIST = ["upsert_course_set", "record_practice", "create_or_update_task", "import_fixed_events", "apply_event_exception", "archive_entity", "complete_task"] as const;
+export type OperationAffect = "plan" | "reminders" | "calendar" | "notices" | "direction";
 
-/** 命令执行上下文：来源引用进 journal，目标对象由服务端解析 */
+export type OperationMeta = {
+  /** 用户可见的名称 */
+  title: string;
+  /** 给 Agent 的工具说明：何时用、关键参数 */
+  description: string;
+  group: "course" | "calendar" | "task" | "plan" | "practice" | "goal" | "profile" | "reminder" | "agent" | "recovery";
+  /** auto：信息明确且可逆，Agent 可直接执行；owner_explicit：必须来自主人本人的明确指令或按钮 */
+  authorization: "auto" | "owner_explicit";
+  /** journal：可按批次撤销；none：外部副作用或不可逆，结果里如实说明 */
+  undo: "journal" | "none";
+  /** 提交后需要更新的派生状态 */
+  affects: OperationAffect[];
+};
+
+export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
+  upsert_course_set: { title: "课表更新", description: "用确定性课表文本（SDCT1）和学期首周一建立/替换本学期课程。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
+  record_practice: { title: "实践记录", description: "记录一次已发生的学习/实践投入；可关联任务，非学习活动标 other。", group: "practice", authorization: "auto", undo: "journal", affects: ["plan", "direction"] },
+  create_or_update_task: { title: "任务", description: "新建任务，或带 taskId 修改原任务（只改给出的字段）。", group: "task", authorization: "auto", undo: "journal", affects: ["plan", "reminders"] },
+  import_fixed_events: { title: "日程导入", description: "导入有具体日期和起止时间的一次性固定活动。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
+  apply_event_exception: { title: "停课例外", description: "某门课某一天停课。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
+  archive_entity: { title: "归档", description: "归档任务、目标或整套课表（可撤销）。", group: "recovery", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
+  sync_holiday_calendar: { title: "节假日安排", description: "把官方年度节假日/调休日期入库（只标注公历日，不决定学校补课）。", group: "calendar", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
+  upsert_academic_calendar: { title: "校历", description: "一个学期的校历：首周、周数、停课区间、学校明确的补课映射。", group: "calendar", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
+  apply_teaching_day_override: { title: "调课/停课", description: "单次例外：某门课取消或移到别的时间；或整天停课、按另一天的课表上课。周次条件按原教学日期判断。", group: "calendar", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
+  update_calendar_sync_policy: { title: "日历自动更新设置", description: "开启/关闭校历与节假日的有限自动核对，设置学校、人群、间隔与官方入口。", group: "calendar", authorization: "owner_explicit", undo: "journal", affects: [] },
+  update_planning_policy: { title: "时间安排规则", description: "修改作息模板字段、按星期/工作日的上限、某段时间不学、假期策略、集中时段偏好，或授权重新安排某天。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
+  complete_task: { title: "完成任务", description: "把指定任务标记完成，取消其未执行学习块与提醒。", group: "task", authorization: "owner_explicit", undo: "journal", affects: ["plan", "reminders"] },
+};
+
+export const COMMAND_WHITELIST = Object.keys(OPERATIONS) as Array<Command["command"]>;
+
+/** 命令执行上下文：来源引用进 journal，目标对象由服务端解析；serverControl 字段不接受模型伪造 */
 export type CommandContext = {
   intakeId: string | null;
   itemId: string | null;
   itemKey: string;
   instanceEpoch: number;
   evidence: string;
+  /** 是否来自主人本人的明确指令（输入框原话/卡片按钮）。false = 来自资料正文或模型建议；缺省按 true（服务端内部调用） */
+  explicit?: boolean;
+  /** 规划时刻；缺省取当前时间（测试用固定时钟） */
+  now?: Date;
+  conversationId?: string | null;
 };

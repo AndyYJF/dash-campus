@@ -47,15 +47,46 @@ function budgetView(l: DayLedger, source: string) {
     committedFutureMinutes: l.pFuture,
     futureBudget: l.futureBudget,
     futureCapacity: l.futureCapacity,
-    source,
+    dailyLimit: l.policy.dailyLimit,
+    source: l.policy.tentative ? "tentative" : source,
   };
 }
 
-/** 时间线用的课程/固定活动：与预算扣除的是同一批区间 */
+/** 时间线用的课程/固定活动/待核对预留：与预算扣除的是同一批区间 */
 function eventViews(date: string, tz: string) {
   return eventsForDay(date, tz)
-    .map((e) => ({ id: e.id, title: e.title, startUtc: new Date(e.interval[0]).toISOString(), endUtc: new Date(e.interval[1]).toISOString(), kind: e.isCourse ? ("course" as const) : ("fixed" as const) }))
+    .map((e) => ({
+      id: e.id,
+      title: e.title,
+      startUtc: new Date(e.interval[0]).toISOString(),
+      endUtc: new Date(e.interval[1]).toISOString(),
+      kind: e.kind,
+      location: e.location ?? "",
+      teacher: e.teacher ?? "",
+      courseId: e.courseId ?? null,
+      sourceDate: e.sourceDate ?? null,
+      origin: e.origin ?? null,
+    }))
     .sort((a, b) => (a.startUtc < b.startUtc ? -1 : a.startUtc > b.startUtc ? 1 : 0));
+}
+
+/** 日期头：公历日类型、教学周、停课/补课/待核对说明及出处 */
+function calendarView(l: DayLedger) {
+  const c = l.calendar;
+  return {
+    civilType: c.civil.type,
+    civilName: c.civil.name,
+    civilKnown: c.civil.known,
+    civilSourceUrl: c.civil.sourceUrl,
+    teachingWeek: c.teachingWeek,
+    phase: c.phase,
+    teachingStatus: c.teaching.status,
+    teachingNote: c.teaching.note,
+    sourceTeachingDate: c.teaching.sourceTeachingDate,
+    schoolEvents: c.schoolEvents.map((e) => ({ kind: e.kind, title: e.title })),
+    policyNotes: l.policy.notes,
+    noStudy: l.policy.noStudy,
+  };
 }
 
 function daySessions(date: string, tz: string) {
@@ -75,6 +106,7 @@ export function dashboardSnapshot(dateLocal: string, asOf: Date) {
       courseMinutes: ledger.courseMinutes,
       eventMinutes: ledger.eventMinutes,
       fixedMinutes: ledger.fixedMinutes,
+      calendar: calendarView(ledger),
       events: eventViews(dateLocal, tz),
       sessions: daySessions(dateLocal, tz),
       budget: budgetView(ledger, prefs.status),
@@ -101,6 +133,7 @@ export function weekSnapshot(mondayLocal: string, asOf: Date) {
       cDay: ledger.cDay,
       bDay: ledger.bDay,
       budget: budgetView(ledger, prefs.status),
+      calendar: calendarView(ledger),
       events: eventViews(date, tz),
       sessions: daySessions(date, tz),
     };

@@ -93,7 +93,7 @@ test("archive_entity：归档任务可撤销恢复", async () => {
   const archived = getDb().prepare(`SELECT archived_at FROM tasks WHERE id = ?`).get(taskId) as { archived_at: string | null };
   assert.ok(archived.archived_at, "已软删除");
   const { undoBatch } = await import("@/workflows/undo");
-  assert.equal(undoBatch(r.ok ? r.batchId : "").kind, "undone");
+  assert.equal(undoBatch(r.ok ? r.batchId! : "").kind, "undone");
   const restored = getDb().prepare(`SELECT archived_at FROM tasks WHERE id = ?`).get(taskId) as { archived_at: string | null };
   assert.equal(restored.archived_at, null, "撤销后恢复");
 });
@@ -115,7 +115,7 @@ test("A03：单日停课例外从预算移除，撤销后恢复", async () => {
   assert.ok(evAfter.length < evBefore.length, "预算输入同步变化");
 
   const { undoBatch } = await import("@/workflows/undo");
-  assert.equal(undoBatch(r.ok ? r.batchId : "").kind, "undone");
+  assert.equal(undoBatch(r.ok ? r.batchId! : "").kind, "undone");
   const evRestored = eventsForDay("2026-10-05", tz);
   assert.equal(evRestored.length, evBefore.length, "撤销后课程占用恢复");
 });

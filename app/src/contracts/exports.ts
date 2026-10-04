@@ -108,6 +108,15 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   course_event_exceptions: {},
   // Agent-first V2（迁移 0023）：focus 计时
   focus_sessions: {},
+  // R0/R1（迁移 0025）：校历、国家节假日、教学日例外、来源刷新状态与撤销墓碑、时间政策规则
+  academic_calendars: {},
+  academic_calendar_events: {},
+  holiday_datasets: {},
+  holiday_days: {},
+  teaching_day_overrides: {},
+  calendar_sync_sources: {},
+  source_tombstones: {},
+  planning_policy_rules: {},
   // 非敏感设置（邮件模板、预算）；调度内部状态不导出
   settings: {},
 };

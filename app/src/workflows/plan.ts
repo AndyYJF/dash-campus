@@ -1,11 +1,13 @@
 import { getDb } from "@/repositories/db";
-import { occurrences } from "@/domain/calendar-occurrences";
 import { addDays, instanceTimezone, localDateInTz, mondayOf, wallTimeToUtc } from "@/domain/time";
-import { dayBudget, futureCapacity, mergeIntervals, minutesOf, next7Days, subtractIntervals, type Interval, type Prefs } from "@/domain/budget";
+import { baseWindows, dayBudget, futureCapacity, mergeIntervals, minutesOf, next7Days, subtractIntervals, type Interval, type Prefs } from "@/domain/budget";
 import { MAX_BLOCKS_PER_TASK, placeTasks, type SchedDay, type SchedTask, type Unscheduled } from "@/domain/scheduler";
 import { getPrefs, insertSession, listSessionsInRange, sessionFromRow, supersedeSession, type PlanSessionRow } from "@/repositories/plan";
 import { createBatch, addChange } from "@/repositories/journal";
 import { COMMAND_POLICY_VERSION } from "@/contracts/commands";
+import { resolveDayPolicy, type DayPolicy } from "@/domain/day-policy";
+import { activePolicyRules } from "@/repositories/calendar-facts";
+import { calendarDay, type CalendarDay } from "@/workflows/calendar";
 
 /**
  * 共享预算账本 + 差异重排（MASTER-PLAN §6.1/§6.2，REPAIR-PLAN §4.2–§4.5）。
@@ -16,7 +18,20 @@ const DAY_MS = 86_400_000;
 const GAP_MS = 10 * 60000;
 const ACTIVE_STATUSES = ["tentative", "planned", "in_progress"];
 
-export type DayEvent = { id: string; title: string; interval: Interval; isCourse: boolean };
+export type DayEvent = {
+  id: string;
+  title: string;
+  interval: Interval;
+  /** course = 有效课程实例；fixed = 普通固定活动；pending = 学校安排待核对时的保守预留 */
+  kind: "course" | "fixed" | "pending";
+  isCourse: boolean;
+  location?: string;
+  teacher?: string;
+  courseId?: string | null;
+  /** 课程来自哪个原教学日期（补课/调课时与当天不同） */
+  sourceDate?: string;
+  origin?: "regular" | "makeup" | "moved";
+};
 
 export type DayLedger = {
   date: string;
@@ -39,9 +54,20 @@ export type DayLedger = {
   pFuture: number;
   futureBudget: number;
   futureCapacity: number;
+  /** 当天口径的依据：日历（教学周/假日/补课）与时间政策 */
+  calendar: CalendarDay;
+  policy: DayPolicy;
 };
 
-export type PlanConflict = { sessionId: string; taskId: string; reason: "overlaps_fixed" };
+/**
+ * 受保护块（24h 内/锁定/已开始）出现问题时不擅自移动，只标出来给主人选择：
+ * overlaps_fixed 与课程/固定活动重叠；outside_policy 落在已不安排学习的时段；over_budget 超出当日预算。
+ */
+export type PlanConflict = { sessionId: string; taskId: string; reason: "overlaps_fixed" | "outside_policy" | "over_budget" };
+export type RebuildOptions = {
+  /** 主人明确要求重新安排的日期：这些天里未锁定、未开始的块全部重排（不受 24h 保护） */
+  replanDates?: string[];
+};
 export type RebuildResult = {
   kind: "planned";
   /** 没有任何块变化且未排原因不变时为 null：相同事实重算不产生新批次 */
@@ -69,9 +95,14 @@ function clipMinutes(s: number, e: number, lo: number, hi: number): number {
 export function dayLedger(date: string, asOf: Date, prefs: Prefs, tz: string, sessions?: PlanSessionRow[]): DayLedger {
   const [first, last] = dayRange(date, tz);
   const asOfMs = asOf.getTime();
-  const events = eventsForDay(date, tz);
-  const { w, cDay, courseMinutes, eventMinutes } = dayBudget(date, prefs, tz, events);
-  const fixedMinutes = minutesOf(mergeIntervals(events.filter((e) => !e.isCourse).map((e) => [Math.max(e.interval[0], first), Math.min(e.interval[1], last)] as Interval).filter(([s, e]) => e > s)));
+  const calendar = calendarDay(date, tz);
+  const events = eventsOf(calendar);
+  const policy = resolveDayPolicy(date, prefs, activePolicyRules(), { isHoliday: calendar.civil.type === "holiday" });
+  // 预算消费解析后的实际课程实例与交通；待核对的预留同样按课程加交通扣除
+  const { w, cDay, eventMinutes } = dayBudget(date, prefs, tz, events.map((e) => ({ interval: e.interval, isCourse: e.kind !== "fixed" })), policy);
+  const clip = (list: DayEvent[]) => minutesOf(mergeIntervals(list.map((e) => [Math.max(e.interval[0], first), Math.min(e.interval[1], last)] as Interval).filter(([s, e]) => e > s)));
+  const courseMinutes = clip(events.filter((e) => e.kind === "course"));
+  const fixedMinutes = clip(events.filter((e) => e.kind === "fixed"));
 
   const practice = getDb().prepare(`SELECT task_id, actual_minutes, category FROM practice_entries WHERE occurred_on = ?`).all(date) as Array<{ task_id: string | null; actual_minutes: number | null; category: string }>;
   let actual = 0;
@@ -109,17 +140,18 @@ export function dayLedger(date: string, asOf: Date, prefs: Prefs, tz: string, se
     actualMinutes: actual, estimatedMinutes: Math.round(estimated), provisionalMinutes: Math.round(provisional), otherActivityMinutes: other,
     bDay, wFutureMinutes: minutesOf(wFuture), pFuture: Math.round(pFuture),
     futureBudget: future.futureBudget, futureCapacity: future.futureCapacity,
+    calendar, policy,
   };
 }
 
 type PlanTask = SchedTask & { effortMode: "deliverable" | "time_budget" };
 
 /** 重排：保留有效旧块 → 只为缺口新增 → journal，单事务原子。 */
-export function rebuildPlan(asOf: Date): RebuildResult {
-  return getDb().transaction((): RebuildResult => rebuildInTx(asOf)).immediate();
+export function rebuildPlan(asOf: Date, opts: RebuildOptions = {}): RebuildResult {
+  return getDb().transaction((): RebuildResult => rebuildInTx(asOf, opts)).immediate();
 }
 
-function rebuildInTx(asOf: Date): RebuildResult {
+function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
   const db = getDb();
   const tz = instanceTimezone();
   const prefs = getPrefs();
@@ -160,7 +192,13 @@ function rebuildInTx(asOf: Date): RebuildResult {
     // 已开始的块整块算作该任务的在途承诺（已流逝部分是暂占，不另外补排）
     keptTask.set(s.taskId, { minutes: k.minutes + (end - start) / 60000, blocks: k.blocks + 1 });
   };
-  const isProtected = (s: PlanSessionRow) => s.status === "in_progress" || s.locked || Date.parse(s.startUtc) <= asOfMs + DAY_MS;
+  // 主人给过“这几天可以重新安排”的授权：范围内未锁定、未开始的块不再受 24h 保护；授权可撤回，撤回后恢复保护
+  const rules = activePolicyRules();
+  const granted = (date: string) => rules.some((r) => r.kind === "auto_reschedule" && (r.dateFrom ?? "") <= date && date <= (r.dateTo ?? ""));
+  const replan = new Set(opts.replanDates ?? []);
+  const sessionDate = (s: PlanSessionRow) => localDateInTz(new Date(s.startUtc), tz);
+  const started = (s: PlanSessionRow) => s.status === "in_progress" || Date.parse(s.startUtc) <= asOfMs;
+  const isProtected = (s: PlanSessionRow) => started(s) || s.locked || (Date.parse(s.startUtc) <= asOfMs + DAY_MS && !granted(sessionDate(s)) && !replan.has(sessionDate(s)));
 
   for (const s of active.filter(isProtected)) {
     // 任务已完成/取消/归档：未开始的块不再有意义；进行中的保留，由用户结束
@@ -168,15 +206,24 @@ function rebuildInTx(asOf: Date): RebuildResult {
       dropped.push(s);
       continue;
     }
+    const date = sessionDate(s);
+    const start = Date.parse(s.startUtc);
+    const end = Date.parse(s.endUtc);
+    const ledger = base.get(date);
+    const overBudget = ledger && !started(s) && keptDay.get(date)! + (end - start) / 60000 > dayCapacity(date);
     keep(s);
-    const date = localDateInTz(new Date(s.startUtc), tz);
-    if (eventsForDay(date, tz).some((e) => e.interval[0] < Date.parse(s.endUtc) && e.interval[1] > Date.parse(s.startUtc))) {
+    if (started(s)) continue; // 已开始的块只保留已发生投入，不再评判
+    if (eventsForDay(date, tz).some((e) => e.kind !== "pending" && e.interval[0] < end && e.interval[1] > start)) {
       conflicts.push({ sessionId: s.id, taskId: s.taskId, reason: "overlaps_fixed" });
+    } else if (ledger && subtractIntervals([[start, end]], baseWindows(date, prefs, tz, ledger.policy)).length > 0) {
+      conflicts.push({ sessionId: s.id, taskId: s.taskId, reason: "outside_policy" });
+    } else if (overBudget) {
+      conflicts.push({ sessionId: s.id, taskId: s.taskId, reason: "over_budget" });
     }
   }
   for (const s of active.filter((x) => !isProtected(x))) {
     const task = taskById.get(s.taskId);
-    if (!task || !stillValid(s, task)) dropped.push(s);
+    if (!task || replan.has(sessionDate(s)) || !stillValid(s, task)) dropped.push(s);
     else keep(s);
   }
 
@@ -287,30 +334,18 @@ function latestPlanSummary(): string {
   return JSON.stringify({ unscheduled: prev.unscheduled ?? [], conflicts: prev.conflicts ?? [] });
 }
 
-/** 当日固定活动区间（fixed_events 展开）；isCourse = 由课程投影产生（用于通勤扣除与课程占用显示） */
+/** 当日占用：有效课程实例（含补课/调课）、普通固定活动、待核对预留。全部来自统一日历解释器 */
 export function eventsForDay(date: string, tz: string): DayEvent[] {
-  const db = getDb();
-  const [first, last] = dayRange(date, tz);
-  const courseIds = new Set(
-    (db.prepare(`SELECT DISTINCT fixed_event_id FROM course_meeting_projections`).all() as Array<{ fixed_event_id: string }>).map((r) => r.fixed_event_id),
-  );
-  // A03：当日有停课例外的课程不占时
-  const exceptedCourses = new Set(
-    (db.prepare(`SELECT course_name FROM course_event_exceptions WHERE event_date = ?`).all(date) as Array<{ course_name: string }>).map((r) => r.course_name),
-  );
-  const rows = db.prepare(`SELECT * FROM fixed_events ORDER BY id`).all() as Array<Record<string, unknown>>;
+  return eventsOf(calendarDay(date, tz));
+}
+
+function eventsOf(day: CalendarDay): DayEvent[] {
   const out: DayEvent[] = [];
-  for (const r of rows) {
-    const title = r.title as string;
-    if (exceptedCourses.size && [...exceptedCourses].some((name) => title.startsWith(name))) continue;
-    const rule = {
-      id: r.id as string,
-      title, weekday: r.weekday as number,
-      localStart: r.local_start as string, localEnd: r.local_end as string, timezone: r.timezone as string,
-      eventDate: (r.event_date as string) ?? null, validFrom: (r.valid_from as string) ?? null, validUntil: (r.valid_until as string) ?? null,
-    };
-    for (const [s, e] of occurrences(rule, first, last)) out.push({ id: r.id as string, title, interval: [s, e], isCourse: courseIds.has(r.id as string) });
+  for (const c of day.courses) {
+    out.push({ id: c.occurrenceId, title: c.title, interval: c.interval, kind: "course", isCourse: true, location: c.location, teacher: c.teacher, courseId: c.courseId, sourceDate: c.sourceDate, origin: c.origin });
   }
+  for (const f of day.fixed) out.push({ id: f.id, title: f.title, interval: f.interval, kind: "fixed", isCourse: false });
+  day.pending.forEach((interval, i) => out.push({ id: `pending:${day.date}:${i}`, title: "可能补课（学校安排待核对）", interval, kind: "pending", isCourse: false }));
   return out;
 }
 

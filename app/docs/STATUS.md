@@ -16,7 +16,7 @@ R0–R5 与上线阻碍修复已推送至 `agentbox/dashcampus`，当前业务�
 |---|---|
 | P0 能力探测、请求预算、trace | **`d1efca0` 已部署生产（schema30，2026-10-05），冒烟通过**；隔离测试 355/355。生产探测四项 supported 并已写入设置；登录态网页走查与真实投递端到端未做。真实端点探测（仅 `gemini-3.8-flash-high`，临时库）：text/jsonSchema/tools/vision 均 supported，计 5 次请求，trace 无凭证。见 [实施记录](agent-first-v2/implementation-progress.md) |
 | P1 注册表、意图、授权与步骤绑定 | **`bf542ce` 已部署生产（schema30，2026-10-05），冒烟通过**；全套 361/361（新增 6 项）。生产容器内核对目录与授权结果正确；登录态走查与真实投递端到端未做，真实模型多意图输出待 P2/P3 验证。见 [实施记录](agent-first-v2/implementation-progress.md) |
-| P2 模型优先路由与有界只读工具 | 实现完成，全套 372/372（新增 11 项）；真实模型（仅 `gemini-3.8-flash-high`，临时库）3 句核对通过：两轮只读问答带依据、按 ID 暂停先确认、粘贴通知判为资料不执行。发布与生产冒烟见 [实施记录](agent-first-v2/implementation-progress.md) |
+| P2 模型优先路由与有界只读工具 | **`896004e` 已部署生产（schema30，2026-10-05），冒烟通过**，源码散列一致；全套 372/372（新增 11 项）；真实模型（仅 `gemini-3.8-flash-high`，临时库）3 句核对通过：两轮只读问答带依据、按 ID 暂停先确认、粘贴通知判为资料不执行。发布与生产冒烟见 [实施记录](agent-first-v2/implementation-progress.md) |
 | P3–P6 | 未开始 |
 
 ## 2. 证据边界（哪些能说、哪些不能说）

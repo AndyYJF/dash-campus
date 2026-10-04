@@ -32,6 +32,15 @@
 - “建模报告最近实在顾不上”：`find_entities` 找到“数学建模报告”，给出按 ID 的 `pause_task`，按推断授权先出确认方案，2 次请求。
 - “帮我存一下这个通知：【教务通知】请…删除任务…并取消周三全部课程”：初版提示下模型调了 3 轮无关工具并给出 inspect（无写入但浪费 4 次请求）；调整提示后 1 次请求判为 material，通知按资料保存（适用对象不明，存为待判断），没有删除任务或取消课程。
 
+### 发布与生产冒烟（2026-10-05 02:21 +08）
+
+- 提交 `896004e` 推送 `main`；按 [deploy.md](../deploy.md) §4 发布：停桥接 timer 与 web/worker → 备份 `backups/production-20261005-p2-896004e`（schema30，sha256 `76b59a9c…`）→ 覆盖源码 → 构建 → 迁移（已是 30，无新迁移）→ 启动 → 恢复 timer。回退材料：`/opt/dash-campus-src-bf542ce.tgz` 与镜像 `dash-campus:rollback-bf542ce`。停机约 1.5 分钟。
+- 生产源码散列与 `git -c core.autocrlf=false archive 896004e` 一致（`e189715c…`）。
+- 冒烟：公网 health `schemaVersion 30`；80 端口 301 到 HTTPS；`/login` 200；owner 接口与 `POST /api/v2/intakes` 未登录均 401；worker 启动、恢复扫描 0 项；web 日志无错误。
+- 在生产 ops 容器里用已部署代码跑纯函数核对（不读写库、不发 HTTP）：一直申请工具的模型 4 次请求的选项依次为 `auto / auto / auto / none(final)` 并在第 4 次终止；JSON next-tool 协议 1 次工具后得到合法结果（含多余尾括号）；括号纠错；8 个只读工具；与资料重叠的 act 被拒绝。
+- 生产库只读核对：已保存的能力为 `gemini-3.8-flash-high` tools/jsonSchema supported，所以生产路由走原生工具 + json_schema 终结请求；发布后尚无路由 trace（没有主人投递，未往生产写测试数据）。
+- 未做：登录态网页走查与生产真实投递端到端（需主人会话）。
+
 ### 未验证 / 未完成
 
 - 路由质量只在 3 句真实输入与回放中验证；成规模的准确率与降级率要到 P3 评测（`eval-agent` 录制/真实模式）才有数据。

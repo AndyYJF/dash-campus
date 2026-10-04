@@ -242,3 +242,11 @@ focus 计时器未实现、PDF/XLSX 待依赖批准、vision 无坐标、A20 需
 - 新增依赖 `unpdf`（纯 JS，无原生依赖）：PDF 走文本层提取→进入分类；扫描件/解析失败明确提示「请截图投递或复制文字」，原文保留。
 - 测试：手写最小合法 PDF（无 xref，pdfjs recovery 解析）断言文本层内容落 practice 项；假 PDF 断言失败路径。坑：模板字符串里少一个 `>` 会让 Page 字典未闭合，报 "Page dictionary kid reference points to wrong type"。
 - 全套 197/197 + typecheck/lint/build 绿。
+
+## UI 修复（2026-10-04，commit 6c4f6e1）
+
+- **根因**：v2.module.css 误用不存在的 var(--paper/--border/--accent/--muted)，样式全失效；intake.module.css 靠回退值硬撑（暗色下白框）。
+- **修复**：全部换 globals.css 的 --color-* token；补齐 btn/btnPrimary/btnGhost；今天页 4 格数字块、计时绿色脉冲点；本周页今日行高亮；方向页候选卡片化；命令中文标签补全。
+- **验证**：本地生产模式 + Edge CDP 截图自查（暗色/亮色/390px/桌面），无横溢出；197/197 + typecheck/lint/build 绿；已部署线上（schema 23 不变）。
+- **工具**：`~/pi/tmp/cdp-shot.mjs`（Edge --remote-debugging-port=9222 + Node 原生 WebSocket 截图，本机无 Chrome）。
+- A20 剩余：键盘 Tab 走查（用户）。

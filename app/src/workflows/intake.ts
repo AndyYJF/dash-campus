@@ -267,15 +267,15 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
   }
 
   // 第三阶段：ready 事项经白名单命令落领域（§4.2）；notice/note 只保留事实不行动
-  let courseApplied = false;
+  const readyIds = new Set<string>();
   for (const item of listItems(intakeId)) {
     if (item.state !== "ready") continue;
-    if (item.kind === "timetable") courseApplied = true;
+    readyIds.add(item.id);
     applyItem(intake, item);
   }
-  // 课表变化触发有限范围重排（§6.2-8）：supersede 旧未来块并按新课程重放
-  const applied = listItems(intakeId).some((i) => i.kind === "timetable" && i.state === "applied");
-  if (courseApplied && applied) rebuildPlan(new Date());
+  // 本次落库的课程/任务/实践/日程都会改变预算或需求：触发差异重排（相同事实无变更，只动必要的块）
+  const PLAN_KINDS = ["timetable", "task", "practice", "ics"];
+  if (listItems(intakeId).some((i) => readyIds.has(i.id) && i.state === "applied" && PLAN_KINDS.includes(i.kind))) rebuildPlan(new Date());
   return finish("done", null);
 }
 

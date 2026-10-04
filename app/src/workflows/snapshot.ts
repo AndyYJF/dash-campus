@@ -1,11 +1,10 @@
 import { getDb } from "@/repositories/db";
 import { instanceTimezone, localDateInTz, mondayOf, wallTimeToUtc, addDays } from "@/domain/time";
-import { futureCapacity, minutesOf, type Interval } from "@/domain/budget";
 import { getPrefs, listSessionsInRange } from "@/repositories/plan";
 import { listOpenQuestions } from "@/repositories/questions";
 import { getInProgressFocus } from "@/repositories/focus-timer";
 import { getPlanningRevision } from "@/repositories/proposals";
-import { dayView, latestPlanUnscheduled } from "./plan";
+import { dayLedger, eventsForDay, latestPlanConflicts, latestPlanUnscheduled, type DayLedger } from "./plan";
 
 /**
  * 统一 snapshot（MASTER-PLAN §6.1/§8）：dashboard/week/direction 共用同一预算账本与会话数据；
@@ -14,7 +13,7 @@ import { dayView, latestPlanUnscheduled } from "./plan";
 
 export function snapshotRevision(): string {
   const prefs = getPrefs();
-  const batch = getDb().prepare(`SELECT id FROM agent_action_batches WHERE command = 'plan_sessions' ORDER BY created_at DESC LIMIT 1`).get() as { id: string } | undefined;
+  const batch = getDb().prepare(`SELECT id FROM agent_action_batches WHERE command = 'plan_sessions' ORDER BY created_at DESC, rowid DESC LIMIT 1`).get() as { id: string } | undefined;
   return `${getPlanningRevision()}:${prefs.version}:${batch?.id ?? "none"}`;
 }
 
@@ -36,36 +35,49 @@ function sessionView(s: { id: string; taskId: string; startUtc: string; endUtc: 
   };
 }
 
-/** 当日预算账本：B_day = 已完成块计划分钟（estimated）+ 当日已记录实践分钟 */
-function consumedMinutes(date: string, tz: string): number {
+/** 页面用的预算视图：字段全部来自共享账本（与排程同一计算器），不在这里另算 */
+function budgetView(l: DayLedger, source: string) {
+  return {
+    cDay: l.cDay,
+    bDay: l.bDay,
+    actualMinutes: l.actualMinutes,
+    estimatedMinutes: l.estimatedMinutes,
+    provisionalMinutes: l.provisionalMinutes,
+    otherActivityMinutes: l.otherActivityMinutes,
+    committedFutureMinutes: l.pFuture,
+    futureBudget: l.futureBudget,
+    futureCapacity: l.futureCapacity,
+    source,
+  };
+}
+
+/** 时间线用的课程/固定活动：与预算扣除的是同一批区间 */
+function eventViews(date: string, tz: string) {
+  return eventsForDay(date, tz)
+    .map((e) => ({ id: e.id, title: e.title, startUtc: new Date(e.interval[0]).toISOString(), endUtc: new Date(e.interval[1]).toISOString(), kind: e.isCourse ? ("course" as const) : ("fixed" as const) }))
+    .sort((a, b) => (a.startUtc < b.startUtc ? -1 : a.startUtc > b.startUtc ? 1 : 0));
+}
+
+function daySessions(date: string, tz: string) {
   const [first, last] = dayRangeUtc(date, tz);
-  const sessions = listSessionsInRange(first, last).filter((s) => s.status === "completed");
-  const sessionMinutes = sessions.reduce((a, s) => a + (new Date(s.endUtc).getTime() - new Date(s.startUtc).getTime()) / 60000, 0);
-  const practice = getDb().prepare(`SELECT COALESCE(SUM(actual_minutes), 0) AS m FROM practice_entries WHERE occurred_on = ?`).get(date) as { m: number };
-  return Math.round(sessionMinutes + practice.m);
+  return listSessionsInRange(first, last).filter((s) => s.status !== "superseded").map(sessionView);
 }
 
 export function dashboardSnapshot(dateLocal: string, asOf: Date) {
   const tz = instanceTimezone();
   const prefs = getPrefs();
-  const view = dayView(dateLocal, prefs, tz);
-  const [first, last] = dayRangeUtc(dateLocal, tz);
-  const sessions = listSessionsInRange(first, last).filter((s) => s.status !== "superseded");
-  const bDay = consumedMinutes(dateLocal, tz);
-  const wFuture = view.w.map(([s, e]) => [Math.max(s, asOf.getTime()), e] as Interval).filter(([s, e]) => e > s);
-  const pFuture = sessions
-    .filter((s) => ["planned", "in_progress"].includes(s.status) && new Date(s.endUtc).getTime() > asOf.getTime())
-    .reduce((a, s) => a + (new Date(s.endUtc).getTime() - Math.max(new Date(s.startUtc).getTime(), asOf.getTime())) / 60000, 0);
-  const future = futureCapacity({ cDay: view.cDay, bDay, wFutureMinutes: minutesOf(wFuture), pFutureMinutes: Math.round(pFuture), bufferPercent: prefs.bufferPercent });
+  const ledger = dayLedger(dateLocal, asOf, prefs, tz);
   return {
     snapshotRevision: snapshotRevision(),
     asOf: asOf.toISOString(),
     date: dateLocal,
     today: {
-      courseMinutes: view.courseMinutes,
-      eventMinutes: view.eventMinutes,
-      sessions: sessions.map(sessionView),
-      budget: { cDay: view.cDay, bDay, futureBudget: future.futureBudget, futureCapacity: future.futureCapacity, source: prefs.status },
+      courseMinutes: ledger.courseMinutes,
+      eventMinutes: ledger.eventMinutes,
+      fixedMinutes: ledger.fixedMinutes,
+      events: eventViews(dateLocal, tz),
+      sessions: daySessions(dateLocal, tz),
+      budget: budgetView(ledger, prefs.status),
     },
     questions: listOpenQuestions(3).map((q) => ({ id: q.id, prompt: q.prompt, version: q.version })),
     focus: (() => {
@@ -81,15 +93,16 @@ export function weekSnapshot(mondayLocal: string, asOf: Date) {
   const prefs = getPrefs();
   const days = Array.from({ length: 7 }, (_, i) => {
     const date = addDays(mondayLocal, i);
-    const view = dayView(date, prefs, tz);
-    const [first, last] = dayRangeUtc(date, tz);
-    const sessions = listSessionsInRange(first, last).filter((s) => s.status !== "superseded");
+    const ledger = dayLedger(date, asOf, prefs, tz);
     return {
       date,
-      courseMinutes: view.courseMinutes,
-      cDay: view.cDay,
-      bDay: consumedMinutes(date, tz),
-      sessions: sessions.map(sessionView),
+      courseMinutes: ledger.courseMinutes,
+      fixedMinutes: ledger.fixedMinutes,
+      cDay: ledger.cDay,
+      bDay: ledger.bDay,
+      budget: budgetView(ledger, prefs.status),
+      events: eventViews(date, tz),
+      sessions: daySessions(date, tz),
     };
   });
   return {
@@ -99,6 +112,7 @@ export function weekSnapshot(mondayLocal: string, asOf: Date) {
     days,
     weekBudget: days.reduce((a, d) => a + d.cDay, 0),
     unscheduled: latestPlanUnscheduled(),
+    conflicts: latestPlanConflicts(),
     source: prefs.status,
   };
 }

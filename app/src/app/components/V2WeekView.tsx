@@ -11,7 +11,7 @@ type Week = {
   monday: string;
   days: Day[];
   weekBudget: number;
-  unscheduled: Array<{ taskId: string; title: string; reason: string }>;
+  unscheduled: Array<{ taskId: string; title: string; reason: string; missingMinutes?: number }>;
   source: string;
 };
 
@@ -20,6 +20,8 @@ const REASON_LABEL: Record<string, string> = {
   insufficient_capacity: "容量不足",
   unknown_requirement: "工作量未知",
   blocked_dependency: "有前置依赖",
+  no_contiguous_slot: "预算够，但缺连续空档",
+  needs_remaining_estimate: "投入已达估时仍未完成，需要你说一下还剩多少",
 };
 const WEEKDAY = ["一", "二", "三", "四", "五", "六", "日"];
 
@@ -76,7 +78,7 @@ export default function V2WeekView() {
           <h2 className={styles.title}>排不下的</h2>
           {week.unscheduled.map((u) => (
             <p key={u.taskId} className={styles.question}>
-              {u.title} — {REASON_LABEL[u.reason] ?? u.reason}
+              {u.title} — {REASON_LABEL[u.reason] ?? u.reason}{u.missingMinutes ? `（缺 ${u.missingMinutes} 分钟）` : ""}
             </p>
           ))}
         </section>

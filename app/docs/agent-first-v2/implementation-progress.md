@@ -257,3 +257,28 @@ focus 计时器未实现、PDF/XLSX 待依赖批准、vision 无坐标、A20 需
 - **验证**：本地生产模式 + Edge CDP 截图自查（暗色/亮色/390px/桌面），无横溢出；197/197 + typecheck/lint/build 绿；已部署线上（schema 23 不变）。
 - **工具**：`~/pi/tmp/cdp-shot.mjs`（Edge --remote-debugging-port=9222 + Node 原生 WebSocket 截图，本机无 Chrome）。
 - A20 剩余：键盘 Tab 走查（用户）。
+
+## R1 共享预算账本与稳定排程（2026-10-04，未提交、未部署）
+
+基线 `f403472`（代码同 `cbbaeee`）。只做了本地实现与隔离行为验证；没有真实网页走查、没有碰生产、Todo 未触及。
+
+### 实现
+
+- **迁移 0024**：`tasks.effort_mode`（deliverable/time_budget，默认 deliverable）、`practice_entries.category`（study/other，默认 study）。`EXPECTED_SCHEMA_VERSION` = 24。
+- **单一账本 `dayLedger`**（`workflows/plan.ts`）：页面快照与排程共用。B_day = 已记录实际学习 + 无实际记录的已完成块（估算）+ 进行中/过时未反馈块的已流逝部分（暂占）。同一任务当天有实际记录时其完成块不再另扣（按任务关联，不按分钟相近）；`category=other` 的记录不消耗学习预算。
+- **差异重排 `rebuildPlan`**：不再整体 supersede。已开始/锁定/24h 内的块一律保留；24h 外的块仍有效（在可安排窗口内、不越截止、不超任务剩余与当日容量）则保留原 ID/时段，否则才替换。任务已完成/取消/归档时取消其未执行块。无块变化且结论相同不写新批次（snapshotRevision 不变）。受保护块与固定活动重叠时保留并记入 `conflicts`。
+- **剩余需求**：估时 − 已确认投入；deliverable 投入达到估时仍未完成时不再自动补排，给出 `needs_remaining_estimate`。
+- **截止时刻**：排程使用 `due_at`（instant）或截止日当地次日零点，块结束不晚于截止；窗口不足时放截止前最大片段并报 `missingMinutes`，不改截止。新增原因 `no_contiguous_slot`（预算够但缺连续空档）。
+- **快照**：today/week 增加 `fixedMinutes`（无课程语义来源的旧固定活动占用）、`events`（课程/固定活动时间线，与预算同一批区间）、细分预算字段、`conflicts`。
+- **intake**：任务/实践/ICS 落库后也触发重排（原先只有课表）。
+
+### 验证证据（隔离行为，固定时钟）
+
+- 新增 `test/ledger-r1.test.ts` 12 项：E05、E07、E08、E09、E10、E11、E13（两种 effortMode）、§4.6 两个具体日案例、重排批次撤销、R0 旧固定活动占用如实展示。`commands-items-v2` 补 U02 断言（真实 intake 管线）。
+- 全套 **209/209**，typecheck、eslint 通过。未跑 build，未做网页/真实 provider 验证。
+
+### 仍未做（下一处断点）
+
+- R0：旧课程→课程语义迁移（v1 课表导入未留来源，无法证明的只标 `fixed` 待核对，核对入口未做）；校历/假日/补课映射整体未做；`course_event_exceptions` 仍按标题前缀匹配。
+- R1：E06 仅有既有纯函数覆盖；E12 跨午夜/ICS 未补；24h 内超预算的受保护块只保留不提示；未知估时的 25 分钟起步块未做；`effort_mode`/`category`/`dueAt` 还没有命令入口（R2：命令 schema、intake 解析 U03/U04）。
+- R2–R5 全部未开始。三页 UI 尚未使用新增的 `events`/`conflicts`/细分预算字段（仅本周页补了未排原因文案）。

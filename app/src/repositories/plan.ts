@@ -68,14 +68,13 @@ export function getSession(id: string): PlanSessionRow | null {
   return r ? mapSession(r) : null;
 }
 
-/** supersede 未来未锁定的 tentative/planned 块（重排前的清理；完成/进行中/锁定不动） */
-export function supersedeFutureSessions(asOfUtc: string): Array<{ id: string; version: number }> {
-  const rows = getDb()
-    .prepare(`SELECT id, version FROM plan_sessions WHERE start_utc > ? AND status IN ('tentative','planned') AND locked = 0`)
-    .all(asOfUtc) as Array<{ id: string; version: number }>;
-  const stmt = getDb().prepare(`UPDATE plan_sessions SET status = 'superseded', version = version + 1, updated_at = ? WHERE id = ?`);
-  for (const r of rows) stmt.run(now(), r.id);
-  return rows;
+export function sessionFromRow(r: Record<string, unknown>): PlanSessionRow {
+  return mapSession(r);
+}
+
+/** 单块 supersede（重排时只作用于不再有效的块；完成/进行中/受保护块由调用方排除） */
+export function supersedeSession(id: string): void {
+  getDb().prepare(`UPDATE plan_sessions SET status = 'superseded', version = version + 1, updated_at = ? WHERE id = ?`).run(now(), id);
 }
 
 export function insertSession(input: { taskId: string; startUtc: string; endUtc: string; timezone: string; batchId: string }): string {

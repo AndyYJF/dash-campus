@@ -89,6 +89,10 @@ test("P2：task 事项经 create_or_update_task 落任务（估时/截止从原�
   assert.equal(rows[0]!.estimate_minutes, 120, "两小时 \u2192 120 分钟");
   assert.ok(rows[0]!.due_local_date, "明天 \u2192 有截止");
   taskId = rows[0]!.id;
+  // U02：任务落库即进入安排——要么有学习块，要么最近一次重排给出具体未排原因
+  const planned = getDb().prepare(`SELECT COUNT(*) AS n FROM plan_sessions WHERE task_id = ? AND status = 'planned'`).get(taskId) as { n: number };
+  const { latestPlanUnscheduled } = await import("@/workflows/plan");
+  assert.ok(planned.n > 0 || latestPlanUnscheduled().some((u) => u.taskId === taskId), "投递完成意味着已有安排或具体阻碍");
 });
 
 test("P2：实体后续被修改后 undo 返回 409，不强行覆盖", async () => {

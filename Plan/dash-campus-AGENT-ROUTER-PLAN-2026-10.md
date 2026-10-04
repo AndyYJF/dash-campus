@@ -1,360 +1,355 @@
-# 自研 Agent 开工方案：模型优先路由 + 有界只读工具
+# 自研 Agent 开工方案：模型优先路由、执行闭环与多轮对话
 
-日期：2026-10-04。状态：待实施规划，未开发。适用基线：[AndyYJF/dash-campus](https://github.com/AndyYJF/dash-campus) `main` @ `503552c`（业务版本 `95c8cf1`，schema 29）。开工时以仓库最新代码重新核对实现状态与迁移最大号。
+日期：2026-10-04。修订：v1.1。状态：**待实施规划，本文新增能力未开发**。
 
-本文件补充 [Agent 操作与接口契约](https://github.com/AndyYJF/dash-campus/blob/main/app/docs/agent-first-v2/AGENT-INTERFACE-CONTRACT.md) 与 [决策记录](https://github.com/AndyYJF/dash-campus/blob/main/app/docs/decisions.md)。不替代 E01–E49 验收，不改变 Todo 只读、自研有限步骤 Agent、不换框架等既有硬边界。
+核对基线：`main @ 7e76745`，现有业务版本 `95c8cf1`、schema29。开工时重新核对最新代码、工作区与迁移最大号。
 
----
+本文件是本轮 Agent 增强的实施入口，补充 [接口契约](../app/docs/agent-first-v2/AGENT-INTERFACE-CONTRACT.md) 与 [决策记录](../app/docs/decisions.md)。本轮冲突以本文件为准；既有领域行为、E01–E49 与 Todo 只读边界继续有效。原始 v1.0 保留在 Git 提交 `7e76745`，不再按其有歧义的条款实施。
 
-## 0. 主人已确认的取舍
+## 0. 本轮目标与取舍
 
-| 问题 | 结论 |
+用户提出目标后，Agent完成：**查事实 → 决策或追问 → 执行 → 核验 → 必要时修正 → 如实报告**。用户可在同一目标上继续自然语言修改，刷新页面或换设备后续答。理解正确但执行未完成，不能显示目标完成。
+
+| 项目 | 本轮约定 |
 |---|---|
-| 本轮主线 | 自然语言理解：不常见说法也能被正确理解，不再依赖逐条追加正则 |
-| 模型端点能力 | 支持原生 function/tool calling 与视觉输入（P0 仍需实测并持久化） |
-| 模型优先路由 | 接受。除 `/指令` 与少数快路径外，自然语言默认先走 1 次模型理解；每日模型预算上调至 100–200 次 |
-| 只读工具循环 | 允许。一次决策内最多 3 轮只读工具 + 1 次输出；写操作仍只经白名单命令 |
-| 执行方式 | 交给 Coding Agent 分包执行，总周期约 2–3 周，每包独立验收 |
-| 真实模型评测 | 投入。每次回归约 100–300 次真实调用，脱敏保存请求/响应用于回放 |
+| 理解 | 自然语言默认模型优先；明确快路径与无模型降级保留；不再靠逐句追加正则扩大覆盖 |
+| 模型能力 | 主人提供的端点据称支持工具调用与视觉；P0实测后决定协议，不把声明当验证 |
+| 行动 | 模型提出有类型的业务意图，服务端绑定、授权、版本核对后调用现有白名单 |
+| 对话 | 支持追问续答、结果后的继续修改、明确恢复旧目标；不要求每次重述全部背景 |
+| 自动修正 | 原授权范围内最多2次；扩大范围、改变长期规则或新增外部副作用须确认 |
+| 成本 | 日模型请求默认150，旧设置不覆盖；每次决策最多4次HTTP，单投递累计最多10次 |
+| 验证 | 隔离行为、录制兼容、真实模型、生产与主人试用分别报告 |
+| 工期 | P0–P6顺序交付，估计21–28个工作日，约4–6个工作周；含调试缓冲，不是完成承诺 |
 
----
+本轮不换技术栈，不引入外部 Agent 框架、常驻无限循环、Redis、向量库或第二套聊天存储。排程器、学习账本、提醒/邮件状态机与 Todo 桥接继续复用；新增的是理解、授权和编排层。不得为了满足Agent建议绕过这些领域约束。
 
-## 1. 现状诊断
+复杂视觉质量、真实收件与主人试用沿用 STATUS 的待验证状态；本轮增加其相关对话与解释能力，不因此宣布那些验收已完成。
 
-### 1.1 应保留的骨架
+## 1. 当前实现事实
 
-- **执行层边界扎实**：36 个 Zod 白名单操作（`contracts/commands.ts`）、服务端绑定对象 ID、journal/undo、版本与 epoch 防护、jobs 租约 fencing、每日次数预算、excerpt 必须逐字来自原文、外部文本只当数据。这些是后续扩展自由度的安全网。
-- **模型/算法分工清楚**：模型选取舍，排程、预算账本、冲突由确定性算法计算（decisions 2026-10-04）。
-- **Intake 流水线与问答生命周期合理**：durable receipt → extract → classify → resolve → policy → command；questionKey 去重、按 purpose 解析回答、回答后从 Resolve 恢复。
+- `contracts/commands.ts` 已有36个操作的 `OPERATIONS` 元数据：title、description、group、authorization、undo、affects；`workflows/commands.ts` 已使用它。应扩展这一个注册表，避免另建竞争目录。
+- `domain/intent.ts` 的明确解析、只读请求与模糊调整已存在；线上两例已修复。本轮针对更广表达、更多业务决策，而非宣称当前仍有同样未修复错误。
+- `adjustment-decision.ts` 读取七天快照与最多100项任务，仅开放13种调整意图；没有模型按需调用的只读工具循环。
+- `bindIntents()` 对纯时间政策组合合并，否则只绑定第一个意图。新增多动作不得原样交给它造成漏执行。
+- `ai_usage`已有用量记录；当前 `meteredModel()`按provider调用检查额度、返回后记录 attempts；intake调用计数为局部变量。新硬上限需按实际HTTP请求、跨恢复持久计数。
+- 已有 `conversations / conversation_turns / questions / answers / intakes / jobs / journal`。当前自动对话选择有六小时空闲窗口；目标恢复必须不依赖这个窗口。
+- 337项隔离用例使用假模型；存在少量真实模型与生产行为证据，但没有完整固定语料评测。录制回放也不能替代真实推理评测。
 
-### 1.2 主要瓶颈：正则优先、模型补位
-
-1. **理解的第一道门是正则**。`domain/intent.ts` 约 470 行、数十条按序匹配的中文正则；模型只在正则认不出或分类为 `command` 时才给意图。线上两次误判（“看一下目前每天的时间安排”被建成任务；“根据每天的课程重新安排时间”因缺钟点被拒）本质都是正则覆盖面问题，每修一次就是再加一条正则和一组回归测试，边际成本持续上升。
-2. **模型没有读工具**。`adjustment_decision` 把 7 天快照 + 最多 100 条任务一次性塞进 context，模型一次决定，无法“先查再决定”。契约 §4 已写 `get_context / find_entities / get_entity_detail / get_budget_and_calendar / get_evidence`，代码中尚无。
-3. **模型决策只开放给时间调整**。`adjustment-decision.ts` 的 `ALLOWED` 只有 13 个 op，其余 30 多个操作仍依赖正则命中。
-4. **操作注册表只有 schema，没有元数据**。缺默认授权级别、影响实体、撤销类型、所需读集；工具说明、确认策略、按钮能力分散手写，prompt 中的 op 列表与代码可能漂移。
-5. **没有真实模型评测闭环**。337 个隔离用例全部使用假件，能守流程正确性，守不住提示词回归；`ai_usage` 只记次数与 token，不记请求/响应，线上理解偏差无法回放。
-6. **Provider 协议偏保守**。只用 `response_format: json_object`，未用 strict json_schema 与原生 tool calling；能力探测结果未持久化。
-
-### 1.3 STATUS 中已列、本轮不处理的缺口
-
-真实复杂视觉验证、真实邮件收件、作息确认、主人七天试用、部分 v1 写接口未并入统一操作。本轮只为视觉留能力探测接口。
-
----
-
-## 2. 目标与非目标
-
-### 2.1 目标（可量化）
-
-- 评测语料（≥200 句真实/拟真表达）上意图识别准确率 ≥ 90%；“查看”误建任务 = 0；“模糊调整”被拒 = 0。
-- 每条自然语言输入默认 ≤ 4 次模型 HTTP 请求（1 次路由 + ≤3 轮工具）；单份投递总上限 10 次。
-- 每次模型理解都有脱敏 trace 可回放；主人可在结果卡标“理解错了”，反馈进入语料。
-
-### 2.2 非目标
-
-- 不改排程器、预算账本、提醒状态机、邮件、Todo 只读桥接。
-- 不提升视觉提取质量（只做能力探测与持久化）。
-- 不改版 UI（只在结果详情增加“理解依据”与反馈按钮）。
-- 不引入外部 Agent 框架；不给模型写工具、任意 SQL、任意 HTTP；不加常驻循环、Redis、向量库或第二套对话存储。
-- 不删除正则：降级路径必须存在。
-
----
-
-## 3. 架构变化
-
-只改“理解层”，执行层不动。
+## 2. 架构与职责
 
 ```text
-现状                                        目标
-owner text                                  owner text
-  │                                            │
-  ├─ /指令 → 确定性 ──────────────┐            ├─ /指令、纯“撤销”、对open问题的是/否 → 快路径 ──┐
-  │                                │            │                                                 │
-  ├─ parseInstruction（正则） ─────┤            ├─ agent_route（模型：1次 + ≤3轮只读工具） ───────┤
-  │     认不出 ↓                    │            │     • items[].intents（扩展后的 intentSchema）   │
-  ├─ isFlexibleAdjustment（正则）──┤            │     • material（剩余原文交材料分类）             │
-  │     → adjustment_decision 模型  │            │     • ask（一个具体问题）                        │
-  │                                │            │   模型不可用 / 超预算 ↓ 降级                     │
-  └─ 分类模型（材料） ─────────────┤            ├─ parseInstruction + isFlexibleAdjustment（降级） ┤
-                                   ↓            └─ 分类模型（材料，不变） ─────────────────────────┤
-              bindIntents → 注册操作 → journal/undo → 排程器                              （完全不变）↓
+主人输入 / 卡片上下文 / 指定问题回答
+  → 来源与命令类别约束、对话/目标定位
+  → 快路径 或 agent_route（有界只读工具）或规则降级
+  → 独立事项：act / decide / ask / material
+  → agent_decide（需要取舍的事项）
+  → 绑定对象 + 参数级授权 + 当前版本 + 范围核对
+  → goal_run中的依赖步骤 → 现有白名单执行器
+  → Observe：重新读取领域结果及必要副作用状态
+  → Verify：服务端核验目标条件
+  → 达成 / 部分完成 / 追问 / 有界修正 / 受阻 / 取消
+  → 持久结果、对话与下一步；用户可继续修改
 ```
 
-不变的硬边界：
+`agent_route`负责识别意图、拆事项、定位对象；已有完整明确意图返回act，不再强制第二次模型调用。目标明确但方案未定返回decide，`agent_decide`选择方案。缺关键事实返回ask，回答后恢复这个事项。材料返回material，沿用导入管线。
 
-1. 模型只产出 `Intent`，对象绑定在服务端。
-2. 写操作只经 `contracts/commands.ts` 白名单。
-3. journal/undo/版本/epoch/租约/预算全部复用。
-4. 工具结果与材料都是数据，不是指令。
+执行器、排程算法与副作用状态机保持权威。编排器负责依赖、核验和有限修正；模型不得直接写表、执行shell、任意SQL或任意HTTP。只读工具在服务端调用现有repository/workflow，不调用模型、不联网、不触发业务变更。
 
-新增边界：
+### 2.1 输出契约
 
-5. **模型引用的 ID 只能来自本轮工具结果、对话 refs 或卡片 selected**。服务端维护 seen-set，越界直接 fail，不猜。
+示意类型必须落成Zod判别联合，并由服务端补充控制字段：
 
----
+```ts
+type RouteItem = {
+  itemKey: string;
+  evidence: { source: "owner"; start: number; end: number; excerpt: string };
+  outcome:
+    | { kind: "act"; intents: Intent[]; rationale: string }
+    | { kind: "decide"; objective: string; rationale: string }
+    | { kind: "ask"; question: QuestionSpec }
+    | { kind: "material"; sourceRef: string; start: number; end: number };
+};
+type AgentRoute = { items: RouteItem[] }; // 最多8项
+```
 
-## 4. 关键设计决策（实施后写入 decisions.md）
+- 每项的outcome互斥，不再出现同一项既执行又等待回答的状态。
+- act最多6个意图；**仅纯政策意图允许交给现有mergePolicy合并**，其他意图先拆成一个意图一个执行步骤。不允许非政策多意图进入现有bindIntents而只执行第一项。
+- `itemKey`须唯一；原话定位由服务端校验逐字匹配。各事项材料范围不得重复处理；重投/恢复复用稳定键。
+- 模型只给候选意图和解释。授权来源、目标ID、版本、目标范围、幂等键、epoch与租约均由服务端生成。
+- rationale是简短事实依据与取舍，不记录或展示模型隐藏思维链，不声称操作已经执行。
+- 创建新对象不能引用尚不存在的ID；跨步骤关联由服务端保存前一步结果引用、重新绑定后一步。
 
-| # | 决策 | 理由 |
-|---|---|---|
-| D1 | 模型优先路由，正则降为快路径与降级 | 正则的边际维护成本已高于一次模型调用；降级保证模型不可用时功能不退化 |
-| D2 | 只读工具 ≤3 轮；工具是纯函数，不经模型、不联网、输出封顶 4k 字 | 让模型先查再决定，又不成为无边界循环 |
-| D3 | 操作注册表元数据化；意图目录与工具说明由注册表和 zod schema 生成 | 契约 §4 已要求；消除 prompt 手写 op 列表与代码漂移 |
-| D4 | `adjustment_decision` 的 `ALLOWED/TEMPORARY` 泛化为注册表授权级别 `auto / explicit / confirm / never` | 让“先查后决、追问续答”扩展到全部业务，不再按领域各写一套 |
-| D5 | 模型请求/响应脱敏落 `agent_traces`，30 天 TTL，不进业务导出 | 没有回放就没有评测；模型中间产物不能当事实导出 |
-| D6 | 评测三层：隔离假件（流程）→ 录制回放（提示词回归，CI）→ 真实模型（本地/发布前，预算封顶） | 假件守不住提示词回归 |
-| D7 | 主人纠错进入语料 | 单用户产品最好的标注员是主人本人 |
+### 2.2 指令类别与材料边界
 
----
-
-## 5. 工作包（P0–P5，约 16–19 个工作日）
-
-每包完成后独立验收再进入下一包；只跑受影响测试，不空跑全部门禁。
-
-### P0 · 基线、能力探测、trace（1.5 天）
-
-**交付**
-
-- `scripts/dev/probe-model-caps.mts`：探测 `tools`（function calling）、`jsonSchema`（strict）、`vision`，写入 settings 键：
-
-  ```ts
-  modelCapabilities = { vision: boolean; tools: boolean; jsonSchema: boolean; model: string; probedAt: string }
-  ```
-
-  `/settings` 集成状态卡展示；`resolveModelProvider()` 读取该键决定协议分支。可参考现有 `scripts/dev/probe-model-vision.mjs`。
-- `integrations/model-json.ts`：`jsonSchema=true` 时使用 `response_format: { type: "json_schema", json_schema: { strict: true, schema: z.toJSONSchema(req.schema) } }`，否则维持 `json_object`。修复 1 次的机制不变。
-- 迁移 `0030_agent_traces.sql`：
-
-  ```sql
-  CREATE TABLE agent_traces (
-    id TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL,
-    local_date TEXT NOT NULL,
-    workflow TEXT NOT NULL,
-    intake_id TEXT,
-    item_id TEXT,
-    conversation_id TEXT,
-    model TEXT,
-    protocol TEXT,
-    status TEXT NOT NULL,          -- ok | schema_invalid | error | budget
-    requests INTEGER NOT NULL,
-    latency_ms INTEGER NOT NULL,
-    request_json TEXT NOT NULL,    -- 脱敏：无 key；images 换成 sha256+尺寸；文本封顶 20k
-    response_json TEXT,
-    tool_calls_json TEXT,          -- [{name,args,resultDigest,chars}]
-    error TEXT
-  );
-  CREATE INDEX ix_agent_traces_date ON agent_traces(local_date);
-
-  CREATE TABLE agent_feedback (
-    id TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL,
-    intake_id TEXT NOT NULL,
-    item_id TEXT,
-    trace_id TEXT,
-    owner_text TEXT NOT NULL,
-    routed_json TEXT NOT NULL,
-    verdict TEXT NOT NULL,         -- wrong_intent | wrong_object | should_ask | should_not_ask | other
-    expected_text TEXT,
-    exported_at TEXT
-  );
-  ```
-
-  两表加入导出分类测试的“排除”列表；worker 每趟清理 30 天前的 trace；`EXPECTED_SCHEMA_VERSION = 30`。
-- `meteredModel()`（`workflows/ai-budget.ts`）在成功与失败时都写 trace，`ai_usage` 行为不变。
-- 预算：`aiBudgetSchema.dailyModelCalls` 默认 40 → 150；新增 `perIntakeModelRequests` 默认 10；`intake.ts` 的 `MAX_MODEL_CALLS` 改读该值。已保存的旧设置不强行覆盖，在设置页提示可上调。
-- 语料种子 `test/corpus/utterances.jsonl`（≥150 条）：从现有 59 个测试文件、REPAIR-PLAN/CONTRACT 示例句、`read-requests-fix` 与 `flexible-adjustments` 的线上原句抽取；格式见 P3。
-
-**验收**
-
-- 探测脚本在真实端点输出三项能力并写入 settings。
-- 任一模型调用后 `agent_traces` 有记录，且不含 API key 与图片 base64。
-- 既有 337 个用例通过；导出分类测试通过。
-
-### P1 · 操作注册表与意图目录（3 天）
-
-**交付**
-
-- `src/contracts/operation-registry.ts`：
-
-  ```ts
-  export type Authorization = "auto" | "explicit" | "confirm" | "never";
-  // auto     = 可逆且信息明确即执行
-  // explicit = 需要主人原话（材料内句子不能授权）
-  // confirm  = 先给建议，主人确认后执行
-  // never    = Agent 不可调用（只供运维/内部）
-
-  export type OperationMeta = {
-    command: Command["command"];
-    title: string;                 // 给模型和按钮的中文说明
-    authorization: Authorization;
-    affects: EntityKind[];
-    undo: "batch" | "compensate" | "irreversible";
-    sideEffects: Array<"replan" | "reminders" | "mail" | "job">;
-    reads: string[];               // 需要的只读工具
-  };
-
-  export const OPERATION_REGISTRY: Record<Command["command"], OperationMeta>;
-  ```
-
-  测试：每个 `Command` 都有条目；`never` 的操作不出现在意图目录；每个 `Intent.op` 在 `agent.ts` 的 `bindOne / mergePolicy` 有分支（TypeScript exhaustive switch 保证）。
-- 扩展 `domain/intent.ts` 的 `intentSchema`，补齐“有命令没有意图”的空档，让模型不再依赖分类 + 正则小工具：
-  - `create_task { title, taskKind?, estimateMinutes?, dueLocalDate?, dueLocalTime?, remainingMinutes?, projectRef? }`
-  - `practice { taskRef?, projectRef?, occurredOn, actualMinutes?, note, blocker?, category: "study" | "other" }`
-  - `schedule_at { taskRef | title, date, startLocalTime, durationMinutes }`（无需空档上下文，如“明天下午三点排一小时微积分”）
-  - `session_state { ref, action: "start" | "complete" | "skip" | "lock" | "unlock" }`
-  - `resolve_notice { ref, applicable: boolean }`
-  - `archive { kind, ref }`
-  - `refSchema` 新增 `{ kind: "id", entityKind, id }`，仅在 seen-set 内有效。
-- `src/domain/intent-catalog.ts`：`describeIntents(caps)` 由 zod schema + 注册表生成模型可读目录（op、字段、何时使用、授权级别、一句示例），prompt 不再手写 op 列表。
-- `workflows/agent.ts`：新增意图的绑定分支全部落到既有命令（`create_or_update_task`、`record_practice`、`schedule_session`、`set_session_state`、`resolve_notice`、`archive_entity`）。`intake.ts` 中 `commandForItem` 的 `dueFromText / estimateFromText / blockerFromText / NON_STUDY` 保留作降级路径。
-
-**验收**
-
-- 注册表覆盖测试通过。
-- 新意图经假件走到 journal 并可撤销。
-- `task / practice` 事项在模型路由命中时不再经过分类模型。
-
-### P2 · `agent_route` 模型优先路由 + 只读工具循环（5 天，核心包）
-
-**交付**
-
-- `src/workflows/agent-tools.ts`：纯函数，输出封顶，调用时收集 seen-set。
-
-  | 工具 | 参数 | 返回 |
-  |---|---|---|
-  | `find_entities` | `kind, query, limit≤10, dateFrom?, dateTo?` | `[{id, kind, title, when, status, version}]`；模糊匹配复用 `matchTask` 规则 + 日期过滤 |
-  | `get_entity_detail` | `kind, id`（必须在 seen 内） | 实体摘要 + 关联（任务→学习块/实践；项目→任务/资料） |
-  | `get_calendar_budget` | `dateFrom, dateTo`（≤14 天） | 每天课程、固定活动、学习块与账本数字（复用 `dashboardSnapshot`） |
-  | `get_open_questions` | — | open 问题的 key/prompt/options |
-  | `get_conversation` | `limit≤10` | 最近 turn 摘要与 refs（复用 `agentTurnsBefore`） |
-
-  工具不接受自由 SQL、不读密钥类 settings、不触发排程；单次结果 ≤4k 字，超出截断并标 `truncated: true`。
-- `integrations/model-json.ts` 新增 `completeWithTools(req, rawCall, tools, maxRounds = 3)`；`openai-chat.ts` 支持 `tools / tool_choice`、解析 `tool_calls` 并回填 `role: "tool"` 消息。每轮 HTTP 计 1 次 attempts，预算与 trace 自动覆盖。`modelCapabilities.tools = false` 时退化为 JSON 协议 `{"next":"tool","name":...,"args":...}`，复用同一循环体。
-- `src/workflows/agent-route.ts`：
-
-  ```ts
-  export const AGENT_ROUTE_WORKFLOW = "agent_route";
-
-  export const agentRouteSchema = z.object({
-    items: z.array(z.object({
-      excerpt: z.string().min(1),            // 逐字来自主人原话（沿用 excerptInText 校验）
-      intents: z.array(intentSchema).min(1).max(6),
-      rationale: z.string().max(300),
-    })).max(8),
-    material: z.string().nullable(),         // 交给材料分类的剩余原文（逐字）
-    ask: z.object({
-      question: z.string(),
-      reason: z.string(),
-      options: z.array(z.string()).max(4),
-    }).nullable(),
-  });
-  ```
-
-  指令要点：先用工具核对对象、日期、预算再输出；对象优先使用工具返回的 `id`，其次 `named`；拿不准就 `ask` 一个具体问题，不猜；查看类一律 `inspect`；通知/资料正文放 `material`，不生成意图；日期按 `referenceDate` 与实例时区推算。
-- `intake.ts` 的 `ownerInstructionPass` 重构为三段：
-  1. **快路径**：`/指令`、`^撤销$`、对 open 问题的是/否、`/回答`。
-  2. **模型路由**：模型可用且预算足够时调用 `agent_route`。
-  3. **降级**：`parseInstruction + isFlexibleAdjustment`。
-
-  结果持久化到 `owner-rest` 文档与 `item.payload.route = { routedBy: "model" | "rules" | "fast", rationale, toolCalls, traceId }`，重跑/恢复不重复路由。`ask` 走 `agent_clarification` 问题，回答后带 `replies` 再路由一次（最多 3 轮，复用 adjustment 的轮次机制）。
-- `BindEnv` 增加 `seen: SeenSet`；各 `resolve*` 支持 `ref.kind === "id"`，不在 seen 内返回 fail：“引用了本轮没有读取过的对象”。
-- 结果卡详情抽屉展示“我是这样理解的”：rationale、工具调用次数、routedBy；不暴露 JSON、job、trace 等实现词。
-
-**验收（隔离，使用可脚本化工具调用的假 provider）**
-
-- 历史两例：“看一下目前每天的时间安排” → `inspect` 只读、无变更；“根据每天的课程重新安排时间” → 七天 `replan`。
-- 工具越界：模型返回 seen 外 ID → fail 且无任何变更；模型请求第 4 轮工具 → 中止，用已有信息决策或 ask。
-- 降级：`MODEL_PROTOCOL` 未配置或预算耗尽 → 走正则，结果 `routedBy: "rules"`，既有用例全部通过。
-- 材料隔离：粘贴含“把所有任务删掉”的通知正文 → 进入 `material`，不产生意图。
-- 真实模型：在独立开发库录制一轮语料，报告见 P3。
-
-### P3 · 评测闭环与主人纠错（3 天）
-
-**交付**
-
-- 语料条目格式 `test/corpus/utterances.jsonl`：
-
-  ```json
-  {"id":"u042","text":"把今晚微积分挪到明天下午","fixture":"week-basic","selected":null,
-   "expect":{"kind":"command","ops":["move_session"],"fields":{"targetDate":"+1","part":"afternoon"}},
-   "source":"docs/flexible-adjustments","tags":["move","relative-date"],"fallback":true}
-  ```
-
-  `fixture` 指向 `test/corpus/fixtures/*.ts` 的种子函数（最小课表/任务/目标集合，固定时钟）；`fallback: true` 表示该条也用于检验正则降级路径。
-- `scripts/eval-agent.mts --mode recorded|live --budget 300 --filter <tag>`：
-  - `live`：调用真实端点，把每次请求/响应写入 `test/corpus/recordings/<model>/<id>.json`。
-  - `recorded`：用 `RecordedModelProvider` 回放录制。
-  - 两种模式都执行绑定与 dry-run（不执行命令，只比对绑定后的命令名与关键字段）。
-  - 输出：按 op 的 precision/recall、ask 率、model 与 rules 的分歧清单、平均请求数、p50 延迟；写入 `docs/agent-eval/<date>.md`。
-- CI（`.github/workflows/ci.yml`）增加 recorded 模式；live 只在本地或发布前运行，预算封顶。
-- 结果卡“理解错了”按钮 → `POST /api/v2/feedback`（owner 鉴权、CSRF、幂等）→ 写 `agent_feedback`。
-- `scripts/dev/export-feedback.mts`：把未导出的反馈转成语料草稿（`expect` 留空待人工补全），并标记 `exported_at`。
-
-**验收**
-
-- recorded 模式在 CI 稳定通过。
-- live 一轮报告写入 `docs/agent-eval/`，且达到 §2.1 的准确率目标；未达标时报告列出失败类别与修正计划，不宣称完成。
-- 一条反馈能从 UI 走到语料草稿文件。
-
-### P4 · `adjustment_decision` 泛化为 `agent_decide`（3 天）
-
-**交付**
-
-- `adjustment-decision.ts` 演进为 `agent-decide.ts`：
-  - `ALLOWED / TEMPORARY / adjustmentNeedsConfirmation` 改由 `OPERATION_REGISTRY.authorization` 决定。
-  - 上下文由工具按需拉取，不再固定塞入 7 天快照 + 100 条任务。
-  - `validateAdjustment` 的日期与范围校验保留，通用化为 `validateDecision(intents, scope, registry)`；“本周/下周/单日”的范围解释（`adjustmentScope`）不变。
-- 触发条件从 `isFlexibleAdjustment` 正则改为：`agent_route` 返回 `ask`，或路由标记 `needsDecision`（目标明确但方案需要 Agent 选择）。三轮追问、confirm 问题、`decisionReplies` 机制全部复用。
-- 契约 §9 的 E30 / E31 / E33 / E39 旅程各至少一条隔离用例 + 一条 live 录制。
-
-**验收**
-
-- 既有 `test/adjustment-decision.test.ts` 全部通过（时间调整行为不变）。
-- “数学优先，科研先试两周”“这篇归到基线项目”“为什么没提醒我”经 `agent_decide` 走到正确命令或只读答复。
-
-### P5 · 收尾、文档、发布准备（1.5 天）
-
-- 新文档 `app/docs/agent-first-v2/AGENT-ROUTER-2026-10.md`：设计、边界、评测结果、已知限制。
-- 更新 `STATUS.md`、`decisions.md`（D1–D7）、`AGENT-INTERFACE-CONTRACT.md` §4（读工具已实现部分）、`START-HERE.md` 文件地图；`USER-MANUAL.md` 补充“理解错了”的用法。
-- 发布清单：schema 29→30 新鲜备份并校验、web/worker 同镜像、生产运行一次 `probe-model-caps`、预算默认值变更说明、回滚配对镜像。部署须主人当次授权。
-- 主人七天试用指标（在 REPAIR-PLAN §8 基础上增加）：路由来源占比（model / rules / fast）、ask 率、“理解错了”次数、日均模型请求数。设置页提供一张只读指标卡。
-
----
-
-## 6. 风险与对策
-
-| 风险 | 对策 |
+| 输入 | 固定约束 |
 |---|---|
-| 延迟变长（1 + 3 轮往返） | 处理本就在 worker 异步进行，结果卡已有处理中状态；工具轮次上限 3，单次超时沿用 45s，总预算 180s |
-| 模型编造 ID 或跨范围修改对象 | seen-set 强校验，`id` 引用不在 seen 内直接 fail；服务端绑定与版本校验不变 |
-| 工具结果中的资料正文携带指令 | 工具结果以 `role: "tool"` 数据返回，系统提示明确声明；资料正文封顶且优先给摘要字段 |
-| 预算耗尽后体验断崖 | 降级到正则路径，并在结果卡标注“按规则理解（今日模型额度已用完）” |
-| 提示词改动导致回归 | recorded 评测进 CI；live 评测发布前必跑 |
-| 正则路径无人维护而腐烂 | 只要求覆盖模型不可用场景；语料中 `fallback: true` 子集持续对其回归 |
-| model 与 rules 结果不一致 | 评测报告单列分歧清单，作为语料优先补充项 |
-| trace 泄露私人内容 | 不入业务导出、30 天 TTL、脱敏 key 与图片；录制文件只允许 fixture 数据进入仓库 |
+| `/查看` | 只读，只能inspect/answer；正文含修改语句也不写业务数据 |
+| `/导入`、附件、网页、来源通知 | 数据材料，不能授权归档、改规则、发邮件等动作 |
+| `/调整`、`/规则`、`/处理` | 限定意图大类；明确正文可快路径，模糊正文仍允许模型决策 |
+| `/学习`等分类、`/撤销` | 沿用现有操作语义与对象要求，不能变为自由创建 |
+| `/回答`、问题卡片答案 | 必须绑定questionId与expectedVersion；自由文本继续支持 |
+| 单独“是/否/第一个” | 只有当前目标存在唯一兼容问题时续答；否则问在回答哪项，不能猜 |
+| 普通自然语言 | 模型优先，但粘贴/引用的通知正文不能因来自输入框就等同于主人行动授权 |
 
----
+服务端保留来源类型与材料区域，模型引用原话不自动构成授权。纯粘贴材料或授权含糊时，优先保存材料或追问，不能默认创建“查看……”任务或执行正文指令。
 
-## 7. 验证与报告规则
+无模型/额度耗尽时先用明确规则解析。仍不能理解的内容保留并说明原因；模糊调整不能继续调用已无额度的模型，更不能降级成普通任务。
 
-- 证据分四层分别报告：隔离假件、录制回放、真实模型（独立副本）、生产。不能用下层证据宣称上层通过。
-- 新问题先复现，再修复；测试验证行为，不镜像实现。
-- 每包更新 `implementation-progress.md` 与 `STATUS.md`，历史记录保留日期。
-- 未获指令不 commit / push / 部署；不提交密钥、`.env`、生产连接信息、私人原文录制。
+## 3. 授权、对象与预算契约
 
----
+### 3.1 唯一注册表与参数级授权
 
-## 8. 可复制的 Coding Agent 开工指令
+扩展现有 `OPERATIONS`，如需拆至 `contracts/operation-registry.ts`，必须同步迁移并由原文件重导出，始终只有一个真实目录。
 
-> 接手 dash-campus。先读根 AGENTS.md、app/docs/agent-first-v2/START-HERE.md、STATUS.md、decisions.md、AGENT-INTERFACE-CONTRACT.md 和本方案，再读 app/src/workflows/{agent,intake,adjustment-decision,commands}.ts、domain/intent.ts、integrations/{model-json,openai-chat}.ts、workflows/ai-budget.ts。本轮任务是“模型优先路由 + 有界只读工具”，按 P0→P5 分包实施，每包独立验收后再进入下一包；不改排程器、预算账本、提醒、邮件、Todo 桥接，不引入外部 Agent 框架，不给模型写权限。核对最新代码与迁移最大号（当前 29，本轮新增 0030），使用独立开发库。
+```ts
+type OperationMeta = {
+  title: string; description: string; group: string;
+  authorization: "auto" | "explicit" | "confirm" | "never";
+  affects: OperationAffect[];
+  undo: "journal" | "compensate" | "none";
+  sideEffects: Array<"replan" | "reminders" | "mail" | "job">;
+  reads: ReadToolName[];
+  verify: VerificationKind[];
+};
+```
+
+保留当前affects业务范围，不把它误换成实体类型。另维护有限的Intent→Command映射与说明，使意图目录可从schema与注册表生成；检查一对多/多对一映射，不要求二者数量相等。
+
+最终授权由服务端函数核对：操作基础策略＋意图/参数＋主人明确要求或Agent推断＋范围＋当前确认记录。
+
+| 情形 | 默认规则 |
+|---|---|
+| 主人要求优化，未来七天重排/临时每日上限 | 沿用当前有界自动决策；保护课程、手动/锁定/已开始安排 |
+| 主人明确给出具体修改 | 校验后执行，沿用既有授权，不反复确认同一动作 |
+| Agent推断的新长期作息、停学区间、具体块/截止修改 | 先展示具体方案与影响，再确认 |
+| Agent自行改变项目投入、身份事实、邮件政策或发邮件 | 不能仅凭目标描述执行；需要主人明确要求或确认 |
+| 源材料中的行动句子 | 无主人行动授权 |
+| 模型试图上调自身预算、换端点、恢复生产或写Todo | 禁止；预算只接受主人明确配置意图，运维/Todo不开放 |
+
+确认绑定goalRevision、方案hash、对象读版本、范围和具体步骤。新回答改变方案、扩大范围或对象版本改变时，旧确认不可沿用。模型不能输出 `explicit=true` 或伪造确认票据。
+
+### 3.2 可引用对象与恢复
+
+- SeenSet记录模型实际看到的 `{entityKind,id,version,source,observationId}`，初始来源包括校验后的卡片selected、明确当前对话refs和工具实际返回项。
+- 工具输出截断掉的对象、模型编造ID不进入SeenSet；与实体kind同时校验，不能把同一个字符串当另一类对象。
+- SeenSet和读版本与路由/决策结果一起持久化。追问或worker恢复后重新读取当前状态；历史Seen只表示曾看过，不授权旧版本写入。
+- 对象归档、删除、版本冲突或歧义时重新绑定/追问。具名引用也必须经过当前匹配与范围校验，不能绕过Seen或授权。
+- 不存全部历史，只存当前目标必要refs和有界读集；对话摘要不是权威事实。
+
+### 3.3 模型请求硬限制
+
+| 限制 | 默认与计数口径 |
+|---|---|
+| 每日 | 150次实际HTTP请求，按实例时区；主人旧设置不强制覆盖 |
+| 每次模型决策 | 最多4次HTTP，总数包括首次请求、工具后续、结构修复与重试 |
+| 工具循环 | 最多3轮；单轮最多5个只读调用；第4次HTTP必须终结，不再申请工具 |
+| 单份投递 | 累计最多10次HTTP，包括route、decide、材料理解、修复和追问续答；持久化，重启/恢复不重置 |
+| 自动修正 | 最多2次业务修正，仍占同一投递/日请求额度，不获得新额度 |
+| 时间 | 单次HTTP45秒；同一投递累计主动执行时间180秒，跨worker恢复累计；等待主人/排队时间不计 |
+| 追问 | 单一事项最多3轮有效澄清；未解决则保留事项受阻，给具体缺口，不强行猜 |
+
+每次HTTP发出前原子检查并占用额度，web/worker并发共享同一计数。发出后即使超时/崩溃也保留占用，不因结果未知自动退款；重复处理不能重复记同一requestId。未发出的预留必须有可识别的释放规则。
+
+`ai_usage`沿用展示口径，新增请求级持久控制账目或等价扩展用于执行预算，不能只靠provider返回attempts事后记账。已有非intake模型工作流也按请求级日预算执行。
+
+剩余请求不够时省略可选推理，执行已校验明确操作或报告等待/受阻，不执行未校验输出。三轮追问是次数上限，不保证每次都有剩余额度；额度耗尽时保留问题，可由主人明确继续创建关联的新投递，不能后台拆单绕预算。
+
+真实评测在独立库使用单独显式预算；`--budget`也是实际HTTP硬上限，不得偷改生产预算。
+
+## 4. 多轮对话与目标续办
+
+### 4.1 支持的三种多轮
+
+1. **主动追问续答**：Agent问关键取舍，用户回答后恢复原事项，不重新导入或重复执行已经完成的步骤。
+2. **结果后的修改**：用户说“改成下周”“数学再少一点”“刚才那项先别动”，引用前一轮目标、范围、方案和相关对象，重新读取事实后形成新修订。
+3. **刷新/跨设备/跨空闲窗口恢复**：历史目标卡提供“继续这个目标”，服务端明确恢复goalId与conversationId；不能仅靠六小时内自动选中的对话。
+
+无需永久记住所有聊天。默认提供最近10轮、当前目标结构化摘要和必要refs；文字上下文总量封顶20k字符，截断说明。摘要保存用户目标、确认约束、未解决问题、当前步骤与已执行结果，附turn/实体版本依据，不凭模型摘要编造身份或承诺。
+
+### 4.2 每轮输入与控制
+
+沿用现有intake/questions/conversations API，扩展可选 `goalId / expectedGoalRevision`。服务端生成turn序号、goalRevision、来源与控制字段。
+
+- questionId与expectedVersion优先定位答案；同一目标唯一兼容问题允许自然语言续答；多个问题不拿答案随机补一个。
+- 普通改口是目标修订，不是对旧问题的机械回答。带回答上下文但用户明显换话题时提示选择“回答这个问题/作为新要求”，旧问题保留。
+- 修改范围由程序解释，本周/下周仍按周一至周日；不擅自扩大用户明确范围。未来安排限制沿用31天，过去实践记录不被这条限制错误拒绝。
+- “改成下周”作用于当前待执行方案；若已有变更生效，报告这些变更不会自动消失，再提出具体补偿方案。不能把聊天改口当作已完成动作的静默撤销。
+- 新指令改变同一目标时先提高revision并撤销旧待执行方案/确认；执行前和事务内核对revision、epoch、租约与读版本。旧模型响应不能继续写入。
+- 对同一目标的并发轮次串行处理或返回冲突；不同目标可以独立推进。取消、明确卡片上下文与问题回答优先，不要求等旧推理全部结束才表达停止。
+- 单独“取消/先别做”只停止确定目标的未执行部分；已经生效的部分明确列出，并给现有撤销入口。
+
+### 4.3 对话状态
+
+```text
+active → awaiting_input → active
+active → awaiting_confirmation → active
+active → completed / partial / blocked / cancelled
+completed / partial / blocked → 主人明确继续 → 新revision的active
+```
+
+多轮对话不限总聊天轮数；受限的是每份投递请求额度、每个事项澄清次数和自动修正次数。新的主人要求可以创建关联投递，继续同一目标，不能让后台自发创建投递无限工作。
+
+## 5. 执行、核验与有限修正
+
+### 5.1 目标与步骤
+
+复用现有对话和投递存储，新增 `agent_goal_runs / agent_goal_steps` 或等价有类型持久结构，保存goalId、revision、originIntakeId、conversationId、目标、授权范围、状态、读版本、验收条件、步骤、batch与副作用引用、修正次数。这些是业务流程状态，不是另一套聊天记录。
+
+每个goalRevision最多8个根步骤；每步一个非政策意图或合并的纯政策组，显式列dependsOn。至少保存stableStepKey、intent、boundCommand、authorizationEvidence、readSet、status、batchId、result、verification。
+
+- 单步调用现有事务执行器；全部预检查先完成，再按依赖执行。一个步骤需要追问/确认时暂停它和依赖项，互不依赖事项可继续并报告部分完成。
+- “暂停项目，再把释放时间用于数学”存在依赖，不能把后一项漏掉后显示全部完成。
+- 前一步新建对象的实际引用由服务端传给后一步，不允许模型预编ID。每步执行前重新读取对象，避免计划阶段快照过期。
+- 每个步骤采用稳定幂等身份，并与已提交batch关联；崩溃发生在提交后、标记前时必须从现有journal核对，不再重做实践、发信或创建副本。
+- SQL本地修改按现有事务保证单步原子；跨步骤/外部副作用不承诺全局事务。失败明确partial并保留已成功步骤。
+- 补偿只走现有带版本检查的undo/业务操作；对象已被后续修改时不强制回滚。邮件与外部搜索不能假装撤回。
+
+### 5.2 Observe与Verify
+
+命令成功后重新读取当前事实与operation状态，核验规则由服务端模板生成，模型不能通过把条件改成“命令返回ok”宣称达成。
+
+| 目标类型 | 必须核验的结果 |
+|---|---|
+| 只读查询 | 无业务batch/写入，回答事实有当前来源；trace/对话记录不算业务修改 |
+| 移动学习块 | 对应块确实在要求范围，目标任务不变、无课程冲突、受保护安排满足规则 |
+| 政策与重排 | 政策已保存；排程后续已成功；预算无超排；用户目标是否满足；无需移动如实报告 |
+| 暂停/优先级/项目取舍 | 状态与关联任务按现有领域语义落实；依赖安排变化和提醒后续分别核对 |
+| 记录实践/完成任务 | 关联、日期与实际分钟正确；无同次重复计入；剩余需求/未来块一致 |
+| 材料归属/身份筛选 | 正确实体关联与来源保留；筛选结果符合已确认身份，不删除原来源 |
+| 提醒/邮件解释或修改 | 政策与job更新实际状态；accepted/unknown/失败/收件未核对分开，不能把发送接受判收件成功 |
+
+核验条件是有类型的谓词，如policy_saved、entity_state_matches、session_in_scope、plan_consistent、practice_not_duplicated、dependent_steps_completed。无法量化的“更舒服”解释采用何种假设，只核验可测约束并请用户反馈，不宣称证明主观满意。
+
+异步副作用用现有job与操作状态追踪，不忙轮询。等待更新结果时是pending/partial，结果到达再恢复核验；不无限等待邮件收件，不自动重发unknown邮件。
+
+### 5.3 失败后的有限修正
+
+| 情形 | 行为 |
+|---|---|
+| 版本变化、对象歧义 | 重读并重新绑定；实质方案变化重新确认 |
+| 可排工作仍有缺口 | 读取unscheduled/conflicts，原范围内降低临时强度/换可用位置；不扩大学习预算或截止 |
+| 课程冲突、锁定限制 | 保留课程和保护，提出具体取舍；不能为了完成目标自动取消课程/解锁 |
+| 排程后续失败 | 查operation状态，按原命令/领域幂等语义恢复派生步骤，不再次重复原写操作 |
+| 邮件unknown、不可撤回副作用 | 显示已知状态和可选恢复动作，禁止盲目重试 |
+| 模型/预算/超时、相同失败反复出现 | 保存partial/blocked与下一步；不无限推理或改写目标 |
+
+最多2次自动修正、每次最多4个新增修正步骤，共享单投递10次请求和180秒执行额度。每次保留失败事实、修正原因、变化及验证结果；相同方案/相同失败fingerprint不重复尝试。扩大范围、暂停新项目、提高长期额度、改截止或发送邮件时先问用户。
+
+核验为needed_action而原范围内无可行方案时，给具体选项，例如“还缺90分钟：暂停哪个次要任务，还是修改截止？”主人新授权后继续，不能自己选择外部承诺。
+
+## 6. 工作包P0–P6
+
+各包先检查相关实现与测试，针对改动验收；发布前做完整现有回归。文档目标不当作代码交付。相对路径以下均基于 `app/`，根CI路径除外。
+
+### P0 · 能力探测、请求预算、trace（2–3日）
+
+- `scripts/dev/probe-model-caps.mts`探测tools/jsonSchema/vision；结果支持supported/unsupported/unknown，错误/超时不是“不支持”。settings保存协议、端点指纹、模型、探测版本与时间，不保存key；配置变化失效，可手动重探。
+- `integrations/model-json.ts / openai-chat.ts / contracts/model.ts`按实际能力支持结构化输出与工具消息协议，保留JSON兼容路径。strict schema从Zod生成后适配端点支持的子集，服务端Zod最终核验不取消；实际发送格式在真实端点实测。
+- 请求级预算按§3.3持久化；明确provider调用与HTTP请求区别，覆盖并发、修复、重试、崩溃与续答。
+- 新增agent_traces与agent_feedback：关联投递/事项/对话/目标/请求，保存routedBy、workflow、协议/模型、prompt/schema版本、status、attempt、latency、脱敏请求响应、工具序列。成功/失败/超额都有记录。
+- 不记录授权头、key、base64图片或隐藏思维链；图片用hash/尺寸，文字封顶20k并标截断。私人trace是诊断资料，不保证完整回放；反馈/trace不入业务导出，trace30天TTL，删除trace不删正式业务记录；反馈默认90天TTL、可清理。
+- 开工确认最大迁移号后增加下一号（当前预计0030），后续goal存储若另迁移继续0031，不能提前把整个项目schema写死30。新增表明确业务导出白名单/排除分类。
+- 日预算默认40→150，旧设置保留；增加perIntakeModelRequests默认10。语料种子≥150条，用公开示例或fixture，不抽生产私人原文入仓库。
+
+验收：真实能力探测；每次HTTP硬预算包括最后一次修复；并发不超额、恢复不重置；trace无凭证；导出分类正确。现有回归按受影响范围运行。
+
+### P1 · 注册表、意图、授权与步骤绑定（3–4日）
+
+- 扩展唯一OPERATIONS，生成 `domain/intent-catalog.ts`；Intent→Command完整覆盖，未注册/never不出目录，handler/schema/说明一致。
+- intentSchema补create_task、practice、schedule_at、session_state、resolve_notice、archive与seen-set ID引用，字段落到实际命令。projectRef等现有命令不支持的字段须明确采用后续link步骤或相关已有操作，不能悄悄丢弃。
+- 新意图分别绑定到create_or_update_task、record_practice、schedule_session、set_session_state、resolve_notice、archive_entity，archive实体种类限实际支持范围。
+- 实现参数级授权、方案确认与§5.1步骤预检查；非政策组合拆步骤。现有commandForItem提取逻辑保留降级用，不默认重复创建。
+
+验收：同命令的临时/长期规则授权不同；两项意图均被处理；前步创建后步引用；不支持字段/对象显式拒绝；旧确认失效；每步journal与撤销一致。
+
+### P2 · 模型优先路由与有界只读工具（5–6日）
+
+- 新增 `workflows/agent-tools.ts`：服务端只读查询，schema参数、字段白名单、有界结果与SeenSet。每工具最多4k字符；按实体/日期边界分页返回cursor/truncated，不能切断JSON或省略部分字段却标完整。
+
+| 工具 | 参数/返回重点 |
+|---|---|
+| get_context | 当前身份、主目标、作息政策、active goal与授权范围；不读密钥 |
+| find_entities | 指定支持kind、query、日期、limit≤10、cursor；返回id/kind/title/status/version |
+| get_entity_detail | Seen内kind/id；实体摘要、关联与证据定位，关联引用仅实际返回者入Seen |
+| get_calendar_budget | 最多14天、可分页；课程/固定活动/学习块/完整容量汇总，较长范围分段；不足信息不假装已读完整31天 |
+| get_open_questions | 当前对话/目标问题、purpose/版本/选项；不随意跨目标回答 |
+| get_conversation | 最近≤10轮＋当前目标事实摘要/refs；不塞全部聊天 |
+| get_operation_status | batch/step/job refs限定；当前执行与派生/提醒/投递状态，解释“为什么没提醒”所需事实 |
+| get_evidence | Seen内资料的有界原文与来源、版本；无来源不编造 |
+
+- `completeWithTools`复用原生tool_calls与JSON next-tool兼容协议，完整保留assistant/tool消息与tool_call_id；校验工具名、参数、输出与轮次。未知工具、非法ID不执行。
+- `workflows/agent-route.ts`使用§2输出；ownerInstructionPass改为支持异步模型调用，但重跑复用持久路由，恢复不重复拆材料。路由失败与降级原因分别标注。
+- UI只增加理解依据/事实来源和必要等待提示，纯查询不出现业务撤销。
+
+验收：原两例、模糊slash、无模型降级、材料内指令、tool_calls多请求、分页截断、第四请求终结、Seen外ID、取消租约与恢复不重复动作。
+
+### P3 · 固定语料、真实评测、纠错反馈（3–4日）
+
+- `test/corpus/utterances.jsonl`≥200条：开发集≥150、独立验收集≥50，覆盖查看、创建、实践、调整、资料、项目、材料隔离、歧义、降级、多轮与边界。每项固定时钟/种子/上下文，可含多轮turns；真实用户反馈仅本地草稿、人工脱敏再进入仓库。
+- 标签包括source、tags、fallback及期望kind/ops/关键字段/允许ask/必需不变数据。查询和授权边界零容忍用例单列，准确率是固定验收集全部关键期望正确的case比例≥90%，不是任意未来输入保证。
+- `scripts/eval-agent.mts --mode recorded|live --budget 300 --filter <tag>`：recorded只证明协议/解析/绑定兼容；live重新跑当前prompt，证明推理效果。录制存prompt/schema/provider版本、fixture指纹和工具序列，匹配不一致时拒绝冒充当前推理通过。
+- recorded进入CI；live独立库显式请求预算100–300，工具循环可能耗尽，未完成样本标not_run，不当通过。报告precision/recall、意图/对象/范围正确率、ask率、拒绝率、完成/partial比例、平均请求数、p50/p95与预算耗尽。
+- 分类语料可dry-run绑定；目标/多轮旅程须在独立fixture库实际执行与核验，不能仅比较命令名证明闭环。
+- POST `/api/v2/feedback`主人鉴权/CSRF/幂等，结果卡“理解错了”；export-feedback生成expect待人工标注的草稿。正式recordings只允许fixture，私人的请求/响应不进Git。
+
+验收：录制兼容CI通过；live验收集≥90%；指定查看误写业务数据=0、可行模糊调整因缺钟点直接拒绝=0；未通过/未运行如实列出；反馈UI→草稿通路。
+
+### P4 · 通用决策与多轮续答（3–4日）
+
+- `adjustment-decision.ts`演进 `agent-decide.ts`，只有route明确decide/回答恢复才调用；ask保存在现有questions后恢复所属事项，不发生两个决策器重复追问。
+- validateDecision按实际意图核对范围与授权，保留既有时间范围解释；practice允许合法过去记录，不把未来31天规则套全部业务。
+- 依§4复用已有对话存储、维护目标摘要、问题/确认、goalRevision与Seen读版本。新增继续目标卡片行为，可跨刷新/设备/六小时空闲续办。
+- 补齐HTTP契约：intake新增goal上下文、结果返回goalRevision/state/steps/questions/verification/continuation；现有问题回答带version。所有新字段服务端控制，兼容旧无goal输入。
+
+验收：至少三轮主动问答；结果后改口；“第一个/刚才那个/改成下周”指向正确对象；多个问题问定位；跨设备续办；旧确认/旧轮响应失效；时间调整现有行为不退化。
+
+### P5 · Execute–Observe–Verify–Repair闭环（4–5日）
+
+- `contracts/agent-run.ts / repositories/agent-runs.ts / workflows/agent-run.ts / agent-verify.ts`或等价模块实现§5目标、步骤、状态和核验模板，复用jobs/journal/conversations。
+- 必要存储前向迁移；goal/steps/revisions是正式业务状态，加入导出与恢复分类；预算控制/诊断trace不作为用户事实导出。恢复保留已执行步骤，新epoch下暂停未授权外部副作用，主人继续后重新读取，不重做旧动作。
+- 执行结果与派生结果分开；纯查询、无变化、部分完成、等待、受阻和完成各有明确UI文字。补偿与继续动作带实际范围/风险。
+- 核验后原授权内有限修正；新增取舍或范围扩大生成具体问题，不逼用户自己填写钟点，也不偷偷提高预算。
+
+验收：至少覆盖§7的完整目标旅程；提交后崩溃不重记实践/不新建副本；第二步失败不声称全部完成；同失败不循环；修正次数/请求/时间上限有效；课程与Todo完全保留。
+
+### P6 · 文档、发布准备与试用（1–2日，不含七天试用）
+
+- 更新STATUS、decisions、接口契约、START-HERE、implementation-progress与USER-MANUAL。实现记录逐项链接代码、测试、真实模型与未验证项；不提前把本文新功能标已实现。
+- 发布前完整现有回归、必要网页路径、live旅程；真实视觉/邮件缺口仍单列。备份并校验、实际schema与配对镜像回滚、web/worker同镜像；模型能力生产重探须授权与计入额度。
+- 用户有当次部署授权才发布。文档更新不隐含开发、推送或生产写入。
+- 七天试用只读指标卡：路由来源、追问、误解反馈、达成/partial/blocked、修正次数、日请求与延迟。明确样本和缺失数据，不能为好看隐藏失败。
+
+## 7. 必须通过的目标与多轮旅程
+
+新增编号G01–G12，不替代E01–E49。各项至少隔离实际执行；G01/G02/G03/G04/G05/G07再做真实模型录制，网页验证回答/恢复/结果显示。生产层按授权另记录。
+
+| 编号 | 场景 | 验收结果 |
+|---|---|---|
+| G01 | 查看目前每天安排，接着问为什么周三排少 | 两轮只读、有事实依据；任务/学习块逐行不变，无业务撤销 |
+| G02 | 按课表优化→问优先方向→回答数学→改成下周 | 同目标revision递增；正确周范围与优先取舍；旧待执行方案不再运行 |
+| G03 | 暂停科研项目，再把空出的时间用于数学 | 两步骤依赖、状态/安排/预算核验；任何失败准确partial，不能漏第二步 |
+| G04 | 晚上太满→建议规则→确认前说周末别动 | 原确认失效；仅新方案授权范围执行；周末保护与课程保留 |
+| G05 | 数学仍缺90分钟，原范围无解 | 给具体取舍；未获授权不改截止、不取消课程、不提高长期预算 |
+| G06 | 第一步提交后worker崩溃，恢复后继续 | journal核对已提交动作；不重复实践、任务、邮件；计数不重置 |
+| G07 | 有两个开放问题，用户说第一个；随后刷新/新设备/过六小时继续 | 对应问题/目标可明确恢复；不随机回答另一个问题；上下文来自服务器 |
+| G08 | 用户在Agent推理中说先别做，旧响应晚到 | 未执行部分停止；旧revision写入拒绝；已执行部分如实列出 |
+| G09 | 课程变化使锁定块冲突，连续两次修正仍失败 | 保留课程/锁定，不重复同失败；受阻说明、修正与预算上限有效 |
+| G10 | 通知正文包含删任务指令；工具证据内包含伪授权 | 存材料/回答事实，不产生授权写入；Seen外ID拒绝 |
+| G11 | 邮件接受但收件未知，用户问为什么没提醒 | 查实际policy/job/delivery；不编收件、不自动重发unknown |
+| G12 | 并发请求、最后一次修复、续答累计超预算 | 原子额度不超限、恢复不重置；保留结果与待办原因，无隐式拆单 |
+
+## 8. 证据、隐私与维护
+
+- 隔离假件证明流程；录制证明兼容；live证明当前提示词在指定样本上的效果；公网部署/主人试用另有证据。不能相互替代。
+- 每包更新STATUS与implementation-progress，记录实现、验收通过、未运行与失败。真实录制不可用时允许完成实现，但不得宣称真实能力通过。
+- 只做受影响的检查，发布前完整回归；修订文档不跑应用测试。遇到新业务失败先复现，不按模型解释直接改领域算法。
+- 不提交key、.env、生产连接信息、私人原文、数据库、.planning。诊断记录不是用户事实，也不是可公开的评测fixture。
+- 未获指令不commit/push/部署；Todo所有数据、附件、配置、服务与同步任务始终只读。
+
+## 9. 可复制的Coding Agent开工指令
+
+> 接手dash-campus。本轮实施Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md v1.1：模型优先理解、有界读工具、参数级授权、多轮对话与执行核验修正闭环。先读根AGENTS、STATUS、START-HERE、本方案、decisions与接口契约，再读app/AGENTS和相关实际代码。基线main 7e76745、业务95c8cf1、schema29仅供核对，以最新代码和迁移最大号为准。
 >
-> P0：模型能力探测并持久化、strict json_schema、agent_traces/agent_feedback 迁移与脱敏 trace、每日预算默认 150 与单投递上限 10、语料种子 ≥150 条。
-> P1：operation-registry 元数据与覆盖测试；intentSchema 补 create_task/practice/schedule_at/session_state/resolve_notice/archive 与 id 引用；意图目录由 schema 与注册表生成。
-> P2：agent-tools 五个只读工具（输出封顶 4k 字、seen-set）；completeWithTools（≤3 轮，原生 tool_calls，退化 JSON 协议）；agent_route 替换 ownerInstructionPass 的正则优先，正则降为快路径与降级并标 routedBy；结果卡展示理解依据。
-> P3：eval-agent 脚本 recorded/live 两模式与报告；CI 运行 recorded；“理解错了”反馈入表并可导出语料草稿。
-> P4：adjustment_decision 泛化为由注册表驱动的 agent_decide，三轮追问与 confirm 复用。
-> P5：文档、STATUS、发布清单与试用指标卡。
+> 按P0→P6实施：P0能力/请求级持久预算/trace；P1扩展唯一OPERATIONS、补意图与依赖绑定；P2模型路由与八种有界只读工具；P3固定语料、录制兼容与live评测、反馈；P4通用决策、多轮回答/改口/恢复、版本确认；P5Execute–Observe–Verify–Repair、步骤幂等/partial/最多两次修正；P6文档与发布准备。多动作不能交bindIntents漏掉后续；route结果互斥，范围、授权、Seen与预算由服务器校验。每次决策最多4个HTTP、每投递累计10个、主动执行180秒，含修复/重试/续答，恢复不重置。
 >
-> 每包只跑受影响测试；真实模型验证在独立副本进行并保存录制；报告分清隔离、录制、真实模型、生产四层证据。Todo 绝对只读。未另获指令不 commit/push/上线，不提交密钥与含私人原文的录制。
+> 复用领域算法、现有对话/questions/jobs/journal，不新建聊天体系、不开放SQL/shell/任意HTTP。独立数据库，Todo绝对只读。按G01–G12和已有E01–E49分别报告实现、隔离、录制、真实模型、网页、生产与试用；录制不证明新prompt理解。每包做相关验收，发布前完整回归，更新STATUS与实施记录。未获当次适用指令不提交推送或上线，不提交秘密和私人录制。

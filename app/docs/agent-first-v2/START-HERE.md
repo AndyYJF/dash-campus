@@ -2,6 +2,10 @@
 
 更新：2026-10-04。R0–R5 与后续易用性修复已推送至 `agentbox/dashcampus`，已验证部署的业务版本为 `95c8cf1`（schema29）；后续文档提交与业务部署修订分开记录。先读 [当前状态](../STATUS.md)、[产品与工程决策](../decisions.md) 及 [模糊调整的实现与证据](../flexible-adjustments-2026-10-04.md)。修复前审计基线 `cbbaeeeaa328807ebc97389a7a824f7acdb6c356` 只作历史，拉取后仍核对代码与工作区。
 
+## 本轮新增实施入口（待开发）
+
+先读[Agent增强方案v1.1](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md)：模型优先路由、执行核验/修正、多轮追问/改口/跨设备恢复，按P0–P6推进、G01–G12验收。这是新增计划；现有业务95c8cf1/schema29及旧验证边界不变。下列历史R0–R5说明用于理解既有系统，不要求重新实现。
+
 ## 1. 要完成的用户体验
 
 用户通过一个入口扔材料、表达意图、回答问题。自研 Agent 主动补关键事实，决定并执行具体安排，维护身份筛选、任务、目标项目、资料、实践、复盘和提醒。用户随时自然语言修改/撤销，主要看结果和行动，不维护一堆表单。
@@ -13,6 +17,7 @@
 | 文件 | 用途 |
 |---|---|
 | [当前状态](../STATUS.md) | 唯一当前交接入口；历史部署与本次规划分开 |
+| [Agent增强v1.1](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) | 本轮P0–P6、参数级授权、多轮与执行闭环，新增G01–G12验收；待开发 |
 | [审计基线](./REPAIR-BASELINE-2026-10-04.md) | 九项实际失败路径、源码定位与复现规则 |
 | [总修复计划](./REPAIR-PLAN-2026-10-04.md) | 主工作包 R0–R5；E01–E29；开发启动指令 |
 | [Agent接口契约](./AGENT-INTERFACE-CONTRACT.md) | 操作矩阵、通用问答、领域命令/HTTP对齐；E30–E39 |
@@ -24,9 +29,11 @@
 | [实施历史](./implementation-progress.md) / [旧验收映射](./acceptance-map.md) | 各工作包的实现与当时验证；旧 A01–A22 不代表新修复完成或长期易用性通过 |
 | [运行说明](../deploy.md) | 配置/web+worker/迁移/备份；不要盲用旧生产回退记录 |
 
-先读根目录 `AGENTS.md`、本文件与前五个规格，再读实际代码及 `app/AGENTS.md`。工作在 dash-campus；不需要私人聊天历史、截图目录、服务器凭证才能开始本地实现。
+先读根目录 `AGENTS.md`、本文件、STATUS与Agent增强v1.1，再读相关领域规格、实际代码及 `app/AGENTS.md`。工作在 dash-campus；不需要私人聊天历史、截图目录、服务器凭证才能开始本地实现。
 
-## 3. 下一步（R0–R5 实现之后）
+## 3. 本轮开工与既有待验证项
+
+本轮按Agent增强v1.1的P0–P6实施。以下是现有产品尚未完成的验证与兼容工作，继续保留，不代替本轮主线，也不因新增方案而自动完成。
 
 1. 补复杂课表截图、扫描 PDF 的真实视觉验证，以及真实模型的模糊调整追问续答。官网校历图片和简单调整已验证，不能据此推断任意材料/问答都可靠。
 2. 配置邮件后做 E23/E34 的真实投递与收件核对。
@@ -59,4 +66,4 @@
 
 ## 5. 可复制开工指令
 
-> 接手 dash-campus。先读根 AGENTS.md 和 app/docs/agent-first-v2/START-HERE.md，再读审计基线、REPAIR-PLAN、AGENT-INTERFACE-CONTRACT、ACADEMIC-CALENDAR-AND-HOLIDAYS 与 MASTER-PLAN。现有V2及本次修复已推送，业务95c8cf1已验证部署/schema29，别从旧P0重建。先读STATUS和decisions分清已实现与待验证。核对dirty tree与实际迁移，用独立数据库，从STATUS列出的真实视觉、模型追问续答、邮件、兼容接口及主人试用缺口继续；新问题先复现再修复。目标是自研Agent问关键问题后决定并执行，用户自然语言修改，日常无需维护CRUD；课表/校历/假日/补课/实际投入共同驱动行动。聊天、按钮、兼容API同一领域服务，版本/journal/撤销/可靠副作用同步。Todo绝对只读，不清生产、不提交秘密，不引入外部codingagent、不换框架。按E01–E49真实行为分层验收，更新当前状态和实施记录。命令Git Bash先写脚本。未另获指令不commit/push/上线。
+> 接手dash-campus。先读根AGENTS、STATUS、START-HERE、Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md v1.1、decisions与接口契约，再读实际源码。业务95c8cf1/schema29是现有实现；本轮P0–P6模型优先路由、多轮对话和执行核验修正仍待开发。核对最新代码/dirty tree/迁移，用独立库，扩展唯一OPERATIONS，参数级授权、请求级持久预算、步骤依赖与核验同时落实。参考方案第9节完整开工指令；G01–G12与相关E01–E49分别验证。Todo绝对只读，不清生产、不提交秘密，不引入外部codingagent、不换框架。命令Git Bash先写脚本，未获适用指令不commit/push/上线。

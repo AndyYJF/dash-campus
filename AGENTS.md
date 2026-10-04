@@ -8,13 +8,14 @@
 
 1. `app/docs/STATUS.md`：当前交付范围、待实施状态、证据边界。
 2. `app/docs/agent-first-v2/START-HERE.md`：完整接手顺序、第一工作包和验收规则。
-3. `app/docs/agent-first-v2/REPAIR-BASELINE-2026-10-04.md`：已复现的九项缺口与隔离复现方法。
-4. `app/docs/agent-first-v2/REPAIR-PLAN-2026-10-04.md`：R0–R5、课表可视化、共享预算、每日智能安排、自然语言修改。
-5. `app/docs/agent-first-v2/AGENT-INTERFACE-CONTRACT.md`：全业务工具、通用问答、命令注册表与HTTP接口对齐。
-6. `app/docs/agent-first-v2/ACADEMIC-CALENDAR-AND-HOLIDAYS.md`：校历、官方假日/调休、学校补课映射。
-7. `app/docs/agent-first-v2/MASTER-PLAN.md`、`CODING-AGENT.md`、`app/AGENTS.md`、`app/docs/deploy.md` 和相关实际源码。
+3. `Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md` v1.1：本轮待实施主线，模型优先路由、执行核验修正与多轮对话，按P0–P6开工。
+4. `app/docs/agent-first-v2/REPAIR-BASELINE-2026-10-04.md`：历史九项缺口与隔离复现方法；已修部分以STATUS为准。
+5. `app/docs/agent-first-v2/REPAIR-PLAN-2026-10-04.md`：R0–R5、课表可视化、共享预算、每日智能安排、自然语言修改。
+6. `app/docs/agent-first-v2/AGENT-INTERFACE-CONTRACT.md`：全业务工具、通用问答、命令注册表与HTTP接口对齐。
+7. `app/docs/agent-first-v2/ACADEMIC-CALENDAR-AND-HOLIDAYS.md`：校历、官方假日/调休、学校补课映射。
+8. `app/docs/agent-first-v2/MASTER-PLAN.md`、`CODING-AGENT.md`、`app/AGENTS.md`、`app/docs/deploy.md` 和相关实际源码。
 
-优先级：当前用户指令 > 适用 AGENTS > 新修复/接口/校历规格 > MASTER-PLAN > 旧 `Plan/` 和历史实施记录。遇到目标规格与代码不一致，记录缺口并修代码，不把规格当已实现。
+优先级：当前用户指令 > 适用 AGENTS > 本轮Agent增强方案（`Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md`）> 新修复/接口/校历规格 > MASTER-PLAN > 其他旧 `Plan/` 和历史实施记录。本轮方案未改变的领域行为和Todo只读边界继续遵守原契约。遇到目标规格与代码不一致，记录缺口并修代码，不把规格当已实现。
 
 ## 工作约束
 
@@ -30,4 +31,4 @@
 
 ## 默认开工动作
 
-核对 HEAD、工作区与迁移最大号，读上述文件后从 R0/R1 的“课程事实/校历解释 → 共享预算 → 稳定排程”开始。主动提问、自然语言修改及其他业务按依赖继续，验收 E01–E49。不停在重新写计划、空接口、测试数或旧 A01–A22 的全绿标签。
+核对 HEAD、工作区与迁移最大号，先读STATUS区分现有R0–R5实现与待验证项。本轮增强从Agent方案P0能力/请求预算开始，按P0–P6推进多轮和执行闭环，验收G01–G12并保留相关E01–E49回归。不得重新从已完成的R0/R1建设。不停在重新写计划、空接口、测试数或旧 A01–A22 的全绿标签。

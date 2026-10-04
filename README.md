@@ -6,6 +6,8 @@
 
 **智能体接手先读 [START-HERE](app/docs/agent-first-v2/START-HERE.md) 和根 [AGENTS.md](AGENTS.md)。当前状态见 [STATUS](app/docs/STATUS.md)，产品取舍见 [决策记录](app/docs/decisions.md)。** 当前已发布业务版本为 `95c8cf1`、schema **29**；统一 Agent 输入栏、只读查询、模糊调整的事实判断与追问，以及按日历范围重排均已实现。文档提交可能晚于业务版本，不代表生产应用已升级到文档提交。
 
+下一轮待实施方案：[模型优先路由、执行闭环与多轮对话](Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) v1.1，包含P0–P6工作包及G01–G12旅程。它是开发计划，不代表新增能力已上线。
+
 工作台已有课表可视化、共享预算与每日安排，校历、官方节假日和学校补课共同影响行动。继续开发应按当前状态补足真实服务与用户试用验证，不从旧P0重建，也不要把下面的历史审计缺口全部当成待实现。旧Todo只读保护是硬边界。
 
 - [易用性审计基线](app/docs/agent-first-v2/REPAIR-BASELINE-2026-10-04.md)：九项已确认缺口和复现方法。

@@ -38,7 +38,11 @@ export function extractJson(text: string): unknown {
 
 export function buildMessages(req: ModelRequest): ChatMessage[] {
   const context = req.context as { images?: string[] } | undefined;
-  const text = JSON.stringify({ workflow: req.workflow, schemaVersion: req.outputSchemaVersion, context: req.context });
+  // 图片只作为多模态部分发送；Base64 再塞进文字会浪费上下文并拖慢视觉提取。
+  const textContext = context?.images?.length
+    ? { ...(req.context as Record<string, unknown>), images: undefined, imageCount: context.images.length }
+    : req.context;
+  const text = JSON.stringify({ workflow: req.workflow, schemaVersion: req.outputSchemaVersion, context: textContext });
   const userContent: ChatMessage["content"] = context?.images?.length
     ? [{ type: "text", text }, ...context.images.map((url) => ({ type: "image_url" as const, image_url: { url } }))]
     : text;

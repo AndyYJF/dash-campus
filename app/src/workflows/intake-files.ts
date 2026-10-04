@@ -192,6 +192,23 @@ export function recordUrlDocument(intakeId: string, url: string, text: string): 
     .run(crypto.randomUUID(), intakeId, text, crypto.createHash("sha256").update(text).digest("hex"), url, new Date().toISOString());
 }
 
+/** 网页图片也使用附件 blob 保存；重试复用原始字节，且纳入同一份材料的文件/尺寸限额。 */
+export function saveUrlImage(intakeId: string, pageUrl: string, imageUrl: string, dataUrl: string): boolean {
+  const match = /^data:(image\/(?:png|jpe?g|webp));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!match) return false;
+  const bytes = Buffer.from(match[2]!, "base64");
+  const hash = crypto.createHash("sha256").update(bytes).digest("hex");
+  const db = getDb();
+  return db.transaction(() => {
+    const existing = db.prepare(`SELECT 1 FROM intake_attachments WHERE intake_id = ? AND blob_hash = ?`).get(intakeId, hash);
+    const usage = db.prepare(`SELECT COUNT(*) AS count, COALESCE(SUM(size_bytes), 0) AS bytes FROM intake_attachments WHERE intake_id = ?`).get(intakeId) as { count: number; bytes: number };
+    if (!existing && (usage.count >= MAX_FILES || usage.bytes + bytes.length > MAX_TOTAL_BYTES || bytes.length > MAX_FILE_BYTES)) return false;
+    saveAttachments(intakeId, [{ name: `网页图片-${hash.slice(0, 12)}.${match[1]!.split("/")[1]}`, mediaType: match[1]!, bytes }]);
+    recordFileDocument(intakeId, "url-image", pageUrl, imageUrl, JSON.stringify({ imageUrl, blobHash: hash }));
+    return true;
+  })();
+}
+
 const PRIVATE_HOSTNAMES = new Set(["localhost", "::1", "0.0.0.0", "[::1]"]);
 const MAX_REDIRECTS = 5;
 const FETCH_TIMEOUT_MS = 15_000;

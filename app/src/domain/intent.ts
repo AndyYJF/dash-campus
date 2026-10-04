@@ -54,6 +54,7 @@ export const intentSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("notice_filter"), field: z.enum(["education_level", "program", "campus", "grade_year", "study_year"]), value: z.string().min(1).max(200), remove: z.boolean().default(false) }),
   z.object({ op: z.literal("explain"), topic: z.enum(["reminders", "plan"]) }),
   z.object({ op: z.literal("export") }),
+  z.object({ op: z.literal("agent_policy"), dailyModelCalls: z.number().int().min(0).max(1000).optional(), scheduledEnabled: z.boolean().optional() }),
   z.object({ op: z.literal("digest"), dailyEnabled: z.boolean().optional(), dailyTime: timeStr.optional(), weekdaysOnly: z.boolean().optional(), weeklyEnabled: z.boolean().optional(), weeklyWeekday: z.number().int().min(1).max(7).optional(), weeklyTime: timeStr.optional() }),
   z.object({ op: z.literal("reminders"), enabled: z.boolean().optional(), quietStart: timeStr.optional(), quietEnd: timeStr.optional() }),
   z.object({ op: z.literal("task_reminder"), ref: refSchema, leadMinutes: z.number().int().min(0).max(525_600) }),
@@ -235,6 +236,12 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
     if (/(这样|这么)(安排|排)|排在/.test(c)) return { op: "explain", topic: "plan" };
   }
   if (/(打包|导出|备份)(我的)?.{0,8}(成果|数据|记录|全部)/.test(c)) return { op: "export" };
+
+  // 主动程度与模型预算
+  const calls = new RegExp(`每天最多(?:用|调用)?\\s*(\\d+)\\s*次(?:模型|AI|大模型)|(?:模型|AI)(?:调用)?每天最多\\s*(\\d+)\\s*次`).exec(c);
+  if (calls) return { op: "agent_policy", dailyModelCalls: Number(calls[1] ?? calls[2]) };
+  if (/(别|不要|不用|停止|暂停)(再)?(主动|定期|自动)(帮我)?(找|探索|推荐|复盘)/.test(c) || /没(有)?新(消息|东西|进展)就别(问|找|推)/.test(c)) return { op: "agent_policy", scheduledEnabled: false };
+  if (/(恢复|继续|重新开始)(定期|主动)(探索|找项目|复盘)|每周(帮我)?(找|看)一次项目/.test(c)) return { op: "agent_policy", scheduledEnabled: true };
 
   // 摘要邮件
   if (/(摘要|日报|每周回顾|周报)/.test(c)) {

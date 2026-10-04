@@ -346,6 +346,14 @@ export const linkResourceSchema = z.object({
   origin: z.enum(["user", "assumed"]).default("assumed"),
 });
 
+/** 主动程度与调用预算：每日模型/搜索次数上限、是否运行定期探索与定期复盘 */
+export const updateAgentPolicySchema = z.object({
+  command: z.literal("update_agent_policy"),
+  dailyModelCalls: z.number().int().min(0).max(1000).optional(),
+  dailySearchCalls: z.number().int().min(0).max(1000).optional(),
+  scheduledEnabled: z.boolean().optional(),
+});
+
 export const commandSchema = z.discriminatedUnion("command", [
   upsertCourseSetSchema,
   recordPracticeSchema,
@@ -376,6 +384,7 @@ export const commandSchema = z.discriminatedUnion("command", [
   updateProjectStateSchema,
   requestExplorationSchema,
   linkResourceSchema,
+  updateAgentPolicySchema,
 ]);
 
 export type Command = z.infer<typeof commandSchema>;
@@ -425,6 +434,7 @@ export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   update_project_state: { title: "项目状态", description: "暂停/恢复/结束项目，或把试做转为正式投入。", group: "goal", authorization: "owner_explicit", undo: "journal", affects: ["plan", "direction"] },
   request_exploration: { title: "找候选项目", description: "按主人给的问题检索有来源的资料并生成最多 3 个候选。", group: "goal", authorization: "owner_explicit", undo: "none", affects: ["direction"] },
   link_resource: { title: "资料", description: "把资料存下来、关联到项目，或纠正它是参考资料/别人的要求/自己的成果。", group: "goal", authorization: "auto", undo: "journal", affects: ["direction"] },
+  update_agent_policy: { title: "主动程度与预算", description: "每日模型/搜索调用上限；是否运行定期探索和定期复盘。", group: "agent", authorization: "owner_explicit", undo: "journal", affects: [] },
   complete_task: { title: "完成任务", description: "把指定任务标记完成，取消其未执行学习块与提醒。", group: "task", authorization: "owner_explicit", undo: "journal", affects: ["plan", "reminders"] },
 };
 

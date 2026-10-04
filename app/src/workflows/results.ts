@@ -5,6 +5,7 @@ import type { FollowUp, OperationOutcome } from "@/workflows/commands";
 import { snapshotRevision } from "@/workflows/snapshot";
 import { instanceTimezone, localDateInTz } from "@/domain/time";
 import { nowDate } from "@/domain/clock";
+import { estimateAdvice, type EstimateSample } from "@/domain/estimate-advice";
 import { getIntake, listItems, type IntakeRow } from "@/repositories/intakes";
 import { listQuestionsForIntake } from "@/repositories/questions";
 
@@ -229,6 +230,20 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
     }
     const blocked = unscheduled.find((u) => u.taskId === taskId);
     if (blocked) nextActions.push(`「${task.title}」${REASON_TEXT[blocked.reason] ?? blocked.reason}${blocked.missingMinutes ? `（缺 ${blocked.missingMinutes} 分钟）` : ""}`);
+  }
+
+  // 估时建议：同项目（没有项目就同为无项目的任务）里至少 3 个已完成且有实际用时的样本才给；不改主人的估时
+  for (const taskId of taskIds) {
+    const t = db.prepare(`SELECT title, estimate_minutes, project_id, status FROM tasks WHERE id = ?`).get(taskId) as { title: string; estimate_minutes: number | null; project_id: string | null; status: string } | undefined;
+    if (!t || !t.estimate_minutes || t.status === "done") continue;
+    const samples = db
+      .prepare(
+        `SELECT t.estimate_minutes AS estimateMinutes, SUM(p.actual_minutes) AS actualMinutes FROM tasks t JOIN practice_entries p ON p.task_id = t.id
+         WHERE t.status = 'done' AND t.id != ? AND t.estimate_minutes > 0 AND p.actual_minutes IS NOT NULL AND p.category = 'study' AND t.project_id IS ? GROUP BY t.id`,
+      )
+      .all(taskId, t.project_id) as EstimateSample[];
+    const advice = estimateAdvice(t.estimate_minutes, samples);
+    if (advice) nextActions.push(`「${t.title}」你估 ${t.estimate_minutes} 分钟；最近 ${advice.samples} 个同类任务实际用时约为估时的 ${advice.ratio} 倍，可能要 ${advice.suggestedMinutes} 分钟左右（只是参考，没有改你的估时）`);
   }
 
   // 没读清/待核对的具体位置：如实列出，不当成已完成

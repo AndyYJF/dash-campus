@@ -332,6 +332,9 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
   }
   if (intent.op === "export") return { kind: "run", command: { command: "request_export" } };
   if (intent.op === "explain") return { kind: "answer", text: intent.topic === "reminders" ? explainReminders(env) : explainPlan(env) };
+  if (intent.op === "agent_policy") {
+    return { kind: "run", command: { command: "update_agent_policy", ...(intent.dailyModelCalls !== undefined ? { dailyModelCalls: intent.dailyModelCalls } : {}), ...(intent.scheduledEnabled !== undefined ? { scheduledEnabled: intent.scheduledEnabled } : {}) } };
+  }
   if (intent.op === "digest") {
     const command: Record<string, unknown> = { command: "update_digest_policy" };
     if (intent.dailyEnabled !== undefined) command.dailyEnabled = intent.dailyEnabled;

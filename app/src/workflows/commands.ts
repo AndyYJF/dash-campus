@@ -11,7 +11,7 @@ import { HttpError } from "@/workflows/http";
 import { nowDate } from "@/domain/clock";
 import { applyAcademicCalendar, applyCalendarSyncPolicy, applyHolidayCalendar, applyTeachingOverride } from "@/workflows/ops/calendar";
 import { applyPlanningPolicy } from "@/workflows/ops/policy";
-import { applyDigestPolicy, applyReminderPolicy } from "@/workflows/ops/reminders";
+import { applyAgentPolicy, applyDigestPolicy, applyReminderPolicy } from "@/workflows/ops/reminders";
 import { applyNotice, applyNoticeRule, applyProfileFacts, applyResolveNotice } from "@/workflows/ops/notices";
 import { applyGoal, applyLinkResource, applyProjectState, applyRequestExploration, applySelectCandidate } from "@/workflows/ops/direction";
 import { reevaluateAllCurrent } from "@/workflows/inbox";
@@ -115,6 +115,7 @@ const HANDLERS: { [N in Command["command"]]: Handler<N> } = {
   update_project_state: applyProjectState,
   request_exploration: applyRequestExploration,
   link_resource: applyLinkResource,
+  update_agent_policy: applyAgentPolicy,
 };
 
 export function isRegisteredOperation(name: unknown): name is Command["command"] {

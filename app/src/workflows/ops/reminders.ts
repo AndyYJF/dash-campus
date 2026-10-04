@@ -8,6 +8,8 @@ import { HttpError } from "@/workflows/http";
 import { refreshAllReminders } from "@/workflows/reminders";
 import { REMINDER_POLICY_KEY, reminderPolicy, type ReminderPolicy } from "@/workflows/reminder-policy";
 import { getConfig } from "@/config";
+import { AI_BUDGET_SETTINGS_KEY, aiBudgetSchema } from "@/contracts/review";
+import { usageToday } from "@/workflows/ai-budget";
 
 /**
  * 提醒与摘要策略（AGENT-INTERFACE-CONTRACT §2/§7）：持久更新具体策略，并让既有提醒任务与新策略一致。
@@ -88,5 +90,22 @@ export function applyDigestPolicy(cmd: Cmd<"update_digest_policy">, _ctx: Comman
   if (after.weeklyEnabled) parts.push(`每周${WEEKDAY[after.weeklyWeekday - 1]} ${after.weeklyTime} 发每周回顾`);
   else if (before.weeklyEnabled) parts.push("不再发每周回顾");
   parts.push(getConfig().MAIL_TO ? "只发到已配置的主人邮箱" : "注意：还没有配置收件邮箱，现在不会真的发出邮件");
+  return parts.join("；");
+}
+
+/** 主动程度与调用预算：超限的影响说清楚；不换供应商、不碰密钥 */
+export function applyAgentPolicy(cmd: Cmd<"update_agent_policy">, _ctx: CommandContext, changes: ChangeInput[]): string {
+  const entry = getSetting(AI_BUDGET_SETTINGS_KEY);
+  const before = aiBudgetSchema.parse(entry.value ?? {});
+  const after = aiBudgetSchema.parse({ ...before, ...Object.fromEntries(Object.entries(cmd).filter(([k, v]) => k !== "command" && v !== undefined)) });
+  if (JSON.stringify(before) === JSON.stringify(after)) return "主动程度与预算没有变化";
+  writeSetting(AI_BUDGET_SETTINGS_KEY, before, after, entry.version, changes);
+  const parts: string[] = [];
+  const used = usageToday();
+  if (after.dailyModelCalls !== before.dailyModelCalls) {
+    parts.push(`每天最多调用模型 ${after.dailyModelCalls} 次（今天已用 ${used.modelCalls} 次）${used.modelCalls >= after.dailyModelCalls ? "：今天已到上限，新材料会先存原文、不做理解，直接下的指令和截止提醒不受影响" : ""}`);
+  }
+  if (after.dailySearchCalls !== before.dailySearchCalls) parts.push(`每天最多搜索 ${after.dailySearchCalls} 次`);
+  if (after.scheduledEnabled !== before.scheduledEnabled) parts.push(after.scheduledEnabled ? "恢复定期探索和定期复盘" : "不再主动做定期探索和定期复盘（你开口时照常处理；页面上的内容都还在）");
   return parts.join("；");
 }

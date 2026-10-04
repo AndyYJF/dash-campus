@@ -103,6 +103,24 @@ export default function ItemDetail(props: { picked: Picked; date: string; timezo
             </button>
           </div>
         )}
+        {e.kind === "fixed" && (
+          <div className={styles.detailActions}>
+            <button
+              type="button"
+              className={styles.btn}
+              disabled={busy}
+              onClick={() => run(() => api("/api/v2/actions", { method: "POST", body: { operation: "update_fixed_event", args: { eventId: e.id, skipDate: date } }, idempotencyKey: newIdempotencyKey() }))}
+            >
+              这次不去
+            </button>
+            <button type="button" className={styles.btn} onClick={() => compose({ label: e.title, text: `把${e.title}改到每周` })}>
+              改时间…
+            </button>
+            <button type="button" className={styles.btnGhost} onClick={() => compose({ label: e.title, text: `以后不去${e.title}了` })}>
+              以后不去了…
+            </button>
+          </div>
+        )}
         {e.kind === "pending" && (
           <div className={styles.detailActions}>
             <button type="button" className={styles.btn} onClick={() => compose({ label: `${dateLabel(date)} 的上课安排`, text: `${dateLabel(date).split(" ")[0]}补` })}>

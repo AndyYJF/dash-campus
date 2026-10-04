@@ -119,8 +119,9 @@ export function renderDigest(kind: DigestKind, date: string) {
 export async function runDigestJob(job: JobRow) {
   return runMailJob(job, (j, now): Admission => getDb().transaction((): Admission => {
     if (!leaseValid(j.id, j.leaseToken!, j.generation, now)) return { kind: "skip", reason: "lease_lost" };
-    const { kind, date } = j.payload as { kind: DigestKind; date: string }, cfg = getDigestSettings().settings;
-    if (!(kind === "daily" ? cfg.dailyEnabled : kind === "weekly" ? cfg.weeklyEnabled : cfg.systemEnabled)) return { kind: "skip", reason: "digest_disabled" };
+    const { kind, date, manual } = j.payload as { kind: DigestKind; date: string; manual?: boolean }, cfg = getDigestSettings().settings;
+    // 主人当场要的一份（manual）不受“定期摘要是否开启”限制；定期的照旧按开关
+    if (!manual && !(kind === "daily" ? cfg.dailyEnabled : kind === "weekly" ? cfg.weeklyEnabled : cfg.systemEnabled)) return { kind: "skip", reason: "digest_disabled" };
     if (date < localDateInTz(new Date(now), instanceTimezone())) return { kind: "skip", reason: "digest_expired" };
     const email = renderDigest(kind, date), delivery = createDelivery({ jobId: j.id, taskId: null, leaseToken: j.leaseToken, reminderRevision: 0, recipient: getConfig().MAIL_TO ?? "", subject: email.subject, snapshot: { ...email, taskId: null, taskTitle: "", dueLabel: "", generatedAt: now, kind } });
     markSubmitting(delivery.id); return { kind: "delivery", delivery: getDelivery(delivery.id)! };

@@ -33,7 +33,7 @@ import { rebuildPlan } from "@/workflows/plan";
 import { dueFromText, estimateFromText, isCompletionReport, matchTask, pickCandidate, type TaskRef } from "@/domain/task-text";
 import { intentSchema, parseInstruction, type Intent } from "@/domain/intent";
 import { nowDate } from "@/domain/clock";
-import { bindIntents, commandsForStandaloneAnswer, completionHasTarget, isPolicyIntent, maybeAskRoutine, parseAnswerByPurpose, raisePlanQuestions, type BindEnv } from "@/workflows/agent";
+import { bindIntents, commandsForStandaloneAnswer, completionHasTarget, fixedEventRefs, isPolicyIntent, maybeAskRoutine, parseAnswerByPurpose, raisePlanQuestions, topicRefs, type BindEnv } from "@/workflows/agent";
 import { appendTurn, conversationExists, currentConversationId, upsertAgentTurn, type EntityRef } from "@/repositories/conversations";
 import { listChanges } from "@/repositories/journal";
 import { followUpView, operationResultView, type OperationResultView } from "@/workflows/results";
@@ -664,12 +664,18 @@ function ownerInstructionPass(intake: IntakeRow, textRest: string, items: Intake
   let rest = textRest;
   // 已有事项说明这份投递在引入指令解析之前就处理过：不回头重解析
   if (textRest.trim() && !items.some((i) => i.kind !== "timetable")) {
-    const parsed = parseInstruction(textRest, intake.referenceDate, nowDate(), intake.timezone);
+    // 已有的非课程固定活动名给解析器作提示：只有话里点到名字才当成对它的修改
+    const parsed = parseInstruction(textRest, intake.referenceDate, nowDate(), intake.timezone, { fixedEventTitles: [...new Set(fixedEventRefs().map((e) => e.name))] });
     const kept: string[] = [];
     const groups: Array<{ intents: Intent[]; clauses: string[] }> = [];
     for (const { intent, clause } of parsed.intents) {
       // “做完了”对不上任何已有任务：不是对任务的指令，留给分类按一次实践处理
       if (intent.op === "complete" && !completionHasTarget(intent.ref)) {
+        kept.push(clause);
+        continue;
+      }
+      // “别再找 X 了”对不上任何正在关注的方向：不是对探索的指令，留给分类
+      if (intent.op === "explore_topic" && intent.stop && matchTask(intent.title, topicRefs()).kind === "none") {
         kept.push(clause);
         continue;
       }

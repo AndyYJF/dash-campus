@@ -106,6 +106,9 @@ export function applyAgentPolicy(cmd: Cmd<"update_agent_policy">, _ctx: CommandC
     parts.push(`每天最多调用模型 ${after.dailyModelCalls} 次（今天已用 ${used.modelCalls} 次）${used.modelCalls >= after.dailyModelCalls ? "：今天已到上限，新材料会先存原文、不做理解，直接下的指令和截止提醒不受影响" : ""}`);
   }
   if (after.dailySearchCalls !== before.dailySearchCalls) parts.push(`每天最多搜索 ${after.dailySearchCalls} 次`);
+  if (JSON.stringify(after.weeklyReview) !== JSON.stringify(before.weeklyReview)) {
+    parts.push(after.weeklyReview ? `以后每${["", "周一", "周二", "周三", "周四", "周五", "周六", "周日"][after.weeklyReview.weekday]} ${after.weeklyReview.localTime} 自动整理上一周的复盘（建议不会自动执行）` : "不再定期做周复盘；想看的时候说“复盘一下上周”");
+  }
   if (after.scheduledEnabled !== before.scheduledEnabled) parts.push(after.scheduledEnabled ? "恢复定期探索和定期复盘" : "不再主动做定期探索和定期复盘（你开口时照常处理；页面上的内容都还在）");
   return parts.join("；");
 }

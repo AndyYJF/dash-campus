@@ -35,7 +35,12 @@ const KIND_TABLE: Record<string, { table: string; versioned: boolean; idColumn?:
   resource_link: { table: "resource_links", versioned: true },
   inbox_task_link: { table: "inbox_task_links", versioned: false },
   inbox_decision: { table: "inbox_decisions", versioned: true },
+  exploration_topic: { table: "exploration_topics", versioned: true },
+  fixed_event_exception: { table: "fixed_event_exceptions", versioned: false },
 };
+
+/** 没有 updated_at 列的表：字段恢复时不写它 */
+const NO_UPDATED_AT = new Set(["fixed_events"]);
 
 export type UndoResult =
   | { kind: "undone" }
@@ -64,7 +69,7 @@ function collectConflicts(changes: ChangeRow[]): string[] {
   for (const c of changes) {
     const meta = KIND_TABLE[c.entityKind];
     if (!meta) conflicts.push(`未知实体类型 ${c.entityKind}`);
-    else if (c.action !== "delete" && meta.versioned) {
+    else if (c.action !== "delete" && (meta.versioned || (c.entityKind === "fixed_event" && c.action === "update"))) {
       const row = getDb().prepare(`SELECT version FROM ${meta.table} WHERE ${meta.idColumn ?? "id"} = ?`).get(c.entityId) as { version: number } | undefined;
       if (!row) conflicts.push(`${c.entityKind} ${c.entityId} 已被删除`);
       else if (c.afterVersion !== null && row.version !== c.afterVersion)
@@ -85,6 +90,12 @@ function revertOne(c: ChangeRow): void {
     if (c.entityKind === "project") db.prepare(`DELETE FROM project_goals WHERE project_id = ?`).run(c.entityId);
     if (c.entityKind === "resource") db.prepare(`DELETE FROM resource_revisions WHERE resource_id = ?`).run(c.entityId);
     leaveTombstone(c);
+    if (c.entityKind === "fixed_event_exception") {
+      // 复合主键：entityId = 活动 id|日期
+      const [eventId, localDate] = c.entityId.split("|");
+      db.prepare(`DELETE FROM fixed_event_exceptions WHERE event_id = ? AND local_date = ?`).run(eventId, localDate);
+      return;
+    }
     db.prepare(`DELETE FROM ${meta.table} WHERE ${idColumn} = ?`).run(c.entityId);
     return;
   }
@@ -113,6 +124,10 @@ function leaveTombstone(c: ChangeRow): void {
 function restoreFields(meta: { table: string; idColumn?: string }, c: ChangeRow): void {
   const db = getDb();
   const sets = Object.keys(c.before ?? {}).map((k) => `${toSnake(k)} = ?`);
+  if (NO_UPDATED_AT.has(meta.table)) {
+    db.prepare(`UPDATE ${meta.table} SET ${sets.join(", ")}, version = version + 1 WHERE ${meta.idColumn ?? "id"} = ?`).run(...Object.values(c.before ?? {}), c.entityId);
+    return;
+  }
   db.prepare(`UPDATE ${meta.table} SET ${sets.join(", ")}, version = version + 1, updated_at = ? WHERE ${meta.idColumn ?? "id"} = ?`).run(
     ...Object.values(c.before ?? {}),
     new Date().toISOString(),

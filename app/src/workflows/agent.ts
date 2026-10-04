@@ -78,6 +78,28 @@ function openTasks(): TaskRef[] {
   return getDb().prepare(`SELECT id, title FROM tasks WHERE status IN ('todo','doing','blocked') AND archived_at IS NULL ORDER BY created_at, id`).all() as TaskRef[];
 }
 
+/** 还在定期关注的探索方向 */
+export function topicRefs(): TaskRef[] {
+  return getDb().prepare(`SELECT id, title FROM exploration_topics WHERE archived_at IS NULL ORDER BY created_at`).all() as TaskRef[];
+}
+
+/** 非课程的固定活动（课程投影出来的不算）：标题里附带了星期和钟点，便于并列时区分 */
+export function fixedEventRefs(): Array<TaskRef & { name: string }> {
+  const WD = ["", "周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+  return (
+    getDb()
+      .prepare(`SELECT f.id, f.title, f.weekday, f.local_start, f.local_end, f.event_date FROM fixed_events f WHERE NOT EXISTS (SELECT 1 FROM course_meeting_projections p WHERE p.fixed_event_id = f.id) ORDER BY f.weekday, f.local_start`)
+      .all() as Array<{ id: string; title: string; weekday: number; local_start: string; local_end: string; event_date: string | null }>
+  ).map((r) => ({ id: r.id, name: r.title, title: `${r.title}（${r.event_date ?? `每${WD[r.weekday]}`} ${r.local_start}–${r.local_end}）` }));
+}
+
+function matchFixedEvents(name: string): ReturnType<typeof matchTask> {
+  const hits = fixedEventRefs().filter((e) => e.name === name);
+  if (hits.length === 1) return { kind: "one", task: hits[0]! };
+  if (hits.length > 1) return { kind: "ambiguous", candidates: hits };
+  return { kind: "none" };
+}
+
 function goalRefs(): TaskRef[] {
   return getDb().prepare(`SELECT id, title FROM goals WHERE archived_at IS NULL AND status != 'completed' ORDER BY created_at`).all() as TaskRef[];
 }
@@ -359,7 +381,50 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
     return { kind: "run", command: { command: "schedule_session", ...(taskId ? { taskId } : { title: intent.text }), date: intent.date, startLocalTime, durationMinutes } };
   }
   if (intent.op === "agent_policy") {
-    return { kind: "run", command: { command: "update_agent_policy", ...(intent.dailyModelCalls !== undefined ? { dailyModelCalls: intent.dailyModelCalls } : {}), ...(intent.scheduledEnabled !== undefined ? { scheduledEnabled: intent.scheduledEnabled } : {}) } };
+    return {
+      kind: "run",
+      command: {
+        command: "update_agent_policy",
+        ...(intent.dailyModelCalls !== undefined ? { dailyModelCalls: intent.dailyModelCalls } : {}),
+        ...(intent.scheduledEnabled !== undefined ? { scheduledEnabled: intent.scheduledEnabled } : {}),
+        ...(intent.weeklyReview !== undefined ? { weeklyReview: intent.weeklyReview } : {}),
+      },
+    };
+  }
+  if (intent.op === "review") return { kind: "run", command: { command: "request_review", week: intent.week } };
+  if (intent.op === "digest_now") return { kind: "run", command: { command: "request_owner_digest", kind: intent.kind } };
+  if (intent.op === "cancel_intake") {
+    // 同一段对话里最近一份还没处理完的投递（不是当前这句话本身）
+    const row = getDb()
+      .prepare(`SELECT id FROM intakes WHERE id != ? AND status IN ('received','processing','waiting_input','partially_applied') ORDER BY (conversation_id IS ?) DESC, created_at DESC LIMIT 1`)
+      .get(env.intakeId ?? "", env.conversationId) as { id: string } | undefined;
+    if (!row) return { kind: "fail", error: "现在没有还在处理中的材料；已经生效的变化要撤回，直接说“撤销”" };
+    return { kind: "run", command: { command: "cancel_operation", intakeId: row.id } };
+  }
+  if (intent.op === "explore_topic") {
+    const topics = topicRefs();
+    const m = matchTask(intent.title, topics);
+    if (intent.stop) {
+      const c = chooseOrAsk(asResolved(m, `没有在定期关注「${intent.title}」`), env, "exploration_topic", (v) => v.title, "关注方向");
+      if (c.kind !== "one") return c;
+      return { kind: "run", command: { command: "configure_exploration", topicId: c.value.id, archive: true } };
+    }
+    const same = m.kind === "one" ? m.task : null;
+    return {
+      kind: "run",
+      command: { command: "configure_exploration", ...(same ? { topicId: same.id } : { title: intent.title }), enabled: true, ...(intent.weekday ? { weekday: intent.weekday } : {}), ...(intent.localTime ? { localTime: intent.localTime } : {}) },
+    };
+  }
+  if (intent.op === "fixed_event") {
+    const c = chooseOrAsk(asResolved(matchFixedEvents(intent.name), `没有找到叫「${intent.name}」的固定活动`), env, "fixed_event", (v) => v.title, "固定活动");
+    if (c.kind !== "one") return c;
+    const args = intent.skipDate
+      ? { skipDate: intent.skipDate }
+      : intent.remove
+        ? { remove: true }
+        : { ...(intent.weekday ? { weekday: intent.weekday } : {}), ...(intent.start ? { localStart: intent.start } : {}), ...(intent.end ? { localEnd: intent.end } : {}) };
+    const dates = intent.skipDate ? [intent.skipDate] : [];
+    return { kind: "run", command: { command: "update_fixed_event", eventId: c.value.id, ...args }, replanDates: dates };
   }
   if (intent.op === "digest") {
     const command: Record<string, unknown> = { command: "update_digest_policy" };

@@ -12,6 +12,7 @@ import { nowDate } from "@/domain/clock";
 import { applyAcademicCalendar, applyCalendarSyncPolicy, applyHolidayCalendar, applyTeachingOverride } from "@/workflows/ops/calendar";
 import { applyPlanningPolicy } from "@/workflows/ops/policy";
 import { applyAgentPolicy, applyDigestPolicy, applyReminderPolicy } from "@/workflows/ops/reminders";
+import { applyCancelOperation, applyConfigureExploration, applyRequestOwnerDigest, applyRequestReview, applyUpdateFixedEvent } from "@/workflows/ops/agent-ops";
 import { applyNotice, applyNoticeRule, applyProfileFacts, applyResolveNotice } from "@/workflows/ops/notices";
 import { applyGoal, applyLinkResource, applyProjectState, applyRequestExploration, applySelectCandidate } from "@/workflows/ops/direction";
 import { reevaluateAllCurrent } from "@/workflows/inbox";
@@ -117,6 +118,11 @@ const HANDLERS: { [N in Command["command"]]: Handler<N> } = {
   request_exploration: applyRequestExploration,
   link_resource: applyLinkResource,
   update_agent_policy: applyAgentPolicy,
+  request_review: applyRequestReview,
+  configure_exploration: applyConfigureExploration,
+  request_owner_digest: applyRequestOwnerDigest,
+  cancel_operation: applyCancelOperation,
+  update_fixed_event: applyUpdateFixedEvent,
 };
 
 export function isRegisteredOperation(name: unknown): name is Command["command"] {

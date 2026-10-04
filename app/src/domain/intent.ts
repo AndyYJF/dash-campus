@@ -55,7 +55,17 @@ export const intentSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("explain"), topic: z.enum(["reminders", "plan"]) }),
   z.object({ op: z.literal("export") }),
   z.object({ op: z.literal("schedule_here"), text: z.string().min(1).max(200), date: dateStr, start: timeStr, end: timeStr }),
-  z.object({ op: z.literal("agent_policy"), dailyModelCalls: z.number().int().min(0).max(1000).optional(), scheduledEnabled: z.boolean().optional() }),
+  z.object({
+    op: z.literal("agent_policy"),
+    dailyModelCalls: z.number().int().min(0).max(1000).optional(),
+    scheduledEnabled: z.boolean().optional(),
+    weeklyReview: z.object({ weekday: z.number().int().min(1).max(7), localTime: timeStr }).nullable().optional(),
+  }),
+  z.object({ op: z.literal("review"), week: z.enum(["last", "this"]) }),
+  z.object({ op: z.literal("explore_topic"), title: z.string().min(1).max(200), weekday: z.number().int().min(1).max(7).optional(), localTime: timeStr.optional(), stop: z.boolean().default(false) }),
+  z.object({ op: z.literal("digest_now"), kind: z.enum(["daily", "weekly"]) }),
+  z.object({ op: z.literal("cancel_intake") }),
+  z.object({ op: z.literal("fixed_event"), name: z.string().min(1).max(200), weekday: z.number().int().min(1).max(7).optional(), start: timeStr.optional(), end: timeStr.optional(), remove: z.boolean().default(false), skipDate: dateStr.optional() }),
   z.object({ op: z.literal("digest"), dailyEnabled: z.boolean().optional(), dailyTime: timeStr.optional(), weekdaysOnly: z.boolean().optional(), weeklyEnabled: z.boolean().optional(), weeklyWeekday: z.number().int().min(1).max(7).optional(), weeklyTime: timeStr.optional() }),
   z.object({ op: z.literal("reminders"), enabled: z.boolean().optional(), quietStart: timeStr.optional(), quietEnd: timeStr.optional() }),
   z.object({ op: z.literal("task_reminder"), ref: refSchema, leadMinutes: z.number().int().min(0).max(525_600) }),
@@ -131,11 +141,52 @@ function untilOf(text: string, referenceDate: string): string | null {
   return dateFromText(text, referenceDate);
 }
 
-function parseClause(clause: string, referenceDate: string, now: Date, tz: string): Intent | "ignore" | null {
+/** 钟点里的“下午/晚上”换成 24 小时制 */
+function clock(text: string): string | null {
+  const raw = timeFromText(text);
+  if (!raw) return null;
+  const h = Number(raw.slice(0, 2));
+  return /晚|傍晚|下午/.test(text) && h < 12 ? `${String(h + 12).padStart(2, "0")}${raw.slice(2)}` : raw;
+}
+
+/** 已有的非课程固定活动：长期改时间或以后不去。只改某一次的说法不在这里认（留给后面的规则或分类） */
+function fixedEventIntent(c: string, titles: string[], referenceDate: string): Intent | null {
+  const name = titles.filter((t) => t.length >= 2 && c.includes(t)).sort((a, b) => b.length - a.length)[0];
+  if (!name) return null;
+  const tail = c.slice(c.indexOf(name) + name.length);
+  const once = /(今天|明天|后天|今晚|明晚|这次|这一次|本周|这周|下周|这个?星期|下个?星期|\d+\s*[月/]\s*\d+)/.test(c);
+  if (/(不去|不参加|不上|退出|退了|删掉|删除|去掉|取消)/.test(c) && !/(提醒|通知)/.test(c)) {
+    if (!once) return { op: "fixed_event", name, remove: true };
+    // 只是某一次不去：那一天不占用，规则不变
+    const date = dateFromText(c, referenceDate);
+    return date ? { op: "fixed_event", name, remove: false, skipDate: date } : null;
+  }
+  const move = /(?:改|换|挪|调|移)(?:到|成|为|至)(.+)$/.exec(tail);
+  if (!move || once) return null;
+  const target = move[1]!;
+  const wd = /(?:周|星期|礼拜)\s*([一二三四五六日天])/.exec(target);
+  const range = /(\d{1,2}\s*[:：]\s*\d{2})\s*(?:-|–|—|~|到|至)\s*(\d{1,2}\s*[:：]\s*\d{2})/.exec(target);
+  const start = range ? timeFromText(range[1]!) : clock(target);
+  const end = range ? timeFromText(range[2]!) : null;
+  if (!wd && !start) return null;
+  return { op: "fixed_event", name, remove: false, ...(wd ? { weekday: WEEKDAY_INDEX[wd[1]!]! } : {}), ...(start ? { start } : {}), ...(end ? { end } : {}) };
+}
+
+export type ParseHints = { fixedEventTitles?: string[] };
+
+function parseClause(clause: string, referenceDate: string, now: Date, tz: string, hints: ParseHints = {}): Intent | "ignore" | null {
   const c = clause.trim();
   if (!c) return "ignore";
   // 只是限定语，不产生动作
   if (/^(其他|别的|其余|另外的)(的)?(都)?(不动|不变|不用动|不要动|保持|照旧)/.test(c)) return "ignore";
+
+  // 停止处理刚才那份材料（不是撤销已生效的变化）
+  if (/(刚才|刚刚|上一份|上一条|那份|那条|上面)/.test(c) && /(别|不用|不要|停止|取消|先不)(再|用)?(处理|识别|解析|读|弄)/.test(c)) return { op: "cancel_intake" };
+
+  if (hints.fixedEventTitles?.length) {
+    const fixed = fixedEventIntent(c, hints.fixedEventTitles, referenceDate);
+    if (fixed) return fixed;
+  }
 
   if (/^(撤销|撤回)$/.test(c) || (/(撤销|撤回|取消|改回|恢复)/.test(c) && /(刚才|刚刚|上一|上次|那次|这次|那个|调整|修改|改动)/.test(c) && !/规则/.test(c))) return { op: "undo" };
 
@@ -187,6 +238,15 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
     const minutes = durationOf(shorten[2]!);
     if (minutes) return { op: "shorten_session", ref: refOf(shorten[1]!, referenceDate), durationMinutes: minutes };
   }
+
+  // 定期关注某个方向 / 不再关注
+  const topic = /^(?:以后)?每(?:周|星期|礼拜)\s*([一二三四五六日天])(.{0,10}?)(?:帮我|给我|替我)?(?:找找|找|搜|看看|留意|关注)(?:一下|一次)?(.{2,40}?)(?:方向|方面|相关)?(?:的)?(?:项目|机会|比赛|资料|信息|动态)?$/.exec(c);
+  if (topic && !/^(项目|机会|比赛|资料|信息|动态|新的?)$/.test(topic[3]!.trim())) {
+    const time = clock(topic[2]!);
+    return { op: "explore_topic", title: topic[3]!.trim(), weekday: WEEKDAY_INDEX[topic[1]!]!, stop: false, ...(time ? { localTime: time } : {}) };
+  }
+  const untopic = /^(?:以后)?(?:别|不用|不要|停止|取消)(?:再)?(?:定期|每周)?(?:帮我|给我)?(?:找|关注|留意|搜)(.{2,40}?)(?:方向|方面|相关)?(?:的)?(?:项目|机会|比赛|资料|信息|动态)?了?$/.exec(c);
+  if (untopic && !/^(项目|机会|新的?)$/.test(untopic[1]!.trim()) && !/(主动|定期|自动)$/.test(untopic[1]!)) return { op: "explore_topic", title: untopic[1]!.trim(), stop: true };
 
   // 找候选项目
   if (/(帮我|给我|替我)(找|挑|选|推荐|看看有没有).{0,40}(项目|方向|课题|练手)/.test(c)) return { op: "explore", query: c.slice(0, 500) };
@@ -241,11 +301,22 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
   // 主动程度与模型预算
   const calls = new RegExp(`每天最多(?:用|调用)?\\s*(\\d+)\\s*次(?:模型|AI|大模型)|(?:模型|AI)(?:调用)?每天最多\\s*(\\d+)\\s*次`).exec(c);
   if (calls) return { op: "agent_policy", dailyModelCalls: Number(calls[1] ?? calls[2]) };
+  // 定期复盘的时间 / 停掉定期复盘（只动复盘，不连带停探索）
+  if (/复盘/.test(c)) {
+    if (/(别|不要|不用|停止|暂停|取消)(再)?(主动|定期|自动|每周)(帮我|给我)?(做)?复盘/.test(c)) return { op: "agent_policy", weeklyReview: null };
+    const wd = /每(?:周|星期|礼拜)\s*([一二三四五六日天])/.exec(c);
+    if (wd) return { op: "agent_policy", weeklyReview: { weekday: WEEKDAY_INDEX[wd[1]!]!, localTime: clock(c) ?? "20:00" } };
+    if (/^(帮我|给我|替我)?(做个?|来个?)?(复盘|回顾|总结)(一下)?(上周|这周|本周|上个星期|这个星期)|(上周|这周|本周|上个星期|这个星期).{0,6}复盘|^(帮我|给我|替我)(做个?|来个?)?复盘/.test(c)) {
+      return { op: "review", week: /(这周|本周|这个星期)/.test(c) ? "this" : "last" };
+    }
+  }
   if (/(别|不要|不用|停止|暂停)(再)?(主动|定期|自动)(帮我)?(找|探索|推荐|复盘)/.test(c) || /没(有)?新(消息|东西|进展)就别(问|找|推)/.test(c)) return { op: "agent_policy", scheduledEnabled: false };
   if (/(恢复|继续|重新开始)(定期|主动)(探索|找项目|复盘)|每周(帮我)?(找|看)一次项目/.test(c)) return { op: "agent_policy", scheduledEnabled: true };
 
   // 摘要邮件
   if (/(摘要|日报|每周回顾|周报)/.test(c)) {
+    // 现在就要一份（不是改定期策略）
+    if (/(现在|马上|立刻|立即|这就)/.test(c) && /(发|给|来)/.test(c) && !/(不发|别发|不要|不用)/.test(c)) return { op: "digest_now", kind: /(周报|每周|本周|这周)/.test(c) ? "weekly" : "daily" };
     if (/(不发|别发|不要|不用|关掉|关闭|取消|停掉|停止)/.test(c)) return /(每周回顾|周报)/.test(c) ? { op: "digest", weeklyEnabled: false } : { op: "digest", dailyEnabled: false };
     const raw = timeFromText(c);
     if (raw) {
@@ -379,7 +450,7 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
 }
 
 /** 把主人原话按分句解析成意图；认不出的分句原样留在 rest 里交给后续分类 */
-export function parseInstruction(text: string, referenceDate: string, now: Date, tz: string): ParsedInstruction {
+export function parseInstruction(text: string, referenceDate: string, now: Date, tz: string, hints: ParseHints = {}): ParsedInstruction {
   const intents: ParsedInstruction["intents"] = [];
   const rest: string[] = [];
   for (const line of text.split(/\n+/)) {
@@ -392,12 +463,12 @@ export function parseInstruction(text: string, referenceDate: string, now: Date,
     const kept: string[] = [];
     for (let i = 0; i < clauses.length; i++) {
       const clause = clauses[i]!;
-      let parsed = parseClause(clause, referenceDate, now, tz);
+      let parsed = parseClause(clause, referenceDate, now, tz, hints);
       let source = clause;
       // 一句话被逗号拆成两半（“以后周三少排点，最多一小时”）：和下一个分句合起来再认一次
       const next = clauses[i + 1];
-      if (!parsed && next && !parseClause(next, referenceDate, now, tz)) {
-        const joined = parseClause(clause + next, referenceDate, now, tz);
+      if (!parsed && next && !parseClause(next, referenceDate, now, tz, hints)) {
+        const joined = parseClause(clause + next, referenceDate, now, tz, hints);
         if (joined && joined !== "ignore") {
           parsed = joined;
           source = `${clause}，${next}`;

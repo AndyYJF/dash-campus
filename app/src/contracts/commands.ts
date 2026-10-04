@@ -362,6 +362,54 @@ export const updateAgentPolicySchema = z.object({
   dailyModelCalls: z.number().int().min(0).max(1000).optional(),
   dailySearchCalls: z.number().int().min(0).max(1000).optional(),
   scheduledEnabled: z.boolean().optional(),
+  /** 定期周复盘的时间；null = 不定期做 */
+  weeklyReview: z.object({ weekday: z.number().int().min(1).max(7), localTime: timeStr }).nullable().optional(),
+});
+
+/** 按需复盘：上周（默认）、本周或指定那一周 */
+export const requestReviewSchema = z.object({
+  command: z.literal("request_review"),
+  week: z.enum(["last", "this"]).default("last"),
+  localMonday: dateStr.optional(),
+});
+
+/** 定期探索的关注方向：不带 topicId 是新建；archive 停用 */
+export const configureExplorationSchema = z.object({
+  command: z.literal("configure_exploration"),
+  topicId: z.string().uuid().nullable().default(null),
+  title: z.string().trim().min(1).max(200).optional(),
+  purpose: z.string().max(1000).optional(),
+  enabled: z.boolean().optional(),
+  weekday: z.number().int().min(1).max(7).optional(),
+  localTime: timeStr.optional(),
+  archive: z.boolean().default(false),
+});
+
+/** 现在给主人发一份摘要（只发主人邮箱） */
+export const requestOwnerDigestSchema = z.object({
+  command: z.literal("request_owner_digest"),
+  kind: z.enum(["daily", "weekly"]).default("daily"),
+});
+
+/** 停止处理一份还没完成的投递 */
+export const cancelOperationSchema = z.object({
+  command: z.literal("cancel_operation"),
+  intakeId: z.string().uuid(),
+});
+
+/** 非课程固定活动的修改或移除 */
+export const updateFixedEventSchema = z.object({
+  command: z.literal("update_fixed_event"),
+  eventId: z.string().uuid(),
+  expectedVersion: z.number().int().min(1).nullable().default(null),
+  title: z.string().trim().min(1).max(200).optional(),
+  weekday: z.number().int().min(1).max(7).optional(),
+  eventDate: dateStr.nullable().optional(),
+  localStart: timeStr.optional(),
+  localEnd: timeStr.optional(),
+  remove: z.boolean().default(false),
+  /** 只是这一天不去：规则不变 */
+  skipDate: dateStr.optional(),
 });
 
 export const commandSchema = z.discriminatedUnion("command", [
@@ -396,6 +444,11 @@ export const commandSchema = z.discriminatedUnion("command", [
   requestExplorationSchema,
   linkResourceSchema,
   updateAgentPolicySchema,
+  requestReviewSchema,
+  configureExplorationSchema,
+  requestOwnerDigestSchema,
+  cancelOperationSchema,
+  updateFixedEventSchema,
 ]);
 
 export type Command = z.infer<typeof commandSchema>;
@@ -447,6 +500,11 @@ export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   request_exploration: { title: "找候选项目", description: "按主人给的问题检索有来源的资料并生成最多 3 个候选。", group: "goal", authorization: "owner_explicit", undo: "none", affects: ["direction"] },
   link_resource: { title: "资料", description: "把资料存下来、关联到项目，或纠正它是参考资料/别人的要求/自己的成果。", group: "goal", authorization: "auto", undo: "journal", affects: ["direction"] },
   update_agent_policy: { title: "主动程度与预算", description: "每日模型/搜索调用上限；是否运行定期探索和定期复盘。", group: "agent", authorization: "owner_explicit", undo: "journal", affects: [] },
+  request_review: { title: "复盘", description: "按一周已记录的事实生成复盘与建议；建议不自动执行。", group: "agent", authorization: "owner_explicit", undo: "none", affects: [] },
+  configure_exploration: { title: "定期探索", description: "新建、调整或停用一个关注方向及其每周探索时间。", group: "agent", authorization: "owner_explicit", undo: "journal", affects: ["direction"] },
+  request_owner_digest: { title: "发送摘要", description: "现在给主人本人发一份今日或本周摘要；已发出的邮件不能撤回。", group: "reminder", authorization: "owner_explicit", undo: "none", affects: [] },
+  cancel_operation: { title: "停止处理", description: "停止一份还没处理完的投递；已生效的变化保留，用撤销回退。", group: "agent", authorization: "owner_explicit", undo: "none", affects: [] },
+  update_fixed_event: { title: "固定活动", description: "修改或移除一个非课程的固定活动（名称、星期/日期、钟点）。", group: "course", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
   complete_task: { title: "完成任务", description: "把指定任务标记完成，取消其未执行学习块与提醒。", group: "task", authorization: "owner_explicit", undo: "journal", affects: ["plan", "reminders"] },
 };
 

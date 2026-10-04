@@ -20,6 +20,8 @@ export type GoalSummary = {
   constraints?: string[];
   openQuestionIds?: string[];
   appliedBatchIds?: string[];
+  /** 最近一轮执行后核验的结论与未通过项 */
+  verification?: { status: string; failing: string[] } | null;
 };
 
 export type GoalRow = {

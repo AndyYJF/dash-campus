@@ -30,6 +30,7 @@ type Result = {
   understanding?: { routedBy: "model" | "fast" | "rules" | null; fallbackReason: string | null; sources: string[] };
   error: { message: string; recoverable: boolean } | null;
   goal?: { id: string; revision: number; current: boolean; state: string; objective: string } | null;
+  verification?: { status: "verified" | "partial" | "needs_action" | "blocked" | "pending"; label: string; checks: Array<{ kind: string; ok: boolean | null; subject: string; detail: string }>; repairs: Array<{ reason: string; steps: string[] }> } | null;
 };
 type GoalRef = { id: string; revision: number; objective: string };
 
@@ -425,6 +426,12 @@ export default function UniversalIntake() {
                   {f.summary}
                 </p>
               ))}
+              {!ACTIVE.has(r.state) && r.verification && r.state !== "answered" && (
+                <p className={styles.followUp} data-state={["partial", "blocked"].includes(r.verification.status) ? "failed" : r.verification.status}>
+                  {r.verification.label}
+                  {r.verification.repairs.length > 0 && `（已在原范围内自动修正 ${r.verification.repairs.length} 次）`}
+                </p>
+              )}
               {r.nextActions.length > 0 && (
                 <ul className={styles.next}>
                   {r.nextActions.map((n) => (

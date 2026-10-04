@@ -206,3 +206,11 @@ HTTP 202 只表示 accepted，HTTP 200 不能代替领域成功判断。版本�
 - **自然语言回答**：会话里有问题在等时，路由可给第五种结果 `{kind:'reply', questionId}`；“第一个/可以/选项原文”这类孤立短答由服务端确定性识别，不调路由。只有一个问题在等就直接作答（序号映射到选项）；多个时具体的选项原文唯一匹配才落位，否则新建 `locate` 问题（候选问题 + “作为新的要求”）先问清；没有问题在等时如实说明，不改数据。回答按原问题的解析规则核对。
 - **决策器 `agent_decide`**：可用意图扩展到作息/上限与每对象的挪动、缩短、截止、暂停/恢复、优先、剩余、项目状态、定点安排、建任务、实践（最多 8 个，按步骤执行）；每个意图按自己的日期语义核对（未来安排 31 天内、截止一年内、实践今天及之前 60 天内），明确范围只约束重排/上限/停学；上下文含目标摘要与最近 10 轮对话（总量封顶 20k 字符）；同一目标上一版的范围在这一版没说范围时沿用。
 - **结果视图**新增 `goal: {id, revision, intakeRevision, current, state, objective}`；`current=false` 表示目标已被改口或停止，这一轮不再是最新。
+
+## 2026-10-05 执行后核验与有限修正（Agent增强 v1.1 P5）
+
+- **核验记录**（迁移 0032 `agent_verifications`，随业务导出/恢复）：每次投递处理完已执行的部分后，服务端按 `OPERATIONS[cmd].verify` 读回实际数据逐项核对，一轮一行（`round` 递增，`UNIQUE(intake_id, round)`）。检查项：`read_only`（查看不得产生批次）、`applied_once`（同一事项至多一个业务批次）、`entity_state_matches`/`policy_saved`（写入字段读回一致；之后又被改过只核对存在）、`session_in_scope`、`plan_consistent`（重排已跑且未失败；暂停/完成的任务不再占未开始的块；不撞课程/固定日程）、`practice_not_duplicated`、`side_effect_status`（邮件只核对已交给投递，不核对收件，不自动重发）、`dependent_steps_completed`（多步时任何一步没完成即不通过）、`demand_covered`（截止前排不下）。模型看不到也不能改这些判断。
+- **状态**：`verified` 全部通过；`partial` 有不通过且无现成问题；`needs_action` 不通过项都对应一个待主人取舍的问题（截止前排不下、锁定块撞课）；`blocked` 自动修正用尽或同一失败重复；`pending` 还有步骤在等回答。目标状态随之为 completed / partial / awaiting_input / blocked。
+- **有限修正**（`workflows/agent-run.ts`）：只做确定性动作——`replan`（在原范围内重跑排程）与 `rebind`（对象版本已变时按最新状态重新绑定并执行），不调模型、不扩大范围、不提高预算。每个投递至多 2 次修正、每次至多 4 步；不通过项的指纹与上一轮相同即停止；投递累计主动模型时间到 180 秒也停止。修正决定先写入核验行再执行。
+- **步骤幂等**：`executeCommand` 在写入事务内发现同一 `item_id` + 命令已有批次时直接返回原批次（`replayed: true`），不再写第二次；worker 崩溃恢复后不会重复记实践、建任务或发邮件。
+- **结果视图**新增 `verification: {status, label, checks[{kind, ok, subject, detail}], repairs[{reason, steps[]}]} | null`；`partial`/`blocked` 时 `state` 为 `partly_applied`，`needs_action` 且取舍问题未答时为 `needs_input`，核验涉及的问题并入 `questions`，摘要追加“核对未通过：…/需要你决定：…”。全部查看时 `label` 为“只查看，没有改动任何东西”。目标摘要新增 `verification: {status, failing[]}`。

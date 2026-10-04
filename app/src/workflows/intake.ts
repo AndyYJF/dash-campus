@@ -73,6 +73,8 @@ import { createGoal, getGoal, intakeRevisionCurrent, recentGoalInConversation, r
 import { AGENT_ROUTE_WORKFLOW, agentRouteSchema, isReadOnlyAct, routeOwnerText, type RouteCall, type RoutedItem, type RouteResult } from "./agent-route";
 import type { ToolEnv } from "./agent-tools";
 import type { ToolRuntime } from "@/contracts/model";
+import { verifyAndRepair, type RepairHooks } from "./agent-run";
+import { latestVerification } from "@/repositories/agent-runs";
 import {
   INTAKE_JOB_TYPE,
   SEMESTER_FIRST_MONDAY_KEY,
@@ -717,6 +719,8 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
   // 主动提问只落在影响安排的关键缺口上：首次有课表时问作息；重排后问取舍/冲突/剩余需求
   if (appliedNow.some((i) => i.kind === "timetable")) maybeAskRoutine({ intakeId, conversationId: intake.conversationId, referenceDate: intake.referenceDate, tz: intake.timezone });
   if (lastPlan) raisePlanQuestions(lastPlan, { conversationId: intake.conversationId, tz: intake.timezone });
+  // 执行后读回核验；原授权内能修的有限修正，其余如实记为部分完成/受阻/等你决定
+  if ((readyIds.size || !latestVerification(intakeId)) && intakeRevisionCurrent(intakeId).current) verifyAndRepair(getIntake(intakeId) ?? intake, repairHooks(intake, planningNow), nowDate());
   recordAgentTurn(intake);
   return finish("done", null);
 }
@@ -1078,10 +1082,15 @@ function syncGoalFromIntake(intakeId: string): void {
   const items = listItems(intakeId).filter((i) => !i.payload.goalStop);
   const waiting = items.filter((i) => i.state === "awaiting_input" && i.waitingQuestionId).map((i) => getQuestion(i.waitingQuestionId!)).filter((q): q is QuestionRow => Boolean(q && q.status === "open"));
   const status = intake.status;
+  // 执行完不等于达成：核验没通过的按核验结论（受阻 / 部分完成 / 等你取舍）
+  const verified = ["completed", "partially_applied"].includes(status) ? latestVerification(intakeId) : null;
   const state: GoalState =
     status === "cancelled" ? "cancelled"
     : waiting.some((q) => q.purpose === "confirm") ? "awaiting_confirmation"
     : status === "waiting_input" || waiting.length ? "awaiting_input"
+    : verified?.status === "blocked" ? "blocked"
+    : verified?.status === "needs_action" ? "awaiting_input"
+    : verified?.status === "partial" ? "partial"
     : status === "completed" ? "completed"
     : status === "partially_applied" ? "partial"
     : status === "failed" ? "blocked"
@@ -1096,7 +1105,8 @@ function syncGoalFromIntake(intakeId: string): void {
     lastDecision: decided ? { rationale: String(decided.payload.decisionRationale).slice(0, 500), intents: (decided.payload.intents as unknown[] | undefined) ?? [] } : prev.lastDecision ?? null,
     lastResult: lastResult || prev.lastResult || null,
     constraints: [...new Set([...(prev.constraints ?? []), ...replies.map((r) => `${r.question.slice(0, 80)} → ${r.answer.slice(0, 80)}`)])].slice(-10),
-    openQuestionIds: waiting.map((q) => q.id),
+    openQuestionIds: [...new Set([...waiting.map((q) => q.id), ...(verified?.checks ?? []).map((c) => c.questionId).filter((x): x is string => Boolean(x))])],
+    verification: verified ? { status: verified.status, failing: verified.checks.filter((c) => c.ok === false).map((c) => `${c.subject}：${c.detail}`.slice(0, 200)).slice(0, 5) } : prev.verification ?? null,
     appliedBatchIds: [...new Set([...(prev.appliedBatchIds ?? []), ...batches])].slice(-30),
   };
   updateGoalState(goal.id, state, summary);
@@ -1295,6 +1305,42 @@ function applyCommandItem(intake: IntakeRow, item: IntakeItemRow, now: Date): { 
   updateItem(item.id, { state: "applied", payload: { ...item.payload, applied: { batchId: view.undo.batchId, summary: [item.payload.decisionRationale, view.summary].filter(Boolean).join("\n"), noChange: view.state === "no_change", planBatchId }, followUps: view.followUps } });
   const plan = outcome.followUps.find((f) => f.kind === "plan");
   return plan ? { unscheduled: plan.unscheduled, conflicts: plan.conflicts } : null;
+}
+
+/** 有限修正的两种确定性动作：重跑派生的学习安排（不重做原写入）、按最新状态重新绑定并执行失败的那一步 */
+function repairHooks(intake: IntakeRow, now: Date): RepairHooks {
+  return {
+    replan(itemIds) {
+      const items = itemIds.map((id) => getItem(id)).filter((i): i is IntakeItemRow => Boolean(i));
+      const causedBy = items.map((i) => (i.payload.applied as { batchId?: string | null } | undefined)?.batchId).find(Boolean) ?? null;
+      const dates = items.flatMap((i) => (i.payload.replanDates as string[] | undefined) ?? []);
+      const last = [...dates].sort().at(-1);
+      const days = last ? Math.max(7, Math.ceil((Date.parse(last) - Date.parse(localDateInTz(now, intake.timezone))) / 86_400_000) + 1) : 7;
+      const plan = rebuildPlan(now, { horizonDays: days, causedBy, conversationId: intake.conversationId, intakeId: intake.id });
+      const view = followUpView({ kind: "plan", state: plan.changed ? "updated" : "unchanged", batchId: plan.batchId, placed: plan.placed, superseded: plan.superseded, unscheduled: plan.unscheduled, conflicts: plan.conflicts });
+      for (const i of items) {
+        const applied = i.payload.applied as Record<string, unknown> | undefined;
+        updateItem(i.id, { payload: { ...i.payload, followUps: [view], ...(applied ? { applied: { ...applied, planBatchId: plan.batchId ?? applied.planBatchId ?? null } } : {}) } });
+      }
+      raisePlanQuestions(plan, { conversationId: intake.conversationId, tz: intake.timezone });
+      return view.summary;
+    },
+    rebind(itemId) {
+      const item = getItem(itemId);
+      if (!item || item.state !== "failed") return "这一步已不需要重新绑定";
+      const evidence = { ...(item.evidence ?? {}) };
+      delete evidence.error;
+      delete evidence.code;
+      const payload = { ...item.payload };
+      delete payload.command;
+      updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload, evidence });
+      resolveStep(intake, getItem(item.id)!, now);
+      const bound = getItem(item.id)!;
+      if (bound.state === "ready") applyCommandItem(intake, bound, now);
+      const after = getItem(item.id)!;
+      return after.state === "applied" ? `按最新状态重新执行：${String((after.payload.applied as { summary?: string } | undefined)?.summary ?? "")}` : after.state === "awaiting_input" ? "重新绑定后需要你确认或回答" : `重新执行仍未成功：${String(after.evidence?.error ?? "")}`;
+    },
+  };
 }
 
 /** 这份投递的 Agent 结果轮：摘要 + 涉及的对象引用 + 批次（供“刚才那个”“撤销刚才的调整”消解） */

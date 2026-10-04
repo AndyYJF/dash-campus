@@ -8,7 +8,7 @@ import { authorizeCommand } from "@/domain/authorization";
 import { applyArchive, applyCourseSet, applyException, applyFixedEvents } from "@/workflows/ops/courses";
 import { applyCompleteTask, applyCorrectPractice, applyPauseTask, applyPractice, applyTask } from "@/workflows/ops/tasks";
 import { applyRescheduleSession, applyScheduleSession, applySessionState } from "@/workflows/ops/sessions";
-import { listCausedBatches } from "@/repositories/journal";
+import { listCausedBatches, listChanges } from "@/repositories/journal";
 import { undoBatch, type UndoResult } from "@/workflows/undo";
 import { HttpError } from "@/workflows/http";
 import { nowDate } from "@/domain/clock";
@@ -35,7 +35,7 @@ import type { Unscheduled } from "@/domain/scheduler";
 export type EntityRef = { kind: string; id: string };
 
 export type CommandResult =
-  | { ok: true; batchId: string; summary: string; noChange: false; affects: OperationAffect[]; refs: EntityRef[] }
+  | { ok: true; batchId: string; summary: string; noChange: false; affects: OperationAffect[]; refs: EntityRef[]; replayed?: true }
   | { ok: true; batchId: null; summary: string; noChange: true; affects: OperationAffect[]; refs: EntityRef[] }
   | { ok: false; error: string; code: string };
 
@@ -156,6 +156,11 @@ export function executeCommand(raw: unknown, ctx: CommandContext): CommandResult
         // 目标已被改口或停下：旧版本投递的写入在同一事务里拒绝（旧模型响应晚到也写不进来）
         const revision = ctx.intakeId ? intakeRevisionCurrent(ctx.intakeId) : { current: true as const };
         if (!revision.current) return { ok: false, code: "STALE_GOAL_REVISION", error: `目标已按新要求改为第 ${revision.goalRevision} 版，这一步没有执行` };
+        // 这一步已经提交过（提交后、标记前崩溃，恢复后重跑）：按 journal 返回原批次，不再写第二次
+        if (ctx.itemId) {
+          const prior = getDb().prepare(`SELECT id, reason FROM agent_action_batches WHERE item_id = ? AND command = ? ORDER BY created_at, rowid LIMIT 1`).get(ctx.itemId, parsed.data.command) as { id: string; reason: string } | undefined;
+          if (prior) return { ok: true, batchId: prior.id, summary: prior.reason, noChange: false, affects: meta.affects, refs: uniqueRefs(listChanges(prior.id)), replayed: true };
+        }
         const changes: ChangeInput[] = [];
         const handler = HANDLERS[parsed.data.command] as Handler<Command["command"]>;
         const output = handler(parsed.data, ctx, changes);

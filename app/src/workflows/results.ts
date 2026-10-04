@@ -7,8 +7,9 @@ import { instanceTimezone, localDateInTz } from "@/domain/time";
 import { nowDate } from "@/domain/clock";
 import { estimateAdvice, type EstimateSample } from "@/domain/estimate-advice";
 import { getIntake, listItems, type IntakeRow } from "@/repositories/intakes";
-import { listQuestionsForIntake } from "@/repositories/questions";
+import { getQuestion, listQuestionsForIntake } from "@/repositories/questions";
 import { getGoal } from "@/repositories/goals";
+import { listVerifications } from "@/repositories/agent-runs";
 
 /**
  * 统一业务结果（AGENT-INTERFACE-CONTRACT §5.3）：聊天、卡片按钮、兼容 API 的结果同一形状。
@@ -173,7 +174,37 @@ export type IntakeResultView = {
   error: { message: string; recoverable: boolean } | null;
   /** 所属目标：current=false 表示目标已被改口/停止，这一轮的结果不再是最新 */
   goal: { id: string; revision: number; intakeRevision: number; current: boolean; state: string; objective: string } | null;
+  /**
+   * 执行后核验（服务端读回当前事实）：verified 已核对 / partial 部分完成 / needs_action 等你取舍 / blocked 受阻 / pending 还有步骤在等。
+   * repairs 是原授权内自动做过的修正；没有执行任何步骤时为 null。
+   */
+  verification: {
+    status: "verified" | "partial" | "needs_action" | "blocked" | "pending";
+    label: string;
+    checks: Array<{ kind: string; ok: boolean | null; subject: string; detail: string }>;
+    repairs: Array<{ reason: string; steps: string[] }>;
+  } | null;
 };
+
+const VERIFICATION_LABEL: Record<string, string> = {
+  verified: "已核对：结果与要求一致",
+  partial: "部分完成：有的步骤没有达成",
+  needs_action: "已执行，但还差一步需要你决定",
+  blocked: "受阻：自动修正后仍未达成，已停下",
+  pending: "已执行的部分核对过，还有步骤在等你",
+};
+
+function verificationView(intakeId: string): IntakeResultView["verification"] {
+  const rounds = listVerifications(intakeId);
+  const last = rounds.at(-1);
+  if (!last) return null;
+  return {
+    status: last.status,
+    label: last.status === "verified" && last.checks.length > 0 && last.checks.every((c) => c.kind === "read_only") ? "只查看，没有改动任何东西" : VERIFICATION_LABEL[last.status] ?? last.status,
+    checks: last.checks.map((c) => ({ kind: c.kind, ok: c.ok, subject: c.subject, detail: c.detail })).slice(0, 20),
+    repairs: rounds.filter((r) => r.repair).map((r) => ({ reason: r.repair!.reason, steps: r.repair!.steps.map((s) => s.detail) })),
+  };
+}
 
 const REASON_TEXT: Record<string, string> = {
   deadline_unfeasible: "截止前排不下",
@@ -267,6 +298,15 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
   const questions = listQuestionsForIntake(intake.id)
     .filter((q) => q.status === "open")
     .map((q) => ({ id: q.id, prompt: q.prompt, reason: q.reason, options: q.options ?? [], purpose: q.purpose, version: q.version }));
+  // 核验指出需要主人取舍的现成问题（截止前排不下、锁定块撞课）一并给出，在结果里就能回答
+  const lastRound = listVerifications(intake.id).at(-1);
+  let decisionOpen = false;
+  for (const id of new Set((lastRound?.checks ?? []).map((c) => c.questionId).filter((x): x is string => Boolean(x)))) {
+    const q = getQuestion(id);
+    if (q?.status !== "open") continue;
+    decisionOpen = true;
+    if (!questions.some((x) => x.id === id)) questions.push({ id: q.id, prompt: q.prompt, reason: q.reason, options: q.options ?? [], purpose: q.purpose, version: q.version });
+  }
 
   const itemViews = items.map((i) => ({
     id: i.id,
@@ -293,7 +333,9 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
   const failed = itemViews.filter((i) => i.state === "failed");
   const visibleItems = items.filter((i) => i.state !== "cancelled");
   const readOnly = visibleItems.length > 0 && visibleItems.every((i) => i.state === "applied" && i.payload.readOnly === true) && batches.every((b) => b.status === "undone");
-  const state: IntakeResultView["state"] =
+  const verification = verificationView(intake.id);
+  const unmet = intake.status === "completed" && (verification?.status === "partial" || verification?.status === "blocked");
+  const baseState: IntakeResultView["state"] =
     intake.status === "received"
       ? "accepted"
       : intake.status === "processing"
@@ -311,6 +353,9 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
                   : applied.length || items.some((i) => i.state === "applied" && (i.payload.applied as { noChange?: boolean } | undefined)?.noChange === false)
                   ? "applied"
                   : "no_change";
+  // 执行了但核验没通过：不显示为全部完成
+  const state: IntakeResultView["state"] = unmet && baseState === "applied" ? "partly_applied" : verification?.status === "needs_action" && decisionOpen && baseState === "applied" ? "needs_input" : baseState;
+  const unmetLines = verification && verification.status !== "verified" && verification.status !== "pending" ? verification.checks.filter((c) => c.ok === false).slice(0, 3).map((c) => `${verification.status === "needs_action" ? "需要你决定" : "核对未通过"}：${c.subject ? `${c.subject}——` : ""}${c.detail}`) : [];
   const done = items.filter((i) => i.state === "applied").map((i) => (i.payload.applied as { summary?: string } | undefined)?.summary).filter((x): x is string => Boolean(x));
   const saved = items.filter((i) => i.state === "ready" && (i.kind === "note" || i.kind === "notice"));
   const goal = goalView(intake);
@@ -318,7 +363,7 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
   const summary =
     state === "accepted" || state === "working"
       ? "已收到，正在整理"
-      : [...done, ...(saved.length ? [`已存为资料 ${saved.length} 条（没有需要你行动的事项）`] : []), ...failed.map((f) => `没有办成：${f.error ?? "处理失败"}`), ...superseded].join("；") || (state === "needs_input" ? "需要你回答一个问题才能继续" : "已处理");
+      : [...done, ...(saved.length ? [`已存为资料 ${saved.length} 条（没有需要你行动的事项）`] : []), ...failed.map((f) => `没有办成：${f.error ?? "处理失败"}`), ...unmetLines, ...superseded].join("；") || (state === "needs_input" ? "需要你回答一个问题才能继续" : "已处理");
   const undoable = applied.filter((b) => OPERATIONS[b.command as Command["command"]]?.undo !== "none").map((b) => b.id);
   const correctedRead = items.some((i) => i.payload.readCorrection === true);
   return {
@@ -340,6 +385,7 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
     snapshotRevision: snapshotRevision(),
     error: state === "failed" ? { message: failed[0]?.error ?? intake.lastError ?? "处理失败", recoverable: items.some((i) => i.state === "failed" && i.payload.retryable === true) } : null,
     goal,
+    verification,
   };
 }
 

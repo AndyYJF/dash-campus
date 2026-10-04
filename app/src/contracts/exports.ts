@@ -125,6 +125,8 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   // Agent 增强 P4（迁移 0031）：目标与修订是业务流程状态，随业务导出与恢复
   agent_goals: {},
   agent_goal_revisions: {},
+  // Agent 增强 P5（迁移 0032）：执行后的核验与修正记录属于目标流程状态
+  agent_verifications: {},
     // 非敏感设置（邮件模板、预算）；调度内部状态不导出
   settings: {},
 };

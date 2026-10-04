@@ -102,6 +102,9 @@ curl -s "http://127.0.0.1:${DASH_PORT}/api/v1/health"
 - 备份失败时停下来看原因，不要继续覆盖源码或迁移。服务已停时想先恢复，直接 `docker compose up -d web worker`（旧镜像、旧库都没动）。
 - 2026-09-30 之前构建的镜像里，备份检查会把反向代理的 502 当成"web 仍在运行"而拒绝备份。用这类旧镜像备份时，临时把检查地址指向 web 容器本身：`docker compose --profile ops run --rm -e APP_BASE_URL=http://web:3000 ops scripts/backup.sh /app/backups`（web 停止时 `web` 在 compose 网络里解析不到，检查放行；web 在运行时照样拒绝）。修复后的镜像不需要这一步。
 - `.env not found. Continuing without it.` 可以忽略：ops 容器的变量已由 compose 的 `env_file` 注入。
+- 停止 web/worker 后至少等 25 秒再备份：worker 心跳 20 秒内仍视为在运行，备份会拒绝。
+- 用 `bash -s` 等方式把整段脚本经 stdin 交给服务器执行时，`docker compose run` 必须加 `-T` 并 `</dev/null`，否则它会吞掉后续脚本，留下“已停机未升级”的半程状态。长步骤宜用 `nohup` 在服务器端执行，避免 SSH 断开中止构建。
+- 本地核对源码散列时用 `git -c core.autocrlf=false archive <SHA>`；开启 autocrlf 的 Windows 克隆会改写换行，与 GitHub 源码包不一致。
 
 ## 5. 备份（停机）
 

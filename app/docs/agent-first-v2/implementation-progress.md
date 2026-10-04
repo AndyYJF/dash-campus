@@ -33,10 +33,18 @@
 - 同库核对：请求账目 5 条全部 `ok`（每个能力各计一条，含基准与工具回填）；trace 1 条；trace 与 settings 中无 key 片段、无 base64 图片。
 - 结论只适用于该模型与该端点；更换模型/端点后旧结论按指纹失效，需重探。生产库未写入探测结果。
 
+### 发布与生产冒烟（2026-10-05 00:05 +08）
+
+- 提交 `d1efca0` 推送 `main`；生产按 [deploy.md](../deploy.md) §4：停桥接 timer 与 web/worker → 备份 `backups/production-20261005-p0-d1efca0`（schema29，sha256 `9b2b8bfd…`）→ 覆盖源码 → 构建 → 迁移 0030 → 启动 → 恢复 timer。回退材料：`/opt/dash-campus-src-95c8cf1.tgz` 与镜像 `dash-campus:rollback-95c8cf1`。停机约 2 分钟。
+- 生产源码散列与 `git -c core.autocrlf=false archive d1efca0` 一致（`4995749…`）。
+- 冒烟：公网 health `schemaVersion 30`；80 端口 301 到 HTTPS；`/login` 200；`/api/v1/integrations/model-capabilities` GET/POST 与 `/api/v1/ai-budget` 未登录 401；worker 正常启动、恢复扫描 0 项；web 日志无错误。
+- 生产真实探测（生产配置同为 `gemini-3.8-flash-high`）：四项 supported，结论写入生产 settings（指纹同本地实测）；账目 5 条 ok、trace 1 条，无 key 片段、无 base64。主人已保存的日额度 1000 保留未被默认值覆盖。
+- 未做：登录态网页走查新卡片、生产真实投递经新预算/trace 的端到端（需主人会话，且不写测试数据进生产）。
+
 ### 未验证 / 未完成
 
 - 并发测试在单进程内进行；跨进程原子性依赖 SQLite `BEGIN IMMEDIATE`，没有做多进程压测。
-- 设置页新卡片没有做网页走查；未提交、未推送、未部署。
+- 设置页新卡片没有做登录态网页走查。
 
 ## 2026-10-04 易用性修复规格发布（尚未实施）
 

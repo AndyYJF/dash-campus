@@ -5,6 +5,7 @@ import { expectedVersionSchema, taskPatchSchema } from "@/contracts/planning";
 import { getTask, setTaskSourceRevision, updateTask } from "@/repositories/planning";
 import { requireOwner } from "@/workflows/auth-guard";
 import { conflict409, errorResponse, notFound404, withReferenceCheck } from "@/workflows/http";
+import { journaledTaskWrite } from "@/workflows/compat";
 
 export const dynamic = "force-dynamic";
 
@@ -32,7 +33,7 @@ export async function PATCH(request: NextRequest, ctx: Params) {
   }
   const { expectedVersion, sourceRevisionId, ...patch } = parsed.data;
   return withReferenceCheck(() => {
-    const result = updateTask(id, patch, expectedVersion);
+    const result = journaledTaskWrite(id, () => updateTask(id, patch, expectedVersion), (r) => (typeof r === "string" ? null : r.id));
     if (result === "not_found") return notFound404("任务不存在或已归档");
     if (result === "conflict") return conflict409();
     // 人工编辑路径：主人确认来源修订后记录来源版本（计划 5.1），不自动覆盖来自收件箱的其他字段

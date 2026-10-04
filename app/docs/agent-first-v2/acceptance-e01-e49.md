@@ -2,14 +2,14 @@
 
 对应 [REPAIR-PLAN §7](./REPAIR-PLAN-2026-10-04.md)、[AGENT-INTERFACE-CONTRACT §9](./AGENT-INTERFACE-CONTRACT.md)、[ACADEMIC-CALENDAR-AND-HOLIDAYS §8](./ACADEMIC-CALENDAR-AND-HOLIDAYS.md)。旧 A01–A22 见 [历史验收映射](./acceptance-map.md)，不能替代本页。
 
-代码位置：分支 `agentbox/dashcampus`，截至提交 `7872b1e`（本地提交，**未推送、未部署**）。schema 28。
+代码位置：分支 `agentbox/dashcampus`（本地提交，**未推送、未部署**）。schema 28。
 
 ## 证据层的含义
 
 | 层 | 含义 | 本轮状态 |
 |---|---|---|
 | 实现 | 代码已写、类型检查与 lint 通过 | 见各行 |
-| 隔离行为 | 独立临时数据库、固定时钟；真实 HTTP 处理函数 + 真实 worker 管线 + 真实执行器/重排/撤销。**模型是假件**（只做分类或返回预设结构） | 306 个用例全部通过（`npm test`） |
+| 隔离行为 | 独立临时数据库、固定时钟；真实 HTTP 处理函数 + 真实 worker 管线 + 真实执行器/重排/撤销。**模型是假件**（只做分类或返回预设结构） | 307 个用例全部通过（`npm test`） |
 | 本地网页 | 独立开发库起真实 web + worker，用无头浏览器走真实页面（`scripts/dev/web-walkthrough.mjs`），模型是**示例分类器**（`MODEL_PROTOCOL=fake`） | 只覆盖下表标注的项 |
 | 真实模型 | 用真实模型供应商跑同一流程 | **全部未做**（开发环境没有模型密钥） |
 | 生产 | 部署后的公开页面核对 | **全部未做**（未部署） |
@@ -62,7 +62,7 @@
 | E32 资料归属纠正 | 隔离通过 | `direction-r5` E32 | — |
 | E33 实践记录与纠正 | 隔离通过 | `operations-r2` E33；`task-commands-r2` E12/E05 | — |
 | E34 摘要与提醒策略 | **部分** | `reminders-r2` E34 两项（策略与既有任务一致、未来取消）；`agent-ops`（现在发一份：未配置时如实拒绝） | 没有真实发信；“已发不可撤回”只在文案和操作属性里体现 |
-| E35 卡片 / 兼容接口同一实体 | 隔离通过 | `operations-r2` E35；`reminders-r2` E23/E35；`compat-v1` E35 | 只有课表导入完全走统一操作。v1 的任务/目标/项目/资料等写接口仍是各自的写法：改的是同一对象，改动后 worker 会补一次重排，但**不写变更记录、不能从统一入口撤销** |
+| E35 卡片 / 兼容接口同一实体 | **部分** | `operations-r2` E35；`reminders-r2` E23/E35；`compat-v1` E35 两项（v1 任务的新建/修改/归档写进同一份变更记录、可撤销；改动后 worker 补一次重排） | 已并入：课表导入（走统一操作）、任务表单（同一变更记录）。**未并入**：v1 的目标/项目/候选/资料/身份规则/固定活动/设置等写接口仍是各自的写法——改的是同一对象，但不写变更记录、不能从统一入口撤销 |
 | E36 通用自由文本回答 | 隔离通过 | `agent-loop-r2` E19/E36/E38、E24 | — |
 | E37 资料里的命令 / 未知操作 | 隔离通过 | `agent-loop-r2` E37；`operations-r2` E37 | — |
 | E38 附件去重与幂等 | 隔离通过 | `agent-loop-r2` E19/E36/E38；`intake-files-v2` | — |
@@ -114,7 +114,7 @@
 
 ```bash
 cd app
-npm test                 # 306 个用例，独立临时库
+npm test                 # 307 个用例，独立临时库
 npm run typecheck && npx eslint src test scripts
 # 本地网页走查（独立开发库 + 示例模型）：
 export DATABASE_PATH=/tmp/dash-dev.db SETUP_TOKEN=dev-setup-token MODEL_PROTOCOL=fake APP_BASE_URL=http://localhost:3100

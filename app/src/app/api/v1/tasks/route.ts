@@ -5,6 +5,7 @@ import { taskCreateSchema } from "@/contracts/planning";
 import { createTask, listTasks } from "@/repositories/planning";
 import { requireOwner } from "@/workflows/auth-guard";
 import { handleIdempotentCreate } from "@/workflows/http";
+import { journaledTaskWrite } from "@/workflows/compat";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +33,7 @@ export async function POST(request: NextRequest) {
     route: "tasks",
     schema: taskCreateSchema,
     resourceType: "task",
-    execute: (input) => createTask(input),
+    // 与统一操作同一份变更记录：最近变化里可见、可撤销
+    execute: (input) => journaledTaskWrite(null, () => createTask(input), (t) => t.id),
   });
 }

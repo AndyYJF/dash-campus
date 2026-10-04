@@ -113,3 +113,59 @@ test("E35：v1 接口建的任务就是 V2 排的那个任务——worker 自动
   assert.equal(done.status, 200, await done.clone().text());
   assert.equal(count(`SELECT COUNT(*) AS n FROM practice_entries WHERE task_id = ? AND actual_minutes = 25`, task.id), 1, "实际投入记在同一个任务上");
 });
+
+test("E35：旧表单对任务的新建/修改/归档写进同一份变更记录——最近变化可见、统一入口可撤销；之后又改过就不覆盖", async () => {
+  const { POST: archiveRoute } = await import("@/app/api/v1/tasks/[id]/archive/route");
+  const { GET: dashboardRoute } = await import("@/app/api/v2/dashboard/route");
+  const batchOf = (taskId: string) =>
+    getDb().prepare(`SELECT b.id, b.command, b.reason, b.status FROM agent_action_batches b JOIN agent_action_changes c ON c.batch_id = b.id WHERE c.entity_kind = 'task' AND c.entity_id = ? ORDER BY b.created_at, b.rowid`).all(taskId) as Array<{ id: string; command: string; reason: string; status: string }>;
+  const task = (id: string) => getDb().prepare(`SELECT title, estimate_minutes, due_kind, due_local_date, status, archived_at, version FROM tasks WHERE id = ?`).get(id) as { title: string; estimate_minutes: number | null; due_kind: string; due_local_date: string | null; status: string; archived_at: string | null; version: number } | undefined;
+
+  const created = await createTaskRoute(req("/api/v1/tasks", "POST", { title: "表单任务", estimateMinutes: 45, due: { kind: "date", localDate: "2026-10-20", timezone: TZ } }));
+  assert.equal(created.status, 201, await created.clone().text());
+  const id = ((await created.json()) as { id: string }).id;
+  assert.deepEqual(batchOf(id).map((b) => [b.command, b.reason]), [["create_or_update_task", "任务创建：表单任务（编辑表单）"]]);
+
+  // 没有实际变化的保存不记账
+  const same = await patchTaskRoute(req(`/api/v1/tasks/${id}`, "PATCH", { expectedVersion: 1, title: "表单任务" }), { params: Promise.resolve({ id }) });
+  assert.equal(same.status, 200);
+  assert.equal(batchOf(id).length, 1);
+
+  // 修改：标题和估时
+  const p1 = await patchTaskRoute(req(`/api/v1/tasks/${id}`, "PATCH", { expectedVersion: task(id)!.version, title: "表单任务（改）", estimateMinutes: 90 }), { params: Promise.resolve({ id }) });
+  assert.equal(p1.status, 200, await p1.clone().text());
+  const edit = batchOf(id)[1]!;
+  assert.equal(edit.reason, "任务修改：表单任务（改）（编辑表单）");
+  const recent = (await (await dashboardRoute(req("/api/v2/dashboard", "GET"))).json()) as { recentChanges: Array<{ batchId: string }> };
+  assert.ok(recent.recentChanges.some((c) => c.batchId === edit.id), "出现在今天页的最近变化里");
+
+  // 撤销这次修改：字段回去、版本继续前进
+  assert.equal(undoWithFollowUps(edit.id).kind, "undone");
+  assert.deepEqual([task(id)!.title, task(id)!.estimate_minutes], ["表单任务", 45]);
+
+  // 归档 → 撤销归档
+  const arch = await archiveRoute(req(`/api/v1/tasks/${id}/archive`, "POST", { expectedVersion: task(id)!.version }), { params: Promise.resolve({ id }) });
+  assert.equal(arch.status, 200, await arch.clone().text());
+  const archBatch = batchOf(id).find((b) => b.command === "archive_entity")!;
+  assert.ok(task(id)!.archived_at);
+  assert.equal(undoWithFollowUps(archBatch.id).kind, "undone");
+  assert.equal(task(id)!.archived_at, null);
+
+  // 之后又改过：撤销更早的那次会冲突，整体不动
+  const p2 = await patchTaskRoute(req(`/api/v1/tasks/${id}`, "PATCH", { expectedVersion: task(id)!.version, estimateMinutes: 60 }), { params: Promise.resolve({ id }) });
+  assert.equal(p2.status, 200);
+  const p3 = await patchTaskRoute(req(`/api/v1/tasks/${id}`, "PATCH", { expectedVersion: task(id)!.version, estimateMinutes: 75 }), { params: Promise.resolve({ id }) });
+  assert.equal(p3.status, 200);
+  const older = batchOf(id).filter((b) => b.reason.startsWith("任务修改") && b.status === "applied")[0]!;
+  assert.equal(undoWithFollowUps(older.id).kind, "conflict");
+  assert.equal(task(id)!.estimate_minutes, 75);
+
+  // 撤销“新建”：带截止提醒的任务也能整体撤掉
+  const made = await createTaskRoute(req("/api/v1/tasks", "POST", { title: "建了又不要的任务", estimateMinutes: 30, due: { kind: "date", localDate: "2026-10-25", timezone: TZ } }));
+  const madeId = ((await made.json()) as { id: string }).id;
+  await runDueJobsOnce();
+  assert.ok(blocksOf(madeId).length >= 1);
+  assert.equal(undoWithFollowUps(batchOf(madeId)[0]!.id).kind, "undone");
+  assert.equal(task(madeId), undefined);
+  assert.equal(blocksOf(madeId).length, 0);
+});

@@ -27,6 +27,7 @@ const COMMAND_LABEL: Record<string, string> = {
   import_fixed_events: "日程导入",
   apply_event_exception: "停课例外",
   archive_entity: "归档",
+  complete_task: "完成任务",
 };
 
 function hm(utc: string): string {

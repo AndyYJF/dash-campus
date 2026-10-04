@@ -8,14 +8,15 @@ export function insertPracticeEntry(input: {
   actualMinutes: number | null;
   note: string;
   taskId?: string | null;
+  category?: "study" | "other";
 }): string {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   getDb()
     .prepare(
-      `INSERT INTO practice_entries (id, task_id, occurred_on, actual_minutes, minutes_origin, note, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'user_reported', ?, ?, ?)`,
+      `INSERT INTO practice_entries (id, task_id, occurred_on, actual_minutes, minutes_origin, note, category, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'user_reported', ?, ?, ?, ?)`,
     )
-    .run(id, input.taskId ?? null, input.occurredOn, input.actualMinutes, input.note, now, now);
+    .run(id, input.taskId ?? null, input.occurredOn, input.actualMinutes, input.note, input.category ?? "study", now, now);
   return id;
 }

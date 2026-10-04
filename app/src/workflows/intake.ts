@@ -28,6 +28,7 @@ import { instanceTimezone, localDateInTz, mondayOf, addDays } from "@/domain/tim
 import { parseTimetable, TimetableError } from "@/domain/timetable";
 import { executeCommand } from "@/workflows/commands";
 import { rebuildPlan } from "@/workflows/plan";
+import { dueFromText, estimateFromText, isCompletionReport, matchTask, pickCandidate, type TaskRef } from "@/domain/task-text";
 import { extractAttachment, extractPdfText, fetchUrlText, listAttachments, markExtractionDone, materializeAttachment, recordUrlDocument } from "@/workflows/intake-files";
 import {
   INTAKE_JOB_TYPE,
@@ -260,6 +261,8 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
     if (!["extracted", "resolving", "awaiting_input"].includes(item.state)) continue;
     if (item.kind === "timetable") {
       resolveTimetableItem(intakeId, item, intake.timezone);
+    } else if ((item.kind === "task" || item.kind === "practice") && isCompletionReport(itemText(item))) {
+      resolveCompletionItem(intakeId, item);
     } else {
       // 分类事实先就绪；领域写入走下方白名单命令（P2）
       updateItem(item.id, { state: "ready", waitingQuestionId: null });
@@ -305,20 +308,27 @@ function commandForItem(intake: IntakeRow, item: IntakeItemRow): unknown | null 
     if (!candidate?.firstMonday || !item.payload.sdctText) return null;
     return { command: "upsert_course_set", sdctText: item.payload.sdctText, firstMonday: candidate.firstMonday, timezone: intake.timezone };
   }
-  if (item.kind === "practice") {
-    const excerpt = (item.evidence?.excerpt as string) ?? "";
-    const minutes = /(\d{1,3})\s*分钟/.exec(excerpt);
-    return {
-      command: "record_practice",
-      occurredOn: intake.referenceDate,
-      actualMinutes: minutes ? Number(minutes[1]) : null,
-      note: (item.payload.summary as string) ?? excerpt.slice(0, 200),
-    };
-  }
-  if (item.kind === "task") {
+  if (item.kind === "task" || item.kind === "practice") {
+    const text = itemText(item);
     const summary = ((item.payload.summary as string) ?? "未命名事项").slice(0, 200);
-    const text = `${summary} ${(item.evidence?.excerpt as string) ?? ""}`;
-    return { command: "create_or_update_task", title: summary, estimateMinutes: estimateFromText(text), dueLocalDate: dueFromText(text, intake.referenceDate) };
+    const minutes = estimateFromText(text);
+    // “做完了”：对象已在 Resolve 阶段绑定 → 完成原任务；找不到对象时按一次实践保留，不新建同名任务
+    const completeTaskId = item.payload.completeTaskId as string | undefined;
+    if (completeTaskId) return { command: "complete_task", taskId: completeTaskId, occurredOn: intake.referenceDate, actualMinutes: minutes, note: summary };
+    if (item.kind === "practice" || isCompletionReport(text)) {
+      const nonStudy = NON_STUDY.test(text);
+      const match = nonStudy ? ({ kind: "none" } as const) : matchTask(text, openTasks());
+      return {
+        command: "record_practice",
+        occurredOn: intake.referenceDate,
+        actualMinutes: minutes,
+        note: summary,
+        taskId: match.kind === "one" ? match.task.id : null,
+        category: nonStudy ? "other" : "study",
+      };
+    }
+    const due = dueFromText(text, intake.referenceDate);
+    return { command: "create_or_update_task", title: summary, estimateMinutes: minutes, dueLocalDate: due?.localDate ?? null, dueLocalTime: due?.localTime ?? null };
   }
   if (item.kind === "ics") {
     const events = (item.payload.events as Array<{ title: string; date: string; localStart: string; localEnd: string }>) ?? [];
@@ -332,31 +342,47 @@ function commandForItem(intake: IntakeRow, item: IntakeItemRow): unknown | null 
   return null;
 }
 
-/** 从用户原文确定性解析估时：「2小时/两小时/一个半小时/40分钟」 */
-const CN_NUM: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+/** 明显不是学习的活动：占时间但不消耗学习预算（REPAIR-PLAN §4.2 补充规则） */
+const NON_STUDY = /跑步|跑了|羽毛球|篮球|足球|乒乓|健身|游泳|打球|锻炼|运动/;
 
-function numeric(raw: string): number {
-  if (/^\d+(?:\.\d+)?$/.test(raw)) return Number(raw);
-  return CN_NUM[raw] ?? NaN;
+function itemText(item: IntakeItemRow): string {
+  return `${(item.payload.summary as string) ?? ""} ${(item.evidence?.excerpt as string) ?? ""}`.trim();
 }
 
-function estimateFromText(text: string): number | null {
-  const hours = /(\d+(?:\.\d+)?|[一二两三四五六七八九十])\s*(?:个)?\s*(?:小时|钟头|h(?![a-zA-Z]))/i.exec(text);
-  if (hours) {
-    const n = numeric(hours[1]!);
-    if (!Number.isNaN(n)) return Math.round(n * 60);
+function openTasks(): TaskRef[] {
+  return getDb().prepare(`SELECT id, title FROM tasks WHERE status IN ('todo','doing','blocked') AND archived_at IS NULL ORDER BY created_at, id`).all() as TaskRef[];
+}
+
+/** “做完了”要落到原任务上：唯一匹配直接绑定；同名并列只问选哪一个；没有对应任务按实践保留 */
+function resolveCompletionItem(intakeId: string, item: IntakeItemRow): void {
+  const questionKey = `task_ref:${item.id}`;
+  const open = openTasks();
+  const asked = item.payload.taskCandidates as TaskRef[] | undefined;
+  const bind = (task: TaskRef) => updateItem(item.id, { state: "ready", waitingQuestionId: null, payload: { ...item.payload, completeTaskId: task.id } });
+  const ask = (candidates: TaskRef[]) => {
+    const { question } = ensureOpenQuestion({
+      questionKey,
+      intakeId,
+      itemId: item.id,
+      fieldPath: "task.ref",
+      prompt: `你说完成的是哪一个？回答序号或名称：${candidates.map((c, i) => `${i + 1}. ${c.title}`).join("；")}`,
+      options: candidates.map((c) => c.title),
+    });
+    updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, taskCandidates: candidates } });
+  };
+  if (asked) {
+    const stillOpen = asked.filter((c) => open.some((o) => o.id === c.id));
+    const answer = latestAnswerForKey(questionKey);
+    const picked = answer ? pickCandidate(answer.rawText, stillOpen) : null;
+    if (picked) bind(picked);
+    else if (stillOpen.length) ask(stillOpen);
+    else updateItem(item.id, { state: "ready", waitingQuestionId: null });
+    return;
   }
-  if (/半小时|半个钟头/.test(text)) return 30;
-  const minutes = /(\d{1,3})\s*分钟/.exec(text);
-  return minutes ? Number(minutes[1]) : null;
-}
-
-/** 从用户原文确定性解析截止：今天/明天/后天（以投递参照日为基准） */
-function dueFromText(text: string, referenceDate: string): string | null {
-  if (/后天/.test(text)) return addDays(referenceDate, 2);
-  if (/明天|明日/.test(text)) return addDays(referenceDate, 1);
-  if (/今天|今日|今晚/.test(text)) return referenceDate;
-  return null;
+  const match = matchTask(itemText(item), open);
+  if (match.kind === "one") bind(match.task);
+  else if (match.kind === "ambiguous") ask(match.candidates);
+  else updateItem(item.id, { state: "ready", waitingQuestionId: null });
 }
 
 /** 模型不可用/失败：原文完整保留为 note 事项并标记失败，不丢弃材料；retryable 供显式重试重跑分类 */

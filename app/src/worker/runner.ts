@@ -21,6 +21,7 @@ import { runIntakeProcessJob } from "@/workflows/intake";
 
 import { DIGEST_JOB_TYPE, PLAN_MAINTENANCE_JOB_TYPE } from "@/contracts/digests";
 import { rebuildPlan } from "@/workflows/plan";
+import { nowDate } from "@/domain/clock";
 import { runDigestJob, scheduleDigests } from "@/workflows/digests";
 
 /** 每天一次有限重排（P5）：重建未来学习块；dedupe 保证同日只跑一次 */
@@ -28,7 +29,7 @@ async function runPlanMaintenanceJob(job: JobRow): Promise<{ kind: string }> {
   const token = job.leaseToken!;
   const nowIso = new Date().toISOString();
   try {
-    rebuildPlan(new Date());
+    rebuildPlan(nowDate());
     if (leaseValid(job.id, token, job.generation, nowIso)) completeJob(job.id, token, job.generation, { kind: "skipped", reason: "plan:rebuilt" }, nowIso);
     return { kind: "done" };
   } catch (e) {

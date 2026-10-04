@@ -186,7 +186,7 @@ export const updatePlanningPolicySchema = z.object({
   rules: z
     .array(
       z.object({
-        kind: z.enum(["weekday_limit", "group_limit", "no_study", "holiday_policy", "preferred_window", "auto_reschedule"]),
+        kind: z.enum(["weekday_limit", "group_limit", "date_limit", "no_study", "holiday_policy", "preferred_window", "auto_reschedule"]),
         weekday: z.number().int().min(1).max(7).nullable().optional(),
         dateFrom: dateStr.nullable().optional(),
         dateTo: dateStr.nullable().optional(),

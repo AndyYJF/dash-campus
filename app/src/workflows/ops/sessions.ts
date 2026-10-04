@@ -7,6 +7,7 @@ import { subtractIntervals, type Interval } from "@/domain/budget";
 import { getPrefs, getSession, insertSession, listSessionsInRange } from "@/repositories/plan";
 import { insertPracticeEntry } from "@/repositories/practice";
 import { HttpError } from "@/workflows/http";
+import { nowDate } from "@/domain/clock";
 import { dayLedger, eventsForDay } from "@/workflows/plan";
 
 /**
@@ -45,7 +46,7 @@ function taskOf(taskId: string): { title: string; dueAtMs: number | null } {
 export function applyRescheduleSession(cmd: Cmd<"reschedule_session">, ctx: CommandContext, changes: ChangeInput[]): string {
   const db = getDb();
   const tz = instanceTimezone();
-  const now = ctx.now ?? new Date();
+  const now = ctx.now ?? nowDate();
   const session = getSession(cmd.sessionId);
   if (!session || !["planned", "tentative", "in_progress"].includes(session.status)) throw new HttpError(404, "NOT_FOUND", "这个学习块不存在或已经结束");
   if (cmd.expectedVersion !== null && cmd.expectedVersion !== session.version) throw new HttpError(409, "STALE_VERSION", "这个学习块刚被改过，请按最新安排再说一次");

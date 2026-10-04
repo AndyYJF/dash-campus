@@ -1,8 +1,13 @@
+import crypto from "node:crypto";
 import type { NextRequest } from "next/server";
 import { requireOwner } from "@/workflows/auth-guard";
 import { errorResponse, runIdempotent } from "@/workflows/http";
-import { intakeCreateSchema } from "@/contracts/intake";
-import { receiveIntake } from "@/workflows/intake";
+import { intakeCreateSchema, type IntakeCreateInput } from "@/contracts/intake";
+import { receiveIntake, submitAnswer } from "@/workflows/intake";
+import { listIntakes } from "@/repositories/intakes";
+import { getQuestion } from "@/repositories/questions";
+import { intakeResultView } from "@/workflows/results";
+import { NextResponse } from "next/server";
 import { saveAttachments, type IncomingFile } from "@/workflows/intake-files";
 
 export const dynamic = "force-dynamic";
@@ -24,15 +29,36 @@ export async function POST(request: NextRequest) {
     actorScope: `owner:${auth.session.ownerId}`,
     route: "v2.intakes.create",
     execute: () => {
-      const r = receiveIntake({ channel: "web", text: input.text, referenceDate: input.referenceDate, urls: input.urls });
+      // 点着问题卡在统一入口回答：按那个问题的用途解析，不当成一份新材料
+      if (input.questionId && !files.length) {
+        const q = getQuestion(input.questionId);
+        if (q && q.status === "open") {
+          const r = submitAnswer({ questionId: q.id, expectedVersion: q.version, text: input.text });
+          if (r.kind === "answered") return { statusCode: 202, body: { answered: true, questionId: q.id, results: r.results, note: r.note }, resourceType: "clarification_answer", resourceId: q.id };
+          if (r.kind === "unparseable") return { statusCode: 422, body: { error: { code: "ANSWER_UNPARSEABLE", message: `没看懂这个回答。${r.hint}` } }, resourceType: null, resourceId: null };
+        }
+      }
+      const context: Record<string, unknown> = {};
+      if (input.selectedEntityRef) context.selectedEntityRef = input.selectedEntityRef;
+      if (input.slot) context.slot = input.slot;
+      const r = receiveIntake({ channel: "web", text: input.text, referenceDate: input.referenceDate, urls: input.urls, conversationId: input.conversationId, context });
       if (files.length) saveAttachments(r.intakeId, files);
-      return { statusCode: 202, body: { intakeId: r.intakeId, status: r.status }, resourceType: "intake", resourceId: r.intakeId };
+      return { statusCode: 202, body: { intakeId: r.intakeId, status: r.status, conversationId: r.conversationId }, resourceType: "intake", resourceId: r.intakeId };
     },
   });
 }
 
+/** GET /api/v2/intakes?cursor=&limit=&status= —— 服务端分页历史：换设备、刷新后仍能找到每条输入的结果 */
+export async function GET(request: NextRequest) {
+  const auth = requireOwner(request);
+  if (!auth.ok) return auth.response;
+  const q = request.nextUrl.searchParams;
+  const page = listIntakes({ limit: Number(q.get("limit") ?? 10) || 10, cursor: q.get("cursor"), status: q.get("status") });
+  return NextResponse.json({ intakes: page.intakes.map(intakeResultView), nextCursor: page.nextCursor });
+}
+
 type ParsedInput =
-  | { ok: true; input: { text: string; referenceDate?: string; urls: string[] }; files: IncomingFile[]; raw: string }
+  | { ok: true; input: IntakeCreateInput; files: IncomingFile[]; raw: string }
   | { ok: false; response: ReturnType<typeof errorResponse> };
 
 async function parseJsonBody(request: NextRequest): Promise<ParsedInput> {
@@ -54,10 +80,21 @@ async function parseJsonBody(request: NextRequest): Promise<ParsedInput> {
 async function parseMultipart(request: NextRequest): Promise<ParsedInput> {
   const form = await request.formData().catch(() => null);
   if (!form) return { ok: false, response: errorResponse("VALIDATION", "multipart 解析失败", 422) };
+  const json = (name: string): unknown => {
+    try {
+      return form.get(name) ? JSON.parse(String(form.get(name))) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   const fields = {
     text: String(form.get("text") ?? ""),
     referenceDate: (form.get("referenceDate") as string) || undefined,
     urls: form.getAll("urls").map(String).filter(Boolean),
+    conversationId: (form.get("conversationId") as string) || undefined,
+    questionId: (form.get("questionId") as string) || undefined,
+    selectedEntityRef: json("selectedEntityRef"),
+    slot: json("slot"),
   };
   const parsed = intakeCreateSchema.safeParse(fields);
   if (!parsed.success) return { ok: false, response: errorResponse("VALIDATION", parsed.error.issues.map((i) => i.message).join("；"), 422) };
@@ -68,6 +105,8 @@ async function parseMultipart(request: NextRequest): Promise<ParsedInput> {
   const files: IncomingFile[] = [];
   for (const f of rawFiles) files.push({ name: f.name, mediaType: f.type, bytes: new Uint8Array(await f.arrayBuffer()) });
   // 幂等键去重按规范化摘要：multipart 原始字节含随机 boundary，不能直接做请求体比对
-  const raw = JSON.stringify({ text: fields.text, urls: fields.urls, referenceDate: fields.referenceDate, files: rawFiles.map((f) => `${f.name}:${f.size}`) });
+  // 文件按内容摘要参与比对：同名同大小但内容不同不是重试（E38）
+  const digests = files.map((f) => `${f.name}:${f.bytes.length}:${crypto.createHash("sha256").update(f.bytes).digest("hex")}`);
+  const raw = JSON.stringify({ text: fields.text, urls: fields.urls, referenceDate: fields.referenceDate, conversationId: fields.conversationId, questionId: fields.questionId, selectedEntityRef: fields.selectedEntityRef, slot: fields.slot, files: digests });
   return { ok: true, input: parsed.data, files, raw };
 }

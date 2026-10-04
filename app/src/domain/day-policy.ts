@@ -6,7 +6,7 @@ import type { Prefs } from "./budget";
  * 国家补班不把个人窗口改成工作日模板；节假日放假不自动把预算变零。
  */
 
-export type PolicyRuleKind = "weekday_limit" | "group_limit" | "no_study" | "holiday_policy" | "preferred_window" | "auto_reschedule";
+export type PolicyRuleKind = "weekday_limit" | "group_limit" | "date_limit" | "no_study" | "holiday_policy" | "preferred_window" | "auto_reschedule";
 
 export type PolicyRule = {
   id: string;
@@ -62,6 +62,13 @@ export function resolveDayPolicy(date: string, prefs: Prefs, rules: PolicyRule[]
   if (perDay && typeof perDay.value.limitMinutes === "number") {
     dailyLimit = perDay.value.limitMinutes;
     notes.push(`周${"一二三四五六日"[weekday - 1]}上限 ${dailyLimit} 分钟`);
+  }
+
+  // 只对某几天的上限（“这周三最多一小时”）：不改长期规则
+  const dated = rules.find((r) => r.kind === "date_limit" && covers(r, date));
+  if (dated && typeof dated.value.limitMinutes === "number") {
+    dailyLimit = dated.value.limitMinutes;
+    notes.push(`这天最多 ${dailyLimit} 分钟（只这一次）`);
   }
 
   if (civil.isHoliday) {

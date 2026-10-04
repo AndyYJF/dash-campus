@@ -123,7 +123,7 @@ CREATE TABLE source_tombstones (
 -- 时间政策规则：持久规则与临时覆盖分开；授权有范围、可撤回（REPAIR-PLAN §4.1.1）
 CREATE TABLE planning_policy_rules (
   id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('weekday_limit', 'group_limit', 'no_study', 'holiday_policy', 'preferred_window', 'auto_reschedule')),
+  kind TEXT NOT NULL CHECK (kind IN ('weekday_limit', 'group_limit', 'date_limit', 'no_study', 'holiday_policy', 'preferred_window', 'auto_reschedule')),
   weekday INTEGER CHECK (weekday IS NULL OR weekday BETWEEN 1 AND 7),
   date_from TEXT,
   date_to TEXT,

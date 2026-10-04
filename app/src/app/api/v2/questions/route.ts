@@ -16,6 +16,8 @@ export async function GET(request: NextRequest) {
       fieldPath: q.fieldPath,
       prompt: q.prompt,
       options: q.options,
+      purpose: q.purpose,
+      reason: q.reason,
       version: q.version,
       createdAt: q.createdAt,
     })),

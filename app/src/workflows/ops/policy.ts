@@ -37,6 +37,8 @@ function validateRule(r: RuleInput): void {
     if (!r.weekday || !minutes(v.limitMinutes)) throw new HttpError(422, "VALIDATION", "按星期的上限需要星期和分钟数");
   } else if (r.kind === "group_limit") {
     if (!["workday", "weekend"].includes(v.group as string) || !minutes(v.limitMinutes)) throw new HttpError(422, "VALIDATION", "工作日/周末上限需要分组和分钟数");
+  } else if (r.kind === "date_limit") {
+    if (!r.dateFrom || !r.dateTo || r.dateTo < r.dateFrom || !minutes(v.limitMinutes)) throw new HttpError(422, "VALIDATION", "某几天的上限需要日期范围和分钟数");
   } else if (r.kind === "no_study") {
     if (!r.dateFrom || !r.dateTo || r.dateTo < r.dateFrom) throw new HttpError(422, "VALIDATION", "不安排学习需要具体日期范围");
     for (const t of [v.fromTime, v.toTime]) if (t !== undefined && (typeof t !== "string" || !TIME.test(t))) throw new HttpError(422, "VALIDATION", "时刻格式应为 HH:MM");
@@ -62,6 +64,7 @@ function describeRule(r: RuleInput): string {
   const v = r.value;
   if (r.kind === "weekday_limit") return `以后周${WEEKDAY[r.weekday! - 1]}最多安排 ${v.limitMinutes} 分钟`;
   if (r.kind === "group_limit") return `以后${v.group === "workday" ? "工作日" : "周末"}每天最多安排 ${v.limitMinutes} 分钟`;
+  if (r.kind === "date_limit") return `${r.dateFrom === r.dateTo ? r.dateFrom : `${r.dateFrom} 至 ${r.dateTo}`} 每天最多安排 ${v.limitMinutes} 分钟（只这一次，不改长期规则）`;
   if (r.kind === "no_study") {
     const range = r.dateFrom === r.dateTo ? r.dateFrom! : `${r.dateFrom} 至 ${r.dateTo}`;
     return v.fromTime ? `${range} ${v.fromTime} 之后不安排学习（只这一次）` : `${range} 不安排学习`;

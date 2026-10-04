@@ -19,6 +19,9 @@ export type IntakeRow = {
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
+  conversationId: string | null;
+  /** 投递时附带的上下文：回答的问题、从哪张卡片/哪个空档发起 */
+  context: Record<string, unknown>;
 };
 
 export type IntakeItemRow = {
@@ -50,6 +53,8 @@ function mapIntake(r: Record<string, unknown>): IntakeRow {
     lastError: (r.last_error as string | null) ?? null,
     createdAt: r.created_at as string,
     updatedAt: r.updated_at as string,
+    conversationId: (r.conversation_id as string | null) ?? null,
+    context: r.context_json ? (JSON.parse(r.context_json as string) as Record<string, unknown>) : {},
   };
 }
 
@@ -75,15 +80,39 @@ export function createIntake(input: {
   referenceDate: string;
   timezone: string;
   instanceEpoch: number;
+  conversationId?: string | null;
+  context?: Record<string, unknown>;
 }): IntakeRow {
   const db = getDb();
   const id = crypto.randomUUID();
   const t = now();
   db.prepare(
-    `INSERT INTO intakes (id, channel, text, reference_date, timezone, status, instance_epoch, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'received', ?, ?, ?)`,
-  ).run(id, input.channel, input.text, input.referenceDate, input.timezone, input.instanceEpoch, t, t);
+    `INSERT INTO intakes (id, channel, text, reference_date, timezone, status, instance_epoch, conversation_id, context_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'received', ?, ?, ?, ?, ?)`,
+  ).run(id, input.channel, input.text, input.referenceDate, input.timezone, input.instanceEpoch, input.conversationId ?? null, JSON.stringify(input.context ?? {}), t, t);
   return getIntake(id)!;
+}
+
+/** 服务端历史：按接收时间倒序分页（游标 = 上一页最后一条的 createdAt|id） */
+export function listIntakes(opts: { limit?: number; cursor?: string | null; status?: string | null } = {}): { intakes: IntakeRow[]; nextCursor: string | null } {
+  const limit = Math.min(Math.max(opts.limit ?? 20, 1), 50);
+  const [cAt, cId] = (opts.cursor ?? "").split("|");
+  const where: string[] = [];
+  const vals: unknown[] = [];
+  if (cAt && cId) {
+    where.push(`(created_at < ? OR (created_at = ? AND id < ?))`);
+    vals.push(cAt, cAt, cId);
+  }
+  if (opts.status) {
+    where.push(`status = ?`);
+    vals.push(opts.status);
+  }
+  const rows = getDb()
+    .prepare(`SELECT * FROM intakes ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC, id DESC LIMIT ?`)
+    .all(...vals, limit + 1) as Array<Record<string, unknown>>;
+  const page = rows.slice(0, limit).map(mapIntake);
+  const last = page[page.length - 1];
+  return { intakes: page, nextCursor: rows.length > limit && last ? `${last.createdAt}|${last.id}` : null };
 }
 
 export function getIntake(id: string): IntakeRow | null {

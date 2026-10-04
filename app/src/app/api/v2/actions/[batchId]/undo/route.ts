@@ -4,6 +4,7 @@ import { requireOwner } from "@/workflows/auth-guard";
 import { errorResponse, parseJson, runIdempotent } from "@/workflows/http";
 import { undoWithFollowUps } from "@/workflows/commands";
 import { rebuildPlan } from "@/workflows/plan";
+import { nowDate } from "@/domain/clock";
 
 export const dynamic = "force-dynamic";
 
@@ -42,7 +43,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           resourceId: null,
         };
       }
-      rebuildPlan(new Date());
+      rebuildPlan(nowDate());
       return { statusCode: 200, body: { batchId, status: "undone" }, resourceType: "action_batch", resourceId: batchId };
     },
   });

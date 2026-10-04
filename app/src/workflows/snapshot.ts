@@ -1,5 +1,6 @@
 import { getDb } from "@/repositories/db";
 import { instanceTimezone, localDateInTz, mondayOf, wallTimeToUtc, addDays } from "@/domain/time";
+import { nowDate } from "@/domain/clock";
 import { getPrefs, listSessionsInRange } from "@/repositories/plan";
 import { listOpenQuestions } from "@/repositories/questions";
 import { getInProgressFocus } from "@/repositories/focus-timer";
@@ -186,5 +187,5 @@ export function weekMondayOf(dateLocal: string): string {
 }
 
 export function todayLocal(): string {
-  return localDateInTz(new Date(), instanceTimezone());
+  return localDateInTz(nowDate(), instanceTimezone());
 }

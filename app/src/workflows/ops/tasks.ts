@@ -8,6 +8,7 @@ import type { Command, CommandContext } from "@/contracts/commands";
 import { instanceTimezone, localDateInTz, wallTimeToUtc } from "@/domain/time";
 import { getTask, updateTask } from "@/repositories/planning";
 import { HttpError } from "@/workflows/http";
+import { nowDate } from "@/domain/clock";
 
 /** 任务/实践 操作 handler。全部在 executeCommand 的事务内执行。 */
 
@@ -42,7 +43,7 @@ export function applyTask(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInpu
       `INSERT INTO tasks (id, title, description, status, priority, estimate_minutes, due_kind, due_local_date, due_timezone, due_at, effort_mode, remaining_minutes, remaining_reported_at, created_at, updated_at)
        VALUES (?, ?, '', 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, cmd.title, cmd.priority ?? "normal", cmd.estimateMinutes ?? null, due.kind, due.localDate, due.timezone, due.at, cmd.effortMode ?? "deliverable", cmd.remainingMinutes ?? null, cmd.remainingMinutes != null ? (ctx.now ?? new Date()).toISOString() : null, now, now);
+    .run(id, cmd.title, cmd.priority ?? "normal", cmd.estimateMinutes ?? null, due.kind, due.localDate, due.timezone, due.at, cmd.effortMode ?? "deliverable", cmd.remainingMinutes ?? null, cmd.remainingMinutes != null ? (ctx.now ?? nowDate()).toISOString() : null, now, now);
   changes.push({ entityKind: "task", entityId: id, action: "create", after: { title: cmd.title }, afterVersion: 1 });
   linkSource({ entityKind: "task", entityId: id, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
   return `任务创建：${cmd.title}`;
@@ -69,7 +70,7 @@ function applyTaskUpdate(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInput
     before.remainingMinutes = row.remaining_minutes ?? null;
     after.remainingMinutes = cmd.remainingMinutes;
     before.remainingReportedAt = row.remaining_reported_at ?? null;
-    after.remainingReportedAt = cmd.remainingMinutes === null ? null : (ctx.now ?? new Date()).toISOString();
+    after.remainingReportedAt = cmd.remainingMinutes === null ? null : (ctx.now ?? nowDate()).toISOString();
   }
   if (cmd.dueLocalDate !== undefined) {
     const due = dueColumns(cmd);
@@ -105,7 +106,7 @@ export function applyCompleteTask(cmd: Cmd<"complete_task">, ctx: CommandContext
     changes.push({ entityKind: "plan_session", entityId: s.id, action: "update", before: { status: s.status }, after: { status: "superseded" }, beforeVersion: s.version, afterVersion: s.version + 1 });
   }
   if (cmd.actualMinutes !== null) {
-    const occurredOn = cmd.occurredOn ?? localDateInTz(new Date(), instanceTimezone());
+    const occurredOn = cmd.occurredOn ?? localDateInTz(ctx.now ?? nowDate(), instanceTimezone());
     const id = insertPracticeEntry({ occurredOn, actualMinutes: cmd.actualMinutes, note: cmd.note, taskId: cmd.taskId });
     changes.push({ entityKind: "practice_entry", entityId: id, action: "create", after: { occurredOn, actualMinutes: cmd.actualMinutes, taskId: cmd.taskId }, afterVersion: 1 });
   }

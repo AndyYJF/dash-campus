@@ -206,8 +206,10 @@ test("GET 状态与问题列表：不暴露实现细节", async () => {
 
   const qr = await listQuestionsRoute(authedReq("/api/v2/questions", "GET", undefined));
   assert.equal(qr.status, 200);
-  const qb = (await qr.json()) as { questions: unknown[]; totalOpen: number };
-  assert.equal(qb.totalOpen, 0, "问题已回答");
+  const qb = (await qr.json()) as { questions: Array<{ questionKey: string; purpose: string }>; totalOpen: number };
+  assert.ok(!qb.questions.some((q) => q.questionKey === "semester.first_monday"), "学期问题已回答");
+  // 课表生效后 Agent 主动问一次作息（E24）：只此一个，不重复问课程里已有的事实
+  assert.deepEqual(qb.questions.map((q) => q.purpose), ["routine"]);
 
   const missing = await getIntakeRoute(authedReq(`/api/v2/intakes/00000000-0000-0000-0000-000000000000`, "GET", undefined), { params: Promise.resolve({ id: "00000000-0000-0000-0000-000000000000" }) });
   assert.equal(missing.status, 404);

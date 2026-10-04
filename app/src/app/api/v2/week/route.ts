@@ -2,6 +2,7 @@ import type { NextRequest } from "next/server";
 import { requireOwner } from "@/workflows/auth-guard";
 import { weekSnapshot } from "@/workflows/snapshot";
 import { instanceTimezone, localDateInTz, mondayOf } from "@/domain/time";
+import { nowDate } from "@/domain/clock";
 
 export const dynamic = "force-dynamic";
 
@@ -9,6 +10,7 @@ export const dynamic = "force-dynamic";
 export async function GET(request: NextRequest) {
   const auth = requireOwner(request);
   if (!auth.ok) return auth.response;
-  const monday = request.nextUrl.searchParams.get("monday") ?? mondayOf(localDateInTz(new Date(), instanceTimezone()));
-  return Response.json(weekSnapshot(monday, new Date()));
+  const now = nowDate();
+  const monday = request.nextUrl.searchParams.get("monday") ?? mondayOf(localDateInTz(now, instanceTimezone()));
+  return Response.json(weekSnapshot(monday, now));
 }

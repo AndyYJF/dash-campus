@@ -50,7 +50,7 @@ function validDate(y: number, m: number, d: number): string | null {
   return date.toISOString().slice(0, 10);
 }
 
-function dateFromText(text: string, referenceDate: string): string | null {
+export function dateFromText(text: string, referenceDate: string): string | null {
   const full = /(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})/.exec(text);
   if (full) return validDate(Number(full[1]), Number(full[2]), Number(full[3]));
   const md = /(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?/.exec(text);
@@ -75,7 +75,7 @@ function dateFromText(text: string, referenceDate: string): string | null {
   return null;
 }
 
-function timeFromText(text: string): string | null {
+export function timeFromText(text: string): string | null {
   // 先去掉日期，避免把 10/5 之类当钟点
   const clock = /(?<![\d-])(\d{1,2})\s*[:：]\s*(\d{2})(?!\d)/.exec(text);
   if (clock && Number(clock[1]) < 24 && Number(clock[2]) < 60) return `${clock[1]!.padStart(2, "0")}:${clock[2]}`;

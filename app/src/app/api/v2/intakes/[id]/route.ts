@@ -3,6 +3,7 @@ import { requireOwner } from "@/workflows/auth-guard";
 import { notFound404 } from "@/workflows/http";
 import { getIntake, listExtractedDocuments, listItems } from "@/repositories/intakes";
 import { listQuestionsForIntake } from "@/repositories/questions";
+import { intakeResultView } from "@/workflows/results";
 
 export const dynamic = "force-dynamic";
 
@@ -34,8 +35,11 @@ export async function GET(request: NextRequest, ctx: Params) {
     prompt: q.prompt,
     status: q.status,
     version: q.version,
+    purpose: q.purpose,
+    reason: q.reason,
+    options: q.options ?? [],
   }));
-  const documents = listExtractedDocuments(id).map((d) => ({
+  const documents = listExtractedDocuments(id).filter((d) => d.sourceKind !== "owner-rest").map((d) => ({
     id: d.id,
     sourceKind: d.sourceKind,
     status: d.status,
@@ -55,5 +59,7 @@ export async function GET(request: NextRequest, ctx: Params) {
     documents,
     items,
     questions,
+    // 统一业务结果：实际变更、下一步/阻碍、待答问题、后续状态与撤销入口
+    result: intakeResultView(intake),
   });
 }

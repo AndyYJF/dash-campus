@@ -31,9 +31,11 @@ export async function POST(request: NextRequest, ctx: Params) {
         questionId: id,
         expectedVersion: parsed.data.expectedVersion,
         text: parsed.data.text,
+        optionIndex: parsed.data.optionIndex,
       });
       if (r.kind === "unparseable") {
-        throw new HttpError(422, "ANSWER_UNPARSEABLE", "没看懂这个回答。请回答「第N周」（如「第5周」）或日期（如 2026-09-01）。");
+        // 不抛错回滚：答非所问的这句话要留在对话里，问题保持 open，并给出更具体的提示
+        return { statusCode: 422, body: { error: { code: "ANSWER_UNPARSEABLE", message: `没看懂这个回答。${r.hint}` } }, resourceType: null, resourceId: null };
       }
       if (r.kind === "stale") {
         throw new HttpError(409, "STALE_ANSWER", "问题已更新，请刷新后按最新问题回答", { retryable: false });
@@ -43,7 +45,7 @@ export async function POST(request: NextRequest, ctx: Params) {
       }
       return {
         statusCode: 202,
-        body: { questionId: id, status: r.question.status, version: r.question.version },
+        body: { questionId: id, status: r.question.status, version: r.question.version, results: r.results, note: r.note },
         resourceType: "clarification_answer",
         resourceId: id,
       };

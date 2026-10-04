@@ -4,6 +4,9 @@ import { getBatch, listChanges } from "@/repositories/journal";
 import type { FollowUp, OperationOutcome } from "@/workflows/commands";
 import { snapshotRevision } from "@/workflows/snapshot";
 import { instanceTimezone, localDateInTz } from "@/domain/time";
+import { nowDate } from "@/domain/clock";
+import { getIntake, listItems, type IntakeRow } from "@/repositories/intakes";
+import { listQuestionsForIntake } from "@/repositories/questions";
 
 /**
  * 统一业务结果（AGENT-INTERFACE-CONTRACT §5.3）：聊天、卡片按钮、兼容 API 的结果同一形状。
@@ -142,4 +145,150 @@ export function operationResultView(operation: string, outcome: OperationOutcome
     snapshotRevision: snapshotRevision(),
     error: null,
   };
+}
+
+// ===== 一份投递的统一结果 =====
+
+export type IntakeResultView = {
+  intakeId: string;
+  conversationId: string | null;
+  createdAt: string;
+  text: string;
+  /** accepted 已收到 / working 处理中 / needs_input 等你回答 / applied 已更新 / partly_applied 部分完成 / no_change 只存了资料 / failed / cancelled */
+  state: "accepted" | "working" | "needs_input" | "applied" | "partly_applied" | "no_change" | "failed" | "cancelled";
+  summary: string;
+  items: Array<{ id: string; kind: string; state: string; summary: string; error: string | null }>;
+  changes: ChangeView[];
+  questions: Array<{ id: string; prompt: string; reason: string; options: string[]; purpose: string; version: number }>;
+  nextActions: string[];
+  affectedDates: string[];
+  followUps: Array<{ kind: string; state: string; summary: string }>;
+  undo: { available: boolean; batchIds: string[]; note: string };
+  snapshotRevision: string;
+  error: { message: string; recoverable: boolean } | null;
+};
+
+const REASON_TEXT: Record<string, string> = {
+  deadline_unfeasible: "截止前排不下",
+  insufficient_capacity: "这周的学习预算不够",
+  unknown_requirement: "工作量还不清楚",
+  no_contiguous_slot: "预算够，但缺连续空档",
+  needs_remaining_estimate: "需要你说一下还差多少",
+};
+
+function timeLabel(utc: string, tz: string): string {
+  const d = localDateInTz(new Date(utc), tz);
+  const t = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(utc));
+  return `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))} ${t}`;
+}
+
+export function intakeResultView(intake: IntakeRow): IntakeResultView {
+  const db = getDb();
+  const tz = instanceTimezone();
+  const items = listItems(intake.id);
+  const batches = db.prepare(`SELECT id, command, status, reason FROM agent_action_batches WHERE intake_id = ? ORDER BY created_at, rowid`).all(intake.id) as Array<{ id: string; command: string; status: string; reason: string }>;
+  const commandBatches = batches.filter((b) => b.command !== "plan_sessions");
+  const planBatches = batches.filter((b) => b.command === "plan_sessions");
+  const applied = commandBatches.filter((b) => b.status === "applied");
+
+  const changes: ChangeView[] = [];
+  const dates = new Set<string>();
+  for (const b of applied) {
+    const detail = batchChanges(b.id);
+    changes.push(...detail.changes);
+    for (const d of detail.dates) dates.add(d);
+  }
+
+  // 触及的任务 → 下一步（最近的学习块）或具体阻碍
+  const taskIds = new Set<string>();
+  for (const b of [...applied, ...planBatches.filter((p) => p.status === "applied")]) {
+    for (const c of listChanges(b.id)) {
+      if (c.entityKind === "task") taskIds.add(c.entityId);
+      if (c.entityKind === "plan_session") {
+        const t = db.prepare(`SELECT task_id FROM plan_sessions WHERE id = ?`).get(c.entityId) as { task_id: string } | undefined;
+        if (t) taskIds.add(t.task_id);
+      }
+    }
+  }
+  const nextActions: string[] = [];
+  const nowIso = nowDate().toISOString();
+  const latestPlan = planBatches[planBatches.length - 1];
+  let unscheduled: Array<{ taskId: string; title: string; reason: string; missingMinutes?: number }> = [];
+  try {
+    unscheduled = latestPlan ? ((JSON.parse(latestPlan.reason) as { unscheduled?: typeof unscheduled }).unscheduled ?? []) : [];
+  } catch {
+    unscheduled = [];
+  }
+  for (const taskId of taskIds) {
+    const task = db.prepare(`SELECT title, status FROM tasks WHERE id = ? AND archived_at IS NULL`).get(taskId) as { title: string; status: string } | undefined;
+    if (!task || task.status === "done" || task.status === "cancelled") continue;
+    const next = db.prepare(`SELECT start_utc, end_utc FROM plan_sessions WHERE task_id = ? AND status IN ('planned','tentative','in_progress') AND end_utc > ? ORDER BY start_utc LIMIT 1`).get(taskId, nowIso) as { start_utc: string; end_utc: string } | undefined;
+    if (next) {
+      nextActions.push(`${timeLabel(next.start_utc, tz)}–${timeLabel(next.end_utc, tz).slice(-5)} ${task.title}`);
+      dates.add(localDateInTz(new Date(next.start_utc), tz));
+    }
+    const blocked = unscheduled.find((u) => u.taskId === taskId);
+    if (blocked) nextActions.push(`「${task.title}」${REASON_TEXT[blocked.reason] ?? blocked.reason}${blocked.missingMinutes ? `（缺 ${blocked.missingMinutes} 分钟）` : ""}`);
+  }
+
+  const followUps: IntakeResultView["followUps"] = [];
+  for (const i of items) for (const f of (i.payload.followUps as IntakeResultView["followUps"] | undefined) ?? []) if (!followUps.some((x) => x.summary === f.summary)) followUps.push(f);
+
+  const questions = listQuestionsForIntake(intake.id)
+    .filter((q) => q.status === "open")
+    .map((q) => ({ id: q.id, prompt: q.prompt, reason: q.reason, options: q.options ?? [], purpose: q.purpose, version: q.version }));
+
+  const itemViews = items.map((i) => ({
+    id: i.id,
+    kind: i.kind,
+    state: i.state,
+    summary: ((i.payload.applied as { summary?: string } | undefined)?.summary ?? (i.payload.summary as string | undefined) ?? "").slice(0, 300),
+    error: (i.evidence?.error as string | undefined) ?? null,
+  }));
+  const failed = itemViews.filter((i) => i.state === "failed");
+  const state: IntakeResultView["state"] =
+    intake.status === "received"
+      ? "accepted"
+      : intake.status === "processing"
+        ? "working"
+        : intake.status === "waiting_input"
+          ? "needs_input"
+          : intake.status === "cancelled"
+            ? "cancelled"
+            : intake.status === "failed"
+              ? "failed"
+              : intake.status === "partially_applied"
+                ? "partly_applied"
+                : applied.length || items.some((i) => i.state === "applied" && (i.payload.applied as { noChange?: boolean } | undefined)?.noChange === false)
+                  ? "applied"
+                  : "no_change";
+  const done = items.filter((i) => i.state === "applied").map((i) => (i.payload.applied as { summary?: string } | undefined)?.summary).filter((x): x is string => Boolean(x));
+  const saved = items.filter((i) => i.state === "ready" && (i.kind === "note" || i.kind === "notice"));
+  const summary =
+    state === "accepted" || state === "working"
+      ? "已收到，正在整理"
+      : [...done, ...(saved.length ? [`已存为资料 ${saved.length} 条（没有需要你行动的事项）`] : []), ...failed.map((f) => `没有办成：${f.error ?? "处理失败"}`)].join("；") || (state === "needs_input" ? "需要你回答一个问题才能继续" : "已处理");
+  const undoable = applied.filter((b) => OPERATIONS[b.command as Command["command"]]?.undo !== "none").map((b) => b.id);
+  return {
+    intakeId: intake.id,
+    conversationId: intake.conversationId,
+    createdAt: intake.createdAt,
+    text: intake.text.slice(0, 500),
+    state,
+    summary,
+    items: itemViews,
+    changes: changes.slice(0, 30),
+    questions,
+    nextActions: nextActions.slice(0, 6),
+    affectedDates: [...dates].sort(),
+    followUps,
+    undo: { available: undoable.length > 0, batchIds: undoable, note: commandBatches.some((b) => b.status === "undone") ? "部分变更已撤销" : "" },
+    snapshotRevision: snapshotRevision(),
+    error: state === "failed" ? { message: failed[0]?.error ?? intake.lastError ?? "处理失败", recoverable: items.some((i) => i.state === "failed" && i.payload.retryable === true) } : null,
+  };
+}
+
+export function intakeResultById(id: string): IntakeResultView | null {
+  const intake = getIntake(id);
+  return intake ? intakeResultView(intake) : null;
 }

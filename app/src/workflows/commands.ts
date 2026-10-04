@@ -8,6 +8,7 @@ import { applyRescheduleSession, applySessionState } from "@/workflows/ops/sessi
 import { listCausedBatches } from "@/repositories/journal";
 import { undoBatch, type UndoResult } from "@/workflows/undo";
 import { HttpError } from "@/workflows/http";
+import { nowDate } from "@/domain/clock";
 import { applyAcademicCalendar, applyCalendarSyncPolicy, applyHolidayCalendar, applyTeachingOverride } from "@/workflows/ops/calendar";
 import { applyPlanningPolicy } from "@/workflows/ops/policy";
 import { rebuildPlan, type PlanConflict } from "@/workflows/plan";
@@ -159,7 +160,7 @@ export function executeOperation(raw: unknown, ctx: CommandContext, opts: { repl
   const followUps: FollowUp[] = [];
   if (result.ok && !result.noChange && result.affects.includes("plan")) {
     try {
-      const plan = rebuildPlan(ctx.now ?? new Date(), { causedBy: result.batchId, conversationId: ctx.conversationId ?? null, intakeId: ctx.intakeId, replanDates: opts.replanDates });
+      const plan = rebuildPlan(ctx.now ?? nowDate(), { causedBy: result.batchId, conversationId: ctx.conversationId ?? null, intakeId: ctx.intakeId, replanDates: opts.replanDates });
       followUps.push({ kind: "plan", state: plan.changed ? "updated" : "unchanged", batchId: plan.batchId, placed: plan.placed, superseded: plan.superseded, unscheduled: plan.unscheduled, conflicts: plan.conflicts });
     } catch (e) {
       followUps.push({ kind: "plan", state: "failed", batchId: null, placed: 0, superseded: 0, unscheduled: [], conflicts: [], error: e instanceof Error ? e.message : String(e) });

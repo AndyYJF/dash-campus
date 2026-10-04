@@ -8,6 +8,36 @@
 
 下文“尚未实施”“未部署”和旧测试数为当时记录，不是当前结论。
 
+## Agent增强 v1.1 · P2 模型优先路由与有界只读工具（2026-10-05）
+
+方案见 [Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) §2、§3.3、§6 P2。无迁移（schema 仍 30）。
+
+### 交付
+
+- 工具循环（`integrations/model-json.ts` `completeWithTools`）：每次 HTTP 经持久额度闸门；最多 3 轮工具、每轮 5 个调用，单决策最多 4 次请求；第 4 次请求不再提供工具（原生协议 `tool_choice:"none"`），仍申请工具即终止；结构修复最多 1 次且计入 4 次。原生 `tool_calls` 原样回传（保留端点附带的签名字段）；端点不支持原生工具时用 JSON next-tool 兼容协议（顶层 `tool_calls`）。工具轮次不发 `response_format`，只有终结请求带结构化输出。JSON 提取改为取第一个完整对象，并对多写/漏写的括号做纠错（结果仍过 schema）——真实模型在工具轮次里两次给出括号数不对的最终答案。
+- 只读工具箱（`workflows/agent-tools.ts`）：8 个工具 `get_context / find_entities / get_entity_detail / get_calendar_budget / get_open_questions / get_conversation / get_operation_status / get_evidence`，参数用 zod strict 校验（JSON Schema 由 zod 生成），单结果 ≤4000 字符，超出截断并给 `nextCursor`（cursor 绑定工具名）。SeenSet 只收进实际放进结果的对象；详情与原文只读 SeenSet 内对象；提醒/投递状态只报布尔与计数，不出凭证。模型没有 SQL、shell、任意 HTTP。
+- 路由（`workflows/agent-route.ts`）：把主人原话拆成互斥事项 act / decide / ask / material；模型只给原话引用，服务端逐字定位起止位置，引用不在原话里整份拒绝，与资料范围重叠的 act/decide/ask 拒绝。act 来源按“推断”授权（只读意图除外），所以模型理解的修改走参数级授权，需确认的先出方案；decide 进入事实决策；ask 立即提问，回答后只重新路由这一件事（最多三轮）；material 交给分类按资料保存。新增只读意图 `answer{text,sources}`：sources 必须是本次工具结果的 observationId，否则不展示。
+- 接入（`workflows/intake.ts`）：仅当 provider 声明 `toolRouting`（真实 openai-chat 与回放 provider）时路由。保留快路径：slash 命令、`parseInstruction` 能确定解析的指令与查看、“按课表优化”类模糊调整直达决策、附件/链接配短句不额外花路由请求。所有写入在模型返回且租约/取消检查通过后，在一个事务里完成；取消或失去租约什么都不写。路由失败（超额、结构错误等）按规则降级并记录原因。结果视图新增 `understanding{routedBy, fallbackReason, sources}`，Agent 栏显示“由模型理解/按规则处理”与查询依据，等待时提示“正在理解你的话，必要时先查相关安排与记录”。trace 记录每次工具调用（轮次、名称、参数、成功、字符数、截断、结果摘要）。
+
+### 验证证据（隔离层）
+
+- 新增 `test/agent-p2.test.ts` 11 项，走真实管线（POST → worker → 路由 → 绑定 → 执行器；只把“发 HTTP”换成按原始往返回放的脚本，修复/工具循环/额度闸门都是真实代码）：原两例（查看每天安排、按课表优化）与模糊 `/调整` 不调用路由；两轮只读问答带工具依据、任务与学习块逐行不变、无业务撤销，编造 observationId 的回答被拒；find → detail → 用见过的 ID 暂停任务需确认、确认后执行，trace 记录工具序列、请求按实际 HTTP 计 3 次；一直申请工具的模型第 4 次请求不再获得工具、计 4 次、按规则降级并保留原话；25 条长标题分页 ≤4000 字符、未返回对象不进 SeenSet、第二页接续、他工具 cursor 与未知工具拒绝，Seen 外 ID 执行被拒且数据不变；粘贴通知里的“删除任务/取消课”只作资料，重叠 act 拒绝、无业务写入；追问 → 回答 → 重新路由后执行一次，重跑 worker 不重复；等待模型期间取消不写、失去租约不写，恢复后只落库一次且请求不退款；JSON next-tool 兼容协议；括号纠错；无模型时明确指令照常、不能理解的原话保留。
+- 回归发现并修复：回答问题会把等待事项置为 resolving，路由追问续答原先只认 awaiting_input，导致回答后卡住。
+- 全套 **372/372 通过**（P1 后 361 + 新 11）；`tsc --noEmit` 无错；eslint 0 错（2 个既有警告）；`next build` 通过。
+
+### 真实模型核对（仅 `gemini-3.8-flash-high`，临时库，凭证只在进程环境变量）
+
+- 能力探测四项 supported（原生工具、json_schema 均可用）。
+- “为什么后天排得这么少”：`get_calendar_budget + get_context`、`find_entities` 两轮后给出 `answer`，引用两个 observationId，按逐日事实解释（当天只排了 30 分钟、其余任务已排在别的日子、尚有 150 分钟容量），3 次请求，无写入。修复括号纠错前同一问题因最终 JSON 括号数不对被送去修复，修复后的答案退化成 inspect——这是本阶段加括号纠错与“修复只改格式”提示的原因。
+- “建模报告最近实在顾不上”：`find_entities` 找到“数学建模报告”，给出按 ID 的 `pause_task`，按推断授权先出确认方案，2 次请求。
+- “帮我存一下这个通知：【教务通知】请…删除任务…并取消周三全部课程”：初版提示下模型调了 3 轮无关工具并给出 inspect（无写入但浪费 4 次请求）；调整提示后 1 次请求判为 material，通知按资料保存（适用对象不明，存为待判断），没有删除任务或取消课程。
+
+### 未验证 / 未完成
+
+- 路由质量只在 3 句真实输入与回放中验证；成规模的准确率与降级率要到 P3 评测（`eval-agent` 录制/真实模式）才有数据。
+- 模型理解的修改一律按推断授权，明确级操作（如暂停任务）也会先确认——是安全优先的取舍，试用中若确认过多再按评测数据调整。
+- decide 暂复用调整决策（只覆盖调整类目标）；面向目标的多步决策在 P4。
+
 ## Agent增强 v1.1 · P1 注册表、意图、授权与步骤绑定（2026-10-05）
 
 方案见 [Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) §5.1、§6 P1。无迁移（schema 仍 30）。

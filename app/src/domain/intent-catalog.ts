@@ -12,6 +12,7 @@ type CommandName = Command["command"];
 
 export const INTENT_COMMANDS: { [K in Op]: readonly CommandName[] } = {
   inspect: [],
+  answer: [],
   explain: [],
   undo: ["undo_batch"],
   move_session: ["reschedule_session"],
@@ -67,10 +68,11 @@ export const INTENT_COMMANDS: { [K in Op]: readonly CommandName[] } = {
 };
 
 /** 只读意图：回答问题，不改任何数据 */
-export const READ_ONLY_INTENTS: ReadonlySet<Op> = new Set<Op>(["inspect", "explain"]);
+export const READ_ONLY_INTENTS: ReadonlySet<Op> = new Set<Op>(["inspect", "answer", "explain"]);
 
 export const INTENT_DESCRIPTIONS: { [K in Op]: string } = {
   inspect: "查看/询问当前数据（今天安排、任务、截止、记录等），只读回答。",
+  answer: "根据本次只读工具查到的事实直接回答问题（如“为什么周三排得少”）；sources 列出所依据的 observationId，只读。",
   explain: "解释为什么这样安排或为什么没提醒，只读。",
   undo: "撤销这次对话里最近一次调整。",
   move_session: "把一个已有学习块挪到别的日期/时段/钟点。",

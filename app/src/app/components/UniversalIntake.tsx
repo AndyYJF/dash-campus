@@ -27,8 +27,16 @@ type Result = {
   nextActions: string[];
   followUps: Array<{ state: string; summary: string }>;
   undo: { available: boolean; batchIds: string[]; note: string };
+  understanding?: { routedBy: "model" | "fast" | "rules" | null; fallbackReason: string | null; sources: string[] };
   error: { message: string; recoverable: boolean } | null;
 };
+
+function understandingLine(u: Result["understanding"]): string | null {
+  if (!u?.routedBy) return null;
+  if (u.routedBy === "rules") return `按规则理解${u.fallbackReason ? `（模型理解没有用上：${u.fallbackReason}）` : ""}`;
+  if (u.routedBy === "model") return u.sources.length ? `理解依据：查了 ${u.sources.join("、")}` : "按你的原话理解，没有另外查询";
+  return null;
+}
 
 const STATE_LABEL: Record<Result["state"], string> = {
   accepted: "已收到",
@@ -374,7 +382,9 @@ export default function UniversalIntake() {
                 <span className={styles.said}>{r.text || "（文件）"}</span>
                 <span className={styles.when}>{timeLabel(r.createdAt)}</span>
               </div>
+              {r.state === "working" && <p className={styles.when}>正在理解你的话，必要时先查相关安排与记录</p>}
               {!ACTIVE.has(r.state) && <p className={styles.summary}>{r.summary}</p>}
+              {!ACTIVE.has(r.state) && understandingLine(r.understanding) && <p className={styles.when}>{understandingLine(r.understanding)}</p>}
               {r.followUps.map((f) => (
                 <p key={f.summary} className={styles.followUp} data-state={f.state}>
                   {f.summary}

@@ -82,7 +82,7 @@ export type TraceInput = {
   request: unknown;
   response: unknown;
   exchanges: Array<{ requestId: string; attempt: number; ok: boolean; latencyMs: number; raw?: string; error?: string }>;
-  toolCalls?: Array<{ name: string; args: unknown; resultDigest: string; chars: number }>;
+  toolCalls?: Array<{ name: string; args: unknown; resultDigest: string; chars: number; round?: number; ok?: boolean; truncated?: boolean; observationId?: string | null }>;
 };
 
 /** 写一条 trace；诊断写入失败不影响业务结果 */

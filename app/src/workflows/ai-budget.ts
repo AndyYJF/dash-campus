@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { getDb } from "@/repositories/db";
 import { getSetting, updateSetting } from "@/repositories/settings";
 import { AI_BUDGET_SETTINGS_KEY, aiBudgetSchema, type AiBudget } from "@/contracts/review";
-import type { HttpReservation, ModelHttpGate, ModelProvider, ModelResult } from "@/contracts/model";
+import { MAX_REQUESTS_PER_DECISION, type HttpReservation, type ModelHttpGate, type ModelProvider, type ModelResult } from "@/contracts/model";
 import type { SearchProvider } from "@/contracts/search";
 import { getConfig } from "@/config";
 import { instanceTimezone, localDateInTz } from "@/domain/time";
@@ -18,7 +18,7 @@ import { writeTrace, type TraceStatus } from "@/workflows/agent-trace";
  */
 
 /** 每次模型决策最多 4 次 HTTP（首次、工具后续、结构修复与重试合计） */
-export const PER_DECISION_MAX_REQUESTS = 4;
+export const PER_DECISION_MAX_REQUESTS = MAX_REQUESTS_PER_DECISION;
 /** 同一投递累计主动执行时间（按已结算请求的耗时累计，跨 worker 恢复） */
 export const INTAKE_ACTIVE_MS_LIMIT = 180_000;
 
@@ -214,6 +214,7 @@ export function meteredModel(inner: ModelProvider, related?: { type: string; id:
   const intakeId = related?.type === "intake" ? related.id : null;
   return {
     protocol: inner.protocol,
+    toolRouting: inner.toolRouting,
     async call(req) {
       const startedAt = Date.now();
       const scope: RequestScope = { decisionId: crypto.randomUUID(), workflow: req.workflow, intakeId, related: related ?? null };
@@ -241,6 +242,7 @@ export function meteredModel(inner: ModelProvider, related?: { type: string; id:
           request: { workflow: req.workflow, schemaVersion: req.outputSchemaVersion, context: req.context },
           response: r.ok ? r.validatedResult : undefined,
           exchanges,
+          toolCalls: (r.toolCalls ?? []).map((c) => ({ name: c.name, args: c.args, resultDigest: c.resultDigest, chars: c.chars, round: c.round, ok: c.ok, truncated: c.truncated, observationId: c.observationId })),
         });
 
       // 首个请求在调用前占用：拒绝时不调用 provider

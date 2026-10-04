@@ -21,7 +21,27 @@ export interface ModelRequest {
   signal?: AbortSignal;
   /** 实际 HTTP 请求闸门（由 meteredModel 注入）：每次发请求前原子占用额度，结束后结算 */
   gate?: ModelHttpGate;
+  /** 有界只读工具：provider 走工具循环（原生 tool_calls 或 JSON next-tool 兼容协议） */
+  tools?: ToolRuntime;
 }
+
+/** 每次模型决策最多 4 次 HTTP（首次、工具后续、结构修复与重试合计） */
+export const MAX_REQUESTS_PER_DECISION = 4;
+/** 工具循环最多 3 轮；第 4 次请求必须终结，不再申请工具 */
+export const TOOL_MAX_ROUNDS = 3;
+export const TOOL_MAX_CALLS_PER_ROUND = 5;
+
+export type ToolSpec = { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
+
+export type ToolRunResult = { content: string; ok: boolean; observationId?: string | null; truncated?: boolean };
+
+export interface ToolRuntime {
+  specs: ToolSpec[];
+  /** 服务端只读执行；不抛错，未知工具/非法参数返回 ok=false 的说明 */
+  run(name: string, args: unknown): ToolRunResult;
+}
+
+export type ToolCallRecord = { round: number; name: string; args: unknown; ok: boolean; chars: number; truncated: boolean; observationId: string | null; resultDigest: string };
 
 export type HttpReservation = { ok: true; requestId: string } | { ok: false; message: string };
 
@@ -42,6 +62,7 @@ export type ModelSuccess = {
   providerRequestId?: string;
   /** 实际发出的请求数（含结构修复）；缺省为 1 */
   attempts?: number;
+  toolCalls?: ToolCallRecord[];
 };
 
 export type ModelFailure = {
@@ -59,12 +80,15 @@ export type ModelFailure = {
     retryable: boolean;
   };
   attempts?: number;
+  toolCalls?: ToolCallRecord[];
 };
 
 export type ModelResult = ModelSuccess | ModelFailure;
 
 export interface ModelProvider {
   readonly protocol: string;
+  /** 支持带只读工具的模型路由；不支持的 provider 只走规则与分类通路 */
+  readonly toolRouting?: boolean;
   call(request: ModelRequest): Promise<ModelResult>;
 }
 

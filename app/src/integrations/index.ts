@@ -40,6 +40,7 @@ export function resolveModelProvider(): Resolved<ModelProvider> {
       model: cfg.MODEL_NAME,
       // 协议分支按实测能力：未探测或配置已变化时为 undefined，走 json_object 兼容路径
       jsonSchema: currentModelCapabilities(cfg)?.jsonSchema,
+      tools: currentModelCapabilities(cfg)?.tools,
     }),
     mode: "real",
   };

@@ -67,6 +67,9 @@ import { firstUnknownLeaf, normalizeCondition, normalizeProfileValue, PROFILE_LA
 import { noticeOutcome } from "@/workflows/ops/notices";
 import type { z } from "zod";
 import { ADJUSTMENT_DECISION_WORKFLOW, ADJUSTMENT_DECISION_INSTRUCTIONS, adjustmentDecisionSchema, adjustmentContext, adjustmentScope, adjustmentNeedsConfirmation, isFlexibleAdjustment, validateAdjustment, type AdjustmentDecision } from "./adjustment-decision";
+import { AGENT_ROUTE_WORKFLOW, agentRouteSchema, isReadOnlyAct, routeOwnerText, type RouteCall, type RoutedItem, type RouteResult } from "./agent-route";
+import type { ToolEnv } from "./agent-tools";
+import type { ToolRuntime } from "@/contracts/model";
 import {
   INTAKE_JOB_TYPE,
   SEMESTER_FIRST_MONDAY_KEY,
@@ -344,8 +347,16 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
     items = listItems(intakeId);
   }
   // 主人自己的话先做确定性指令解析（挪动、作息、暂停、撤销……）：认得出的直接成为指令事项，不依赖模型；
-  // 只解析输入框原话——附件/网页里的命令式句子是资料，不是指令。结果落库一次，重跑/恢复不重复解析。
-  const ownerRest = ownerInstructionPass(intake, textRest, items);
+  // 剩下的原话交给模型路由（有界只读工具），失败或不可用时退回规则与分类。
+  // 只解析输入框原话——附件/网页里的命令式句子是资料，不是指令。结果落库一次，重跑/恢复不重复解析或路由。
+  const router: RouteCall | null = resolveModelProvider()?.provider.toolRouting
+    ? ({ context, instructions, tools }) => callModel(AGENT_ROUTE_WORKFLOW, context, instructions, agentRouteSchema, null, tools)
+    : null;
+  const guard = (): "ok" | "cancel" | "fenced" => (getJob(job.id)?.cancelRequested ? "cancel" : leaseValid(job.id, token, job.generation, now()) ? "ok" : "fenced");
+  const pass = await ownerInstructionPass(intake, textRest, items, router, guard);
+  if (pass === "cancel") return cancel();
+  if (pass === "fenced") return { kind: "fenced" };
+  const { rest: ownerRest, routed } = pass;
   items = listItems(intakeId);
   const extra = await collectExtraInputs(intakeId);
   // 节假日通知先确定性解析：认出来的不再交给模型分类
@@ -358,7 +369,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
    * 一次模型决策：日额度与单投递额度（请求数、累计执行时间）由持久账目原子核对，恢复/重跑不重置；
    * 租约续期、取消检查都在这里；模型调用不在事务内。
    */
-  async function callModel<T>(workflow: string, context: Record<string, unknown>, instructions: string, schema: z.ZodType<T>, itemId: string | null = null): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
+  async function callModel<T>(workflow: string, context: Record<string, unknown>, instructions: string, schema: z.ZodType<T>, itemId: string | null = null, tools?: ToolRuntime): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
     const model = resolveModelProvider();
     if (!model) return { ok: false, error: "模型未配置，原文已保留" };
     const budget = budgetCheck({ model: 1 });
@@ -371,7 +382,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
       if (!renewLease(job.id, token, job.generation, now())) controller.abort();
     }, JOB_RENEW_INTERVAL_MS);
     try {
-      const result = await meteredModel(model.provider, { type: "intake", id: intakeId }, { itemId, conversationId: intake?.conversationId ?? null }).call({ workflow, context, outputSchemaVersion: 1, timeoutMs: JOB_EXTERNAL_TIMEOUT_MS, instructions, schema, signal: controller.signal });
+      const result = await meteredModel(model.provider, { type: "intake", id: intakeId }, { itemId, conversationId: intake?.conversationId ?? null, routedBy: workflow === AGENT_ROUTE_WORKFLOW ? "model" : null }).call({ workflow, context, outputSchemaVersion: 1, timeoutMs: JOB_EXTERNAL_TIMEOUT_MS, instructions, schema, signal: controller.signal, ...(tools ? { tools } : {}) });
       if (!result.ok) {
         const message = result.error.code === "BUDGET_EXCEEDED" ? result.error.message.replace(/^BUDGET_EXCEEDED:\s*/, "") : result.error.message;
         return { ok: false, error: `${result.error.code}：${message}` };
@@ -406,8 +417,8 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
           let n = 2;
           while (used.has(key)) key = `${i.itemKey}-${n++}`;
           used.add(key);
-          // 是不是主人本人的话由服务端判断：引用出现在输入框原话里才算
-          const explicit = Boolean(ownerText) && excerptInText(i.excerpt, ownerText);
+          // 是不是主人本人的话由服务端判断：引用出现在输入框原话里才算；路由已判为资料的部分不算主人的指令
+          const explicit = !routed && Boolean(ownerText) && excerptInText(i.excerpt, ownerText);
           if (i.kind === "command") {
             // 模型给的意图用同一个 schema 校验，走同一条绑定/执行通路
             const raw = i.intents?.length ? i.intents : [i.intent];
@@ -425,6 +436,28 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
         }
       }
     }
+  }
+
+  // 路由追问的回答：结合原话与全部回答重新路由这一件事（最多三轮），结果原地替换这个事项
+  for (const item of listItems(intakeId)) {
+    const ask = item.payload.routeAsk as { excerpt: string; replies: Array<{ question: string; answer: string }>; questionKey: string; prompt: string } | null | undefined;
+    if (!ask || !["awaiting_input", "resolving"].includes(item.state)) continue;
+    const answer = latestAnswerForKey(ask.questionKey);
+    if (!answer) continue;
+    const replies = [...ask.replies, { question: ask.prompt, answer: answer.rawText }];
+    if (!router) {
+      updateItem(item.id, { state: "failed", waitingQuestionId: null, evidence: { ...item.evidence, error: "模型暂不可用，回答已保留；原话没有执行，可以稍后重试或换个更具体的说法" } });
+      continue;
+    }
+    const r = await routeOwnerText(router, { text: ask.excerpt, env: toolEnvOf(intake), replies });
+    const g = guard();
+    if (g === "cancel") return cancel();
+    if (g === "fenced") return { kind: "fenced" };
+    if (!r.ok) {
+      updateItem(item.id, { state: "failed", waitingQuestionId: null, evidence: { ...item.evidence, error: `回答后没能形成可执行的理解（${r.reason}）；原话和回答已保留，没有修改任何数据` } });
+      continue;
+    }
+    db.transaction(() => applyRouteAnswer(intake, item, r, replies)).immediate();
   }
 
   // Ambiguous owner instructions get a fact-aware decision, not task creation or a syntax rejection.
@@ -448,7 +481,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
         updateItem(item.id, { state: "applied", waitingQuestionId: null, payload: { ...item.payload, needsDecision: false, readOnly: true, applied: { batchId: null, summary: "已保留原来的规则和安排，没有执行这份建议。", noChange: true } } }); continue;
       }
       // 确认的是当时绑定的对象和版本：等待期间对象变了，旧确认作废，按现在的事实重新问
-      const plan = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate()), adjustmentNeedsConfirmation(decision.intents));
+      const plan = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), item), adjustmentNeedsConfirmation(decision.intents));
       if (item.payload.pendingPlanHash && plan.hash !== item.payload.pendingPlanHash) {
         askDecisionConfirm(intake, item, decision, plan.hash, replies, true); continue;
       }
@@ -467,11 +500,12 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
       const { question } = ensureOpenQuestion({ questionKey: key, intakeId, itemId: item.id, fieldPath: "adjustment.choice", purpose: "agent_clarification", prompt: decision.question, reason: decision.reason, options: decision.options, context: {}, conversationId: intake.conversationId });
       updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, decisionReplies: replies, decisionQuestionKey: key, decisionQuestionPrompt: decision.question } });
     } else {
-      const error = validateAdjustment(decision.intents, localDateInTz(nowDate(), intake.timezone), adjustmentScope(String(item.payload.decisionText), localDateInTz(nowDate(), intake.timezone), replies));
+      // 调整决策的输出按调整范围核对；路由给出、等待确认的意图已经过绑定与授权，不套调整专用的意图白名单
+      const error = item.payload.decisionText ? validateAdjustment(decision.intents, localDateInTz(nowDate(), intake.timezone), adjustmentScope(String(item.payload.decisionText), localDateInTz(nowDate(), intake.timezone), replies)) : null;
       if (error) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error } }); continue; }
       if (confirmedHash === undefined) {
         // 是否要确认按绑定后的命令做参数级授权：临时上限/临时重排直接执行，长期规则、具体块、截止要确认
-        const plan = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate()), adjustmentNeedsConfirmation(decision.intents));
+        const plan = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), item), adjustmentNeedsConfirmation(decision.intents));
         if (plan.denied) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: `${plan.denied}，没有执行` } }); continue; }
         if (plan.needsConfirm) { askDecisionConfirm(intake, item, decision, plan.hash, replies, false); continue; }
       }
@@ -552,7 +586,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
     if (item.kind === "timetable") {
       resolveTimetableItem(intakeId, item, intake.timezone);
     } else if (item.kind === "command") {
-      if (item.payload.needsDecision) continue;
+      if (item.payload.needsDecision || item.payload.routeAsk) continue;
       resolveStep(intake, splitSteps(intakeId, item), planningNow);
     } else if (item.kind === "calendar" || item.kind === "adjustment") {
       resolveCalendarItem(intake, item);
@@ -733,11 +767,21 @@ function resolveCalendarItem(intake: IntakeRow, item: IntakeItemRow): void {
   updateItem(item.id, { state: "ready", waitingQuestionId: null, payload: { ...payload, adjustment: adj } });
 }
 
-/** 首次处理时把主人原话里的直接指令切成指令事项；返回留给分类的剩余文字（落库，重跑时复用） */
-function ownerInstructionPass(intake: IntakeRow, textRest: string, items: IntakeItemRow[]): string {
+const ROUTED_REST_VERSION = "route-v1";
+
+function toolEnvOf(intake: IntakeRow): ToolEnv {
+  return { intakeId: intake.id, conversationId: intake.conversationId, referenceDate: intake.referenceDate, now: nowDate(), tz: intake.timezone, selected: (intake.context.selectedEntityRef as EntityRef | undefined) ?? null };
+}
+
+/**
+ * 首次处理时把主人原话里的直接指令切成指令事项；返回留给分类的剩余文字（落库，重跑时复用）。
+ * 确定性快路径先行；剩余原话在有模型路由时交给路由（不在事务内调用模型），之后快路径事项、路由事项与
+ * 路由记录在同一事务里落库——等待模型期间失去租约或被取消，什么都不写。
+ */
+async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: IntakeItemRow[], router: RouteCall | null, guard: () => "ok" | "cancel" | "fenced"): Promise<{ rest: string; routed: boolean } | "cancel" | "fenced"> {
   const db = getDb();
-  const saved = db.prepare(`SELECT content_text FROM extracted_documents WHERE intake_id = ? AND source_kind = 'owner-rest'`).get(intake.id) as { content_text: string } | undefined;
-  if (saved) return saved.content_text;
+  const saved = db.prepare(`SELECT content_text, extractor_version FROM extracted_documents WHERE intake_id = ? AND source_kind = 'owner-rest'`).get(intake.id) as { content_text: string; extractor_version: string } | undefined;
+  if (saved) return { rest: saved.content_text, routed: saved.extractor_version === ROUTED_REST_VERSION };
   let rest = textRest;
   const directive = parseAgentText(intake.text);
   // Explicit modes are deterministic and never fall back to creating a task when malformed.
@@ -780,10 +824,12 @@ function ownerInstructionPass(intake: IntakeRow, textRest: string, items: Intake
     }
     // /导入 deliberately treats the body as material, not as owner tool instructions.
     createExtractedDocument({ intakeId: intake.id, sourceKind: "owner-rest", extractorVersion: "slash-v1", contentText: rest });
-    return rest;
+    return { rest, routed: false };
   }
   // 已有事项说明这份投递在引入指令解析之前就处理过：不回头重解析
-  if (textRest.trim() && !items.some((i) => i.kind !== "timetable")) {
+  const fresh = Boolean(textRest.trim()) && !items.some((i) => i.kind !== "timetable");
+  const fastItems: Array<{ key: string; excerpt: string; intents: Intent[] }> = [];
+  if (fresh) {
     // 已有的非课程固定活动名给解析器作提示：只有话里点到名字才当成对它的修改
     const parsed = parseInstruction(textRest, intake.referenceDate, nowDate(), intake.timezone, { fixedEventTitles: [...new Set(fixedEventRefs().map((e) => e.name))] });
     const kept: string[] = [];
@@ -815,18 +861,107 @@ function ownerInstructionPass(intake: IntakeRow, textRest: string, items: Intake
     }
     if (groups.length) {
       rest = [parsed.rest, ...kept].filter(Boolean).join("\n");
-      groups.forEach((g, n) => {
-        const excerpt = g.clauses.join("，");
-        createItem({ intakeId: intake.id, stableItemKey: `cmd-${n + 1}`, kind: "command", payload: { summary: excerpt.slice(0, 200), intents: g.intents, explicit: true }, evidence: { excerpt } });
-      });
+      groups.forEach((g, n) => fastItems.push({ key: `cmd-${n + 1}`, excerpt: g.clauses.join("，"), intents: g.intents }));
     }
   }
-  if (isFlexibleAdjustment(rest.trim()) && !listAttachments(intake.id).length) {
-    createItem({ intakeId: intake.id, stableItemKey: "owner-adjustment", kind: "command", payload: { summary: rest.slice(0,200), explicit: true, needsDecision: true, decisionText: rest }, evidence: { excerpt: rest } });
-    rest = "";
+  const hasAttachments = listAttachments(intake.id).length > 0;
+  const flexible = isFlexibleAdjustment(rest.trim()) && !hasAttachments;
+  // 附件/链接配一句很短的话（“这是课表”）只是让我处理材料：不额外花一次路由请求
+  const materialOnly = (hasAttachments || /https?:\/\//.test(textRest)) && rest.trim().length <= 60;
+  let route: RouteResult | null = null;
+  if (fresh && router && rest.trim() && !flexible && !materialOnly) {
+    route = await routeOwnerText(router, { text: rest, env: toolEnvOf(intake), slot: intake.context.slot });
+    const g = guard();
+    if (g !== "ok") return g;
   }
-  createExtractedDocument({ intakeId: intake.id, sourceKind: "owner-rest", extractorVersion: "instruction-v1", contentText: rest });
-  return rest;
+  return db.transaction(() => {
+    for (const f of fastItems) {
+      createItem({ intakeId: intake.id, stableItemKey: f.key, kind: "command", payload: { summary: f.excerpt.slice(0, 200), intents: f.intents, explicit: true, routedBy: "fast" }, evidence: { excerpt: f.excerpt } });
+    }
+    let routed = false;
+    if (flexible) {
+      createItem({ intakeId: intake.id, stableItemKey: "owner-adjustment", kind: "command", payload: { summary: rest.slice(0, 200), explicit: true, needsDecision: true, decisionText: rest, routedBy: "fast" }, evidence: { excerpt: rest } });
+      rest = "";
+    } else if (route?.ok) {
+      const materials = createRoutedItems(intake, route.items, route, "route");
+      // 没被任何事项认领的零散原话按资料保留（不算主人的指令），不丢
+      rest = [...materials, ...(route.leftover.length >= 8 ? [route.leftover] : [])].join("\n\n");
+      routed = true;
+    }
+    if (route) {
+      createExtractedDocument({
+        intakeId: intake.id,
+        sourceKind: "owner-route",
+        extractorVersion: ROUTED_REST_VERSION,
+        contentText: JSON.stringify(route.ok
+          ? { routedBy: "model", items: route.items.map((i) => ({ itemKey: i.itemKey, kind: i.outcome.kind, start: i.evidence.start, end: i.evidence.end, rejected: i.rejected })), leftover: route.leftover, observations: route.observations }
+          : { routedBy: "rules", fallbackReason: route.reason, observations: route.observations }),
+      });
+    }
+    createExtractedDocument({ intakeId: intake.id, sourceKind: "owner-rest", extractorVersion: routed ? ROUTED_REST_VERSION : "instruction-v1", contentText: rest });
+    return { rest, routed };
+  }).immediate();
+}
+
+type RouteOk = Extract<RouteResult, { ok: true }>;
+
+function routeBasePayload(item: RoutedItem, route: RouteOk): Record<string, unknown> {
+  return {
+    summary: item.evidence.excerpt.slice(0, 200),
+    explicit: true,
+    routedBy: "model",
+    seenRefs: route.seen,
+    observations: route.observations.map((o) => ({ id: o.id, label: o.label, tool: o.tool, truncated: o.truncated })),
+  };
+}
+
+/** 路由事项 → intake 事项：act 成指令（模型理解即推断来源）、decide 进决策、ask 立即提问、material 交给分类 */
+function createRoutedItems(intake: IntakeRow, items: RoutedItem[], route: RouteOk, prefix: string): string[] {
+  const materials: string[] = [];
+  for (const it of items) {
+    if (it.outcome.kind === "material") {
+      materials.push(it.evidence.excerpt);
+      continue;
+    }
+    const evidence = { excerpt: it.evidence.excerpt, start: it.evidence.start, end: it.evidence.end, source: "owner" };
+    const key = `${prefix}-${it.itemKey}`;
+    const created = createItem({ intakeId: intake.id, stableItemKey: key, kind: "command", payload: routeBasePayload(it, route), evidence });
+    if (!created.created) continue;
+    applyRouteOutcome(intake, created.item, it, route, []);
+  }
+  return materials;
+}
+
+function applyRouteOutcome(intake: IntakeRow, item: IntakeItemRow, it: RoutedItem, route: RouteOk, replies: Array<{ question: string; answer: string }>): void {
+  const base = { ...item.payload, ...routeBasePayload(it, route), summary: item.payload.summary, routeAsk: null, routeReplies: replies };
+  const outcome = it.outcome;
+  if (it.rejected || outcome.kind === "material") {
+    updateItem(item.id, { state: "failed", waitingQuestionId: null, payload: base, evidence: { ...item.evidence, error: it.rejected ?? "回答后判断这段话是资料而不是要求；原话已保留，没有执行" } });
+  } else if (outcome.kind === "act") {
+    updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, intents: outcome.intents, inferred: !isReadOnlyAct(outcome), decisionRationale: outcome.rationale } });
+  } else if (outcome.kind === "decide") {
+    updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, needsDecision: true, decisionText: [String(item.evidence?.excerpt ?? it.evidence.excerpt), ...replies.map((r) => r.answer)].join("\n"), objective: outcome.objective, decisionRationale: outcome.rationale, decisionReplies: [] } });
+  } else {
+    if (replies.length >= 3) {
+      updateItem(item.id, { state: "failed", waitingQuestionId: null, payload: base, evidence: { ...item.evidence, error: "经过三轮追问仍不清楚要做什么；原话和回答已保留，没有修改任何数据" } });
+      return;
+    }
+    const questionKey = `route-ask:${item.id}:${replies.length}`;
+    const { question } = ensureOpenQuestion({ questionKey, intakeId: intake.id, itemId: item.id, fieldPath: "route.answer", purpose: "agent_clarification", prompt: outcome.question.prompt, reason: outcome.question.reason, options: outcome.question.options, context: {}, conversationId: intake.conversationId });
+    updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...base, routeAsk: { excerpt: String(item.evidence?.excerpt ?? it.evidence.excerpt), replies, questionKey, prompt: outcome.question.prompt } } });
+  }
+}
+
+/** 追问回答后的重新路由：第一项原地替换这个事项，其余可执行事项另建 */
+function applyRouteAnswer(intake: IntakeRow, item: IntakeItemRow, route: RouteOk, replies: Array<{ question: string; answer: string }>): void {
+  const [first, ...more] = route.items;
+  if (!first) return;
+  applyRouteOutcome(intake, item, first, route, replies);
+  more.forEach((it, n) => {
+    if (it.outcome.kind === "material" || it.outcome.kind === "ask") return;
+    const created = createItem({ intakeId: intake.id, stableItemKey: `${item.stableItemKey}-r${replies.length}-${n + 2}`, kind: "command", payload: routeBasePayload(it, route), evidence: item.evidence });
+    if (created.created) applyRouteOutcome(intake, created.item, it, route, replies);
+  });
 }
 
 function bindEnvFor(intake: IntakeRow, itemId: string | null, now: Date, item?: IntakeItemRow): BindEnv {
@@ -841,6 +976,7 @@ function bindEnvFor(intake: IntakeRow, itemId: string | null, now: Date, item?: 
     answer: (key) => latestAnswerForKey(key)?.structured ?? null,
     seen: (item?.payload.seenRefs as EntityRef[] | undefined) ?? [],
     stepRefs: item ? stepRefsFor(intake.id, item) : undefined,
+    observations: (item?.payload.observations as Array<{ id: string; label: string }> | undefined) ?? [],
   };
 }
 

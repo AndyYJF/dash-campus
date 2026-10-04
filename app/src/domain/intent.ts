@@ -34,6 +34,7 @@ export type Ref = z.infer<typeof refSchema>;
 
 export const intentSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("inspect"), query: z.string().min(1).max(2000) }),
+  z.object({ op: z.literal("answer"), text: z.string().min(1).max(3000), sources: z.array(z.string().regex(/^o\d{1,3}$/)).min(1).max(10) }),
   z.object({ op: z.literal("undo") }),
   z.object({ op: z.literal("move_session"), ref: refSchema, targetDate: dateStr.nullable().default(null), part: part.default("any"), startLocalTime: timeStr.nullable().default(null) }),
   z.object({ op: z.literal("shorten_session"), ref: refSchema, durationMinutes: z.number().int().min(5).max(240) }),

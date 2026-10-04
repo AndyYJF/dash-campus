@@ -41,6 +41,8 @@ export type BindEnv = {
   seen?: EntityRef[];
   /** 同一句话里第 N 步产生的对象；null = 那一步还没完成 */
   stepRefs?: (step: number) => EntityRef[] | null;
+  /** 这次路由里只读工具的查询记录：基于事实的回答只能引用这些 */
+  observations?: Array<{ id: string; label: string }>;
 };
 
 export type QuestionSpec = { key: string; purpose: string; fieldPath: string; prompt: string; reason: string; options: string[]; context: Record<string, unknown> };
@@ -428,6 +430,11 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
     return { kind: "answer", ...answerReadRequest(intent.query, env) };
   }
   if (intent.op === "explain") return { kind: "answer", text: intent.topic === "reminders" ? explainReminders(env) : explainPlan(env) };
+  if (intent.op === "answer") {
+    const used = intent.sources.map((s) => env.observations?.find((o) => o.id === s));
+    if (!used.length || used.some((o) => !o)) return { kind: "fail", error: "这个回答没有对应的查询依据，没有采用；可以换个问法再问" };
+    return { kind: "answer", text: `${intent.text}\n\n依据（只读查询）：${[...new Set(used.map((o) => o!.label))].join("；")}` };
+  }
   if (intent.op === "schedule_here") {
     // 从时间轴空档发起：对得上已有任务就给它排，对不上就按这句话新建一个
     const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));

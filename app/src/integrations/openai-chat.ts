@@ -1,7 +1,9 @@
-import type { ModelProvider, ModelRequest, ModelResult } from "@/contracts/model";
+import type { ModelProvider, ModelRequest, ModelResult, ToolSpec } from "@/contracts/model";
 import type { CapabilityState } from "@/contracts/model-capabilities";
-import { completeWithSchema, type ChatMessage, type RawCallResult, type ToolCall } from "@/integrations/model-json";
+import { completeWithSchema, completeWithTools, type ChatMessage, type RawCallResult, type ToolCall } from "@/integrations/model-json";
 import { toProviderJsonSchema } from "@/integrations/json-schema";
+
+export type { ToolSpec };
 
 /**
  * OpenAI 兼容 Chat Completions 适配器（MODEL_PROTOCOL=openai-chat）。
@@ -16,8 +18,6 @@ export function chatCompletionsUrl(endpoint: string): string {
   return base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
 }
 
-export type ToolSpec = { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
-
 export type ExchangeOptions = {
   responseFormat?: Record<string, unknown> | null;
   tools?: ToolSpec[];
@@ -27,13 +27,22 @@ export type ExchangeOptions = {
 
 export class OpenAIChatProvider implements ModelProvider {
   readonly protocol = "openai-chat";
+  readonly toolRouting = true;
 
   constructor(
-    private readonly cfg: { endpoint: string; apiKey: string; model: string; jsonSchema?: CapabilityState },
+    private readonly cfg: { endpoint: string; apiKey: string; model: string; jsonSchema?: CapabilityState; tools?: CapabilityState },
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
   call(request: ModelRequest): Promise<ModelResult> {
+    if (request.tools) {
+      // 原生 tool_calls 只在探测确认支持时使用；否则走 JSON next-tool 兼容协议。工具轮不发 response_format，终结轮才发
+      return completeWithTools(
+        request,
+        (messages, o) => this.rawExchange(messages, request, { responseFormat: o.final ? this.responseFormat(request) : null, tools: o.tools, toolChoice: o.toolChoice }),
+        this.cfg.tools === "supported",
+      );
+    }
     return completeWithSchema(request, (messages) => this.rawExchange(messages, request, { responseFormat: this.responseFormat(request) }));
   }
 

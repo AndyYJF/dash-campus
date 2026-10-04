@@ -159,7 +159,9 @@ export type IntakeResultView = {
   state: "accepted" | "working" | "needs_input" | "applied" | "partly_applied" | "no_change" | "answered" | "failed" | "cancelled";
   summary: string;
   links: Array<{ label: string; href: string }>;
-  items: Array<{ id: string; kind: string; state: string; summary: string; error: string | null }>;
+  items: Array<{ id: string; kind: string; state: string; summary: string; error: string | null; routedBy: string | null; rationale: string | null; sources: string[] }>;
+  /** 理解方式：model=模型路由（含只读查询依据）、fast=确定性快路径、rules=模型不可用或失败后按规则；fallbackReason 说明为什么降级 */
+  understanding: { routedBy: "model" | "fast" | "rules" | null; fallbackReason: string | null; sources: string[] };
   changes: ChangeView[];
   questions: Array<{ id: string; prompt: string; reason: string; options: string[]; purpose: string; version: number }>;
   nextActions: string[];
@@ -269,7 +271,22 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
     state: i.state,
     summary: ((i.payload.applied as { summary?: string } | undefined)?.summary ?? (i.payload.summary as string | undefined) ?? "").slice(0, 300),
     error: (i.evidence?.error as string | undefined) ?? null,
+    routedBy: (i.payload.routedBy as string | undefined) ?? null,
+    rationale: typeof i.payload.decisionRationale === "string" ? i.payload.decisionRationale.slice(0, 300) : null,
+    sources: ((i.payload.observations as Array<{ label: string }> | undefined) ?? []).map((o) => o.label).slice(0, 8),
   }));
+  const routeDoc = db.prepare(`SELECT content_text FROM extracted_documents WHERE intake_id = ? AND source_kind = 'owner-route' ORDER BY created_at DESC LIMIT 1`).get(intake.id) as { content_text: string } | undefined;
+  let routeInfo: { routedBy?: "model" | "rules"; fallbackReason?: string; observations?: Array<{ label: string }> } = {};
+  try {
+    routeInfo = routeDoc ? JSON.parse(routeDoc.content_text) : {};
+  } catch {
+    routeInfo = {};
+  }
+  const understanding: IntakeResultView["understanding"] = {
+    routedBy: routeInfo.routedBy ?? (items.some((i) => i.payload.routedBy === "fast") ? "fast" : null),
+    fallbackReason: routeInfo.routedBy === "rules" ? (routeInfo.fallbackReason ?? null)?.slice(0, 300) ?? null : null,
+    sources: [...new Set((routeInfo.observations ?? []).map((o) => o.label))].slice(0, 8),
+  };
   const failed = itemViews.filter((i) => i.state === "failed");
   const visibleItems = items.filter((i) => i.state !== "cancelled");
   const readOnly = visibleItems.length > 0 && visibleItems.every((i) => i.state === "applied" && i.payload.readOnly === true) && batches.every((b) => b.status === "undone");
@@ -308,6 +325,7 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
     summary,
     links: items.flatMap((i) => i.state === "applied" ? (i.payload.readLinks as Array<{ label: string; href: string }> | undefined) ?? [] : []).filter((l) => typeof l.label === "string" && ["/today", "/week", "/direction", "/settings"].includes(l.href)),
     items: itemViews,
+    understanding,
     changes: changes.slice(0, 30),
     questions,
     nextActions: nextActions.slice(0, 8),

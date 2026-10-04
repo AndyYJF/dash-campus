@@ -12,6 +12,10 @@ import { getPrefs } from "@/repositories/plan";
 import { ensureOpenQuestion, listOpenQuestions, questionEverAsked, type QuestionRow } from "@/repositories/questions";
 import { calendarDay } from "@/workflows/calendar";
 import type { RebuildResult } from "@/workflows/plan";
+import { noticeFilters } from "@/workflows/ops/notices";
+import { reminderPolicy } from "@/workflows/reminder-policy";
+import { isRestoredHold } from "@/repositories/instance";
+import { getConfig } from "@/config";
 
 /**
  * 自研有限步骤 Agent 的“对象绑定与提问”层（REPAIR-PLAN §4.1.1/§5.1.1，AGENT-INTERFACE-CONTRACT §5）。
@@ -36,6 +40,8 @@ export type QuestionSpec = { key: string; purpose: string; fieldPath: string; pr
 
 export type Bound =
   | { kind: "run"; command: Record<string, unknown>; replanDates?: string[] }
+  /** 只读回答：解释状态，不改任何数据 */
+  | { kind: "answer"; text: string }
   | { kind: "ask"; question: QuestionSpec }
   | { kind: "fail"; error: string };
 
@@ -254,6 +260,36 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
       (getDb().prepare(`SELECT id FROM practice_entries WHERE created_at >= ? ORDER BY created_at DESC LIMIT 1`).get(new Date(env.now.getTime() - 7 * 86_400_000).toISOString()) as { id: string } | undefined);
     return row ? { kind: "run", command: { command: "correct_practice", practiceId: row.id, actualMinutes: intent.minutes } } : { kind: "fail", error: "最近没有可以纠正的实践记录" };
   }
+  if (intent.op === "profile") return { kind: "run", command: { command: "update_profile_fact", facts: intent.facts } };
+  if (intent.op === "notice_filter") {
+    if (intent.value === "*") {
+      const filters = noticeFilters();
+      if (!filters.length) return { kind: "fail", error: "现在没有生效的通知筛选规则" };
+      const last = filters[filters.length - 1]!;
+      return { kind: "run", command: { command: "upsert_notice_rule", field: last.field, value: last.value, remove: true } };
+    }
+    return { kind: "run", command: { command: "upsert_notice_rule", field: intent.field, value: intent.value, remove: intent.remove } };
+  }
+  if (intent.op === "export") return { kind: "run", command: { command: "request_export" } };
+  if (intent.op === "explain") return { kind: "answer", text: intent.topic === "reminders" ? explainReminders(env) : explainPlan(env) };
+  if (intent.op === "digest") {
+    const command: Record<string, unknown> = { command: "update_digest_policy" };
+    if (intent.dailyEnabled !== undefined) command.dailyEnabled = intent.dailyEnabled;
+    if (intent.dailyTime) command.dailyTime = intent.dailyTime;
+    if (intent.weekdaysOnly !== undefined) command.dailyWeekdaysOnly = intent.weekdaysOnly;
+    if (intent.weeklyEnabled !== undefined) command.weeklyEnabled = intent.weeklyEnabled;
+    if (intent.weeklyWeekday) command.weeklyWeekday = intent.weeklyWeekday;
+    if (intent.weeklyTime) command.weeklyTime = intent.weeklyTime;
+    return { kind: "run", command };
+  }
+  if (intent.op === "reminders") {
+    return { kind: "run", command: { command: "update_reminder_policy", ...(intent.enabled !== undefined ? { deadlineReminders: intent.enabled } : {}), ...(intent.quietStart ? { quietEnabled: true, quietStart: intent.quietStart, quietEnd: intent.quietEnd } : {}) } };
+  }
+  if (intent.op === "task_reminder") {
+    const t = chooseOrAsk(resolveTask(intent.ref, env), env, "task", (v) => v.title, "任务");
+    if (t.kind !== "one") return t;
+    return { kind: "run", command: { command: "update_reminder_policy", taskId: t.value.id, taskLeadMinutes: intent.leadMinutes } };
+  }
   if (intent.op === "calendar_sync") {
     return { kind: "run", command: { command: "update_calendar_sync_policy", enabled: intent.enabled, ...(intent.intervalDays ? { intervalDays: intent.intervalDays } : {}) } };
   }
@@ -291,6 +327,48 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
     return { kind: "run", command: { command: "complete_task", taskId, occurredOn: env.referenceDate, actualMinutes: intent.actualMinutes } };
   }
   return { kind: "fail", error: "这条指令现在还处理不了" };
+}
+
+/** “为什么没提醒我”：只说查得到的事实——策略、邮箱配置、已排的提醒、最近的投递状态；结果不确定的不说成已送达 */
+function explainReminders(env: BindEnv): string {
+  const db = getDb();
+  const policy = reminderPolicy();
+  const lines: string[] = [];
+  if (!policy.deadlineReminders) lines.push("截止提醒现在是关闭的，所以不会发提醒邮件。说“开启提醒”可以恢复。");
+  const cfg = getConfig();
+  if (!cfg.MAIL_TO) lines.push("还没有配置收件邮箱（MAIL_TO），所以邮件发不出去；提醒只会出现在页面上。");
+  if (!cfg.SMTP_HOST) lines.push("发信服务器（SMTP）没有配置。");
+  if (isRestoredHold()) lines.push("实例处于恢复后的暂停状态，邮件、模型和抓取都不会发起，需要先恢复运行。");
+  const queued = db.prepare(`SELECT COUNT(*) AS n, MIN(run_at) AS next FROM jobs WHERE type = 'reminder' AND status = 'queued'`).get() as { n: number; next: string | null };
+  lines.push(queued.n ? `已排好 ${queued.n} 个提醒，最近一个在 ${labelAt(queued.next!, env.tz)}。` : "现在没有排队中的提醒（没有带截止的未完成任务，或提醒时间已过）。");
+  if (policy.quietEnabled) lines.push(`${policy.quietStart}–${policy.quietEnd} 是安静时段，落在这段的提醒会顺延到 ${policy.quietEnd}。`);
+  const recent = db.prepare(`SELECT status, subject, updated_at FROM deliveries ORDER BY updated_at DESC LIMIT 5`).all() as Array<{ status: string; subject: string; updated_at: string }>;
+  const STATUS: Record<string, string> = { accepted: "发信服务器已接受（不等于你一定收到了）", unknown: "结果不确定，不会自动重发", failed: "发送失败", cancelled: "已取消", queued: "排队中", submitting: "发送中" };
+  for (const d of recent) lines.push(`${labelAt(d.updated_at, env.tz)}「${d.subject}」：${STATUS[d.status] ?? d.status}`);
+  if (!recent.length) lines.push("最近没有任何邮件投递记录。");
+  const failed = db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE type = 'reminder' AND status = 'failed'`).get() as { n: number };
+  if (failed.n) lines.push(`有 ${failed.n} 个提醒任务执行失败，可以在设置页的投递记录里查看原因后手动重发。`);
+  return lines.join("\n");
+}
+
+/** “为什么这样安排”：读出最近相关学习块自己的安排依据 */
+function explainPlan(env: BindEnv): string {
+  const active = activeSessions(env);
+  const sel = env.selected?.kind === "plan_session" ? active.find((s) => s.id === env.selected!.id) : undefined;
+  const list = sel ? [sel] : active.slice(0, 3);
+  if (!list.length) return "现在没有已安排的学习块。";
+  return list
+    .map((s) => {
+      const reason = (getDb().prepare(`SELECT reason FROM plan_sessions WHERE id = ?`).get(s.id) as { reason: string }).reason;
+      return `${sessionLabel(s, env)}：${reason || "排在当时最早的可用空档"}`;
+    })
+    .join("\n");
+}
+
+function labelAt(iso: string, tz: string): string {
+  const d = localDateInTz(new Date(iso), tz);
+  const t = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(iso));
+  return `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))} ${t}`;
 }
 
 /** 一个事项里的意图 → 注册操作参数 / 一个具体问题 / 失败原因 */

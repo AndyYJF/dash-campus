@@ -28,6 +28,9 @@ const KIND_TABLE: Record<string, { table: string; versioned: boolean; idColumn?:
   policy_rule: { table: "planning_policy_rules", versioned: true },
   planning_preferences: { table: "planning_preferences", versioned: true },
   setting: { table: "settings", versioned: true, idColumn: "key" },
+  profile_fact: { table: "profile_facts", versioned: true },
+  inbox_task_link: { table: "inbox_task_links", versioned: false },
+  inbox_decision: { table: "inbox_decisions", versioned: true },
 };
 
 export type UndoResult =

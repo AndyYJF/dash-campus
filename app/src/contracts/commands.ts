@@ -247,6 +247,56 @@ export const undoBatchSchema = z.object({
   batchId: z.string().uuid(),
 });
 
+/** 提醒策略：全局开关/提前量/安静时段；带 taskId 时设置这个任务自己的提前量 */
+export const updateReminderPolicySchema = z.object({
+  command: z.literal("update_reminder_policy"),
+  deadlineReminders: z.boolean().optional(),
+  defaultLeadMinutes: z.number().int().min(0).max(525_600).nullable().optional(),
+  quietEnabled: z.boolean().optional(),
+  quietStart: timeStr.optional(),
+  quietEnd: timeStr.optional(),
+  taskId: z.string().uuid().optional(),
+  taskLeadMinutes: z.number().int().min(0).max(525_600).nullable().optional(),
+});
+
+/** 摘要邮件策略（默认都不发）：只接受时间、频率这些有限字段，不接受任意模板 */
+export const updateDigestPolicySchema = z.object({
+  command: z.literal("update_digest_policy"),
+  dailyEnabled: z.boolean().optional(),
+  dailyTime: timeStr.optional(),
+  dailyWeekdaysOnly: z.boolean().optional(),
+  weeklyEnabled: z.boolean().optional(),
+  weeklyWeekday: z.number().int().min(1).max(7).optional(),
+  weeklyTime: timeStr.optional(),
+});
+
+/** 主人陈述的身份事实（学历层次/专业/校区/入学年份/年级）；不由兴趣或模型推断 */
+export const updateProfileFactSchema = z.object({
+  command: z.literal("update_profile_fact"),
+  facts: z.array(z.object({ field: z.enum(["education_level", "program", "campus", "grade_year", "study_year"]), value: z.string().trim().min(1).max(200) })).min(1).max(5),
+});
+
+/** 有范围的通知筛选规则：明确只面向某类人群的通知不进行动；remove=true 撤回 */
+export const upsertNoticeRuleSchema = z.object({
+  command: z.literal("upsert_notice_rule"),
+  field: z.enum(["education_level", "program", "campus", "grade_year", "study_year"]),
+  value: z.string().trim().min(1).max(200),
+  remove: z.boolean().default(false),
+});
+
+/** 通知落地：按身份与规则判断后，明确适用的义务建任务，其余只保留事实 */
+export const applyNoticeSchema = z.object({ command: z.literal("apply_notice"), messageId: z.string().uuid() });
+
+/** 主人纠正某条通知的归类（只这一条，不改身份和规则） */
+export const resolveNoticeSchema = z.object({
+  command: z.literal("resolve_notice"),
+  messageId: z.string().uuid(),
+  partition: z.enum(["action", "info", "opportunity", "review", "folded"]),
+});
+
+/** 生成一份业务数据导出（24 小时内可下载；不含密钥、会话、后台队列） */
+export const requestExportSchema = z.object({ command: z.literal("request_export"), type: z.literal("full_json").default("full_json") });
+
 export const commandSchema = z.discriminatedUnion("command", [
   upsertCourseSetSchema,
   recordPracticeSchema,
@@ -265,6 +315,13 @@ export const commandSchema = z.discriminatedUnion("command", [
   rescheduleSessionSchema,
   setSessionStateSchema,
   undoBatchSchema,
+  updateReminderPolicySchema,
+  updateDigestPolicySchema,
+  updateProfileFactSchema,
+  upsertNoticeRuleSchema,
+  applyNoticeSchema,
+  resolveNoticeSchema,
+  requestExportSchema,
 ]);
 
 export type Command = z.infer<typeof commandSchema>;
@@ -302,6 +359,13 @@ export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   reschedule_session: { title: "调整学习安排", description: "把一个具体学习块挪到别的日期/时段/钟点，或只改这一段的长度。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
   set_session_state: { title: "学习块状态", description: "开始、完成、跳过、锁定或解锁一个学习块。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
   undo_batch: { title: "撤销", description: "撤销最近一次（或指定的）变更。", group: "recovery", authorization: "owner_explicit", undo: "none", affects: ["plan", "calendar"] },
+  update_reminder_policy: { title: "提醒设置", description: "开关截止提醒、默认提前量、安静时段；或设置某个任务提前多久提醒。", group: "reminder", authorization: "owner_explicit", undo: "journal", affects: ["reminders"] },
+  update_digest_policy: { title: "摘要邮件设置", description: "每日/每周摘要的开关、时间、是否只在工作日。", group: "reminder", authorization: "owner_explicit", undo: "journal", affects: ["reminders"] },
+  update_profile_fact: { title: "身份信息", description: "记录主人陈述的学历层次、专业、校区、入学年份、年级。", group: "profile", authorization: "owner_explicit", undo: "journal", affects: ["notices"] },
+  upsert_notice_rule: { title: "通知筛选规则", description: "某类人群专属的通知不进行动（原文保留）；remove 撤回。", group: "profile", authorization: "owner_explicit", undo: "journal", affects: ["notices"] },
+  apply_notice: { title: "通知", description: "按身份与规则判断一条通知：明确适用的义务建任务，其余只保留事实。", group: "profile", authorization: "auto", undo: "journal", affects: ["plan", "reminders", "notices"] },
+  resolve_notice: { title: "通知归类", description: "主人纠正某条通知是否与自己有关、要不要做。", group: "profile", authorization: "owner_explicit", undo: "journal", affects: ["plan", "notices"] },
+  request_export: { title: "导出数据", description: "生成一份业务数据导出文件供下载。", group: "recovery", authorization: "owner_explicit", undo: "none", affects: [] },
   complete_task: { title: "完成任务", description: "把指定任务标记完成，取消其未执行学习块与提醒。", group: "task", authorization: "owner_explicit", undo: "journal", affects: ["plan", "reminders"] },
 };
 

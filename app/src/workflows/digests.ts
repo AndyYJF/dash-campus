@@ -54,6 +54,8 @@ export function scheduleDigests(now = new Date()) {
       if (!enabled || !state || state.signature !== signature) { if (!state || state.signature !== signature) updateSetting(key, { signature, nextRunAt }, entry.version); return; }
       if (state.nextRunAt > now.toISOString()) return;
       if (updateSetting(key, { signature, nextRunAt }, entry.version) === "conflict") return;
+      // “只在工作日发”：周末到点不排
+      if (kind === "daily" && cfg.dailyWeekdaysOnly && [0, 6].includes(new Date(`${localDateInTz(now, tz)}T12:00:00Z`).getUTCDay())) return;
       createJob({ type: DIGEST_JOB_TYPE, dedupeKey: `digest:${kind}:${occurrenceKey(now.toISOString(), tz)}`, runAt: now.toISOString(), payload: { kind, date: localDateInTz(now, tz) } }); queued++;
     }).immediate();
   }

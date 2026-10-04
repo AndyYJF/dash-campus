@@ -11,6 +11,12 @@ import { HttpError } from "@/workflows/http";
 import { nowDate } from "@/domain/clock";
 import { applyAcademicCalendar, applyCalendarSyncPolicy, applyHolidayCalendar, applyTeachingOverride } from "@/workflows/ops/calendar";
 import { applyPlanningPolicy } from "@/workflows/ops/policy";
+import { applyDigestPolicy, applyReminderPolicy } from "@/workflows/ops/reminders";
+import { applyNotice, applyNoticeRule, applyProfileFacts, applyResolveNotice } from "@/workflows/ops/notices";
+import { reevaluateAllCurrent } from "@/workflows/inbox";
+import { createExport } from "@/workflows/exports";
+import { refreshAllReminders } from "@/workflows/reminders";
+import { getBatch } from "@/repositories/journal";
 import { rebuildPlan, type PlanConflict } from "@/workflows/plan";
 import type { Unscheduled } from "@/domain/scheduler";
 
@@ -48,12 +54,25 @@ export function undoWithFollowUps(batchId: string): UndoResult {
       for (const child of listCausedBatches(batchId)) undoBatch(child);
       const r = undoBatch(batchId);
       if (r.kind !== "undone") throw new Abort(r); // 主批次撤不了：连带撤掉的重排一起回滚，整体不动
+      // 提醒策略撤回后，既有提醒任务也要回到撤回后的策略（已发出的邮件收不回）
+      const command = getBatch(batchId)?.command;
+      if (command === "update_reminder_policy") refreshAllReminders(new Date().toISOString());
+      // 身份/筛选规则撤回后，通知按撤回后的事实重新判断（已建任务不动）
+      if (command === "update_profile_fact" || command === "upsert_notice_rule") reevaluateAllCurrent();
       return r;
     })();
   } catch (e) {
     if (e instanceof Abort) return e.result;
     throw e;
   }
+}
+
+/** 导出文件是外部产物，不走 journal；结果里给下载入口和有效期 */
+function applyRequestExport(cmd: Extract<Command, { command: "request_export" }>): HandlerOutput {
+  const r = createExport({ type: cmd.type });
+  if (!r.ok) throw new HttpError(r.status, r.code, r.message);
+  if (r.export.status !== "ready") throw new HttpError(500, "EXPORT_FAILED", `导出没有生成成功：${r.export.error ?? "写文件失败"}`);
+  return { summary: `已生成数据导出（${Math.max(1, Math.round((r.export.byteSize ?? 0) / 1024))} KB），24 小时内可下载：/api/v1/exports/${r.export.id}/download。不含密码、会话和后台队列。`, effectBatchId: "" };
 }
 
 function applyUndoBatch(cmd: Extract<Command, { command: "undo_batch" }>): HandlerOutput {
@@ -83,6 +102,13 @@ const HANDLERS: { [N in Command["command"]]: Handler<N> } = {
   reschedule_session: applyRescheduleSession,
   set_session_state: applySessionState,
   undo_batch: applyUndoBatch,
+  update_reminder_policy: applyReminderPolicy,
+  update_digest_policy: applyDigestPolicy,
+  update_profile_fact: applyProfileFacts,
+  upsert_notice_rule: applyNoticeRule,
+  apply_notice: applyNotice,
+  resolve_notice: applyResolveNotice,
+  request_export: applyRequestExport,
 };
 
 export function isRegisteredOperation(name: unknown): name is Command["command"] {
@@ -115,7 +141,7 @@ export function executeCommand(raw: unknown, ctx: CommandContext): CommandResult
         const output = handler(parsed.data, ctx, changes);
         const summary = typeof output === "string" ? output : output.summary;
         const refs = uniqueRefs(changes);
-        if (typeof output !== "string") return { ok: true, batchId: output.effectBatchId, summary, noChange: false, affects: meta.affects, refs };
+        if (typeof output !== "string") return { ok: true, batchId: output.effectBatchId || null, summary, noChange: false, affects: meta.affects, refs } as CommandResult;
         if (!changes.length) return { ok: true, batchId: null, summary, noChange: true, affects: [], refs };
         const batchId = createBatch({
           command: parsed.data.command,

@@ -54,7 +54,14 @@ import {
   type CalendarExtraction,
   type TimetableExtraction,
 } from "@/workflows/materials";
-import { getFactByField } from "@/repositories/profile";
+import { factsMap, getFactByField } from "@/repositories/profile";
+import { NOTICE_EXTRACTION_JOB_TYPE, noticeExtractionSchema, type NoticeExtraction } from "@/contracts/notice-extraction";
+import { PROFILE_FIELDS } from "@/contracts/inbox";
+import { NOTICE_EXTRACT_INSTRUCTIONS, validateNoticeEvidence } from "@/workflows/notice-extraction";
+import { computeAndStoreDecision, importVerifiedNotice } from "@/workflows/inbox";
+import { createSource, getMessage, getMessageByExternalId, getRevision, getSource } from "@/repositories/inbox";
+import { firstUnknownLeaf, normalizeCondition, normalizeProfileValue, PROFILE_LABEL } from "@/domain/identity";
+import { noticeOutcome } from "@/workflows/ops/notices";
 import type { z } from "zod";
 import {
   INTAKE_JOB_TYPE,
@@ -321,7 +328,10 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
     }, JOB_RENEW_INTERVAL_MS);
     try {
       const result = await meteredModel(model.provider, { type: "intake", id: intakeId }).call({ workflow, context, outputSchemaVersion: 1, timeoutMs: JOB_EXTERNAL_TIMEOUT_MS, instructions, schema, signal: controller.signal });
-      return result.ok ? { ok: true, value: result.validatedResult as T } : { ok: false, error: `${result.error.code}：${result.error.message}` };
+      if (!result.ok) return { ok: false, error: `${result.error.code}：${result.error.message}` };
+      // provider 已按 schema 校验；这里再过一遍，保证默认值与类型一致（不信任任何未校验的输出）
+      const checked = schema.safeParse(result.validatedResult);
+      return checked.success ? { ok: true, value: checked.data } : { ok: false, error: `SCHEMA_INVALID：模型输出不符合约定（${checked.error.issues[0]?.path.join(".") ?? ""} ${checked.error.issues[0]?.message ?? ""}）` };
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : "模型请求失败，原文已保留" };
     } finally {
@@ -414,6 +424,20 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
         if (n === 0) updateItem(item.id, { payload });
         else createItem({ intakeId, stableItemKey: `${item.stableItemKey}-a${n + 1}`, kind: "adjustment", payload, evidence: item.evidence });
       });
+    } else if (item.kind === "notice" && !item.payload.notice) {
+      // 通知：读出资格条件与行动（每处都要有原文引用），之后按身份三值判断；读不出就只存原文
+      const notices = listItems(intakeId).filter((x) => x.kind === "notice");
+      const text = notices.length === 1 && rest ? rest : ((item.evidence?.excerpt as string) ?? "");
+      if (!text.trim()) continue;
+      const r = await callModel<NoticeExtraction>(NOTICE_EXTRACTION_JOB_TYPE, { text, occurredAt: intake.createdAt, timezone: intake.timezone }, NOTICE_EXTRACT_INSTRUCTIONS, noticeExtractionSchema);
+      if (getJob(job.id)?.cancelRequested) return cancel();
+      if (!r.ok) {
+        updateItem(item.id, { payload: { ...item.payload, notice: { text, structured: null, reason: r.error } } });
+        continue;
+      }
+      const problem = validateNoticeEvidence(r.value, text);
+      const structured = problem || !r.value.structured ? null : { ...r.value.structured, ...(r.value.structured.condition ? { condition: normalizeCondition(r.value.structured.condition) } : {}), ...(r.value.structured.action ? { action: { ...r.value.structured.action, actionKey: "primary" } } : {}) };
+      updateItem(item.id, { payload: { ...item.payload, notice: { text, structured, reason: problem ?? r.value.unknownReason ?? null } } });
     } else if (item.kind === "holiday" && !item.payload.holiday) {
       updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: "节假日安排需要官方通知的文字或链接（国务院办公厅年度通知）；图片或转述里的日期我不直接采用，原件已保留" } });
     }
@@ -440,6 +464,8 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
       resolveCommandItem(intake, item, { ...env, itemId: item.id });
     } else if (item.kind === "calendar" || item.kind === "adjustment") {
       resolveCalendarItem(intake, item);
+    } else if (item.kind === "notice" && item.payload.notice) {
+      resolveNoticeItem(intake, item);
     } else if ((item.kind === "task" || item.kind === "practice") && isCompletionReport(itemText(item))) {
       resolveCompletionItem(intakeId, item);
     } else {
@@ -460,7 +486,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
     } else applyItem(intake, item);
   }
   // 本次落库的课程/任务/实践/日程都会改变预算或需求：触发差异重排（相同事实无变更，只动必要的块）
-  const PLAN_KINDS = ["timetable", "task", "practice", "ics", "calendar", "holiday", "adjustment"];
+  const PLAN_KINDS = ["timetable", "task", "practice", "ics", "calendar", "holiday", "adjustment", "notice"];
   const appliedNow = listItems(intakeId).filter((i) => readyIds.has(i.id) && i.state === "applied");
   const causing = appliedNow.filter((i) => PLAN_KINDS.includes(i.kind));
   if (causing.length) {
@@ -476,6 +502,51 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
   if (lastPlan) raisePlanQuestions(lastPlan, { conversationId: intake.conversationId, tz: intake.timezone });
   recordAgentTurn(intake);
   return finish("done", null);
+}
+
+const INTAKE_NOTICE_SOURCE = "dash-intake";
+
+/**
+ * 通知事项：进同一套通知模型（原文、修订、三值判断），不另起一套。
+ * 资格条件里有主人还没说过的身份字段 → 只问那一个字段；条件不明确 → 存为待判断，不默认过滤。
+ */
+function resolveNoticeItem(intake: IntakeRow, item: IntakeItemRow): void {
+  const n = item.payload.notice as { text: string; structured: NoticeExtraction["structured"]; reason: string | null };
+  if (!getSource(INTAKE_NOTICE_SOURCE)) createSource(INTAKE_NOTICE_SOURCE, "统一输入");
+  let message = getMessageByExternalId(INTAKE_NOTICE_SOURCE, item.id);
+  if (!message) {
+    const r = importVerifiedNotice({ schemaVersion: 1, source: INTAKE_NOTICE_SOURCE, externalId: item.id, revisionKey: "r1", revisionOrder: 1, occurredAt: intake.createdAt, text: n.text, ...(n.structured ? { structured: n.structured } : {}) }, { automaticExtraction: false });
+    if (!r.ok) {
+      updateItem(item.id, { state: "ready", waitingQuestionId: null });
+      return;
+    }
+    message = getMessage(r.messageId)!;
+  }
+  const revision = getRevision(message.currentRevisionId!)!;
+  computeAndStoreDecision(message, revision);
+  const outcome = noticeOutcome(message.id);
+  const condition = n.structured?.condition;
+  if (outcome?.partition === "review" && condition) {
+    const leaf = firstUnknownLeaf(condition, factsMap());
+    if (leaf && (PROFILE_FIELDS as readonly string[]).includes(leaf.field)) {
+      const field = leaf.field as keyof typeof PROFILE_LABEL;
+      const { question } = ensureOpenQuestion({
+        questionKey: `profile.${leaf.field}`,
+        intakeId: intake.id,
+        itemId: item.id,
+        fieldPath: `profile.${leaf.field}`,
+        prompt: `这条通知写着“${leaf.quote}”。你的${PROFILE_LABEL[field]}是什么？`,
+        options: leaf.values,
+        purpose: "profile_fact",
+        reason: "资格条件里有我还不知道的身份信息；不确认就不能判断这条通知要不要你处理",
+        context: { field: leaf.field, values: leaf.values },
+        conversationId: intake.conversationId,
+      });
+      updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, messageId: message.id } });
+      return;
+    }
+  }
+  updateItem(item.id, { state: "ready", waitingQuestionId: null, payload: { ...item.payload, messageId: message.id } });
 }
 
 function revisionOf(value: unknown): string {
@@ -599,7 +670,10 @@ function ownerInstructionPass(intake: IntakeRow, textRest: string, items: Intake
 function resolveCommandItem(intake: IntakeRow, item: IntakeItemRow, env: BindEnv): void {
   const intents = (item.payload.intents as Intent[] | undefined) ?? [];
   const bound = bindIntents(intents, env);
-  if (bound.kind === "run") {
+  if (bound.kind === "answer") {
+    // 只读回答：不改数据、不写 journal
+    updateItem(item.id, { state: "applied", waitingQuestionId: null, payload: { ...item.payload, applied: { batchId: null, summary: bound.text, noChange: true } } });
+  } else if (bound.kind === "run") {
     updateItem(item.id, { state: "ready", waitingQuestionId: null, payload: { ...item.payload, command: bound.command, replanDates: bound.replanDates ?? [] } });
   } else if (bound.kind === "ask") {
     const q = bound.question;
@@ -721,6 +795,9 @@ function commandForItem(intake: IntakeRow, item: IntakeItemRow): unknown | null 
     }
     const due = dueFromText(text, intake.referenceDate);
     return { command: "create_or_update_task", title: summary, estimateMinutes: minutes, dueLocalDate: due?.localDate ?? null, dueLocalTime: due?.localTime ?? null };
+  }
+  if (item.kind === "notice") {
+    return item.payload.messageId ? { command: "apply_notice", messageId: item.payload.messageId } : null;
   }
   if (item.kind === "holiday") {
     const h = item.payload.holiday as Record<string, unknown> | undefined;
@@ -923,6 +1000,12 @@ export function submitAnswer(input: { questionId: string; expectedVersion: numbe
     const anchor = parseSemesterAnchor(text, referenceDate);
     if (!anchor) return { kind: "unparseable", hint: "请回答「第N周」（如「第5周」）或日期（如 2026-09-01）。" };
     structured = { firstMonday: anchor.firstMonday, derivation: anchor.derivation, referenceDate };
+  } else if (question.purpose === "profile_fact") {
+    // 身份由主人自己说：选项或直接说出自己的情况都行
+    const field = String(question.context.field);
+    const value = normalizeProfileValue(field, text.replace(/^(我是|我在|是|在)/, ""));
+    if (!value || value.length > 20 || /不知道|不确定|都不是|不是/.test(value)) return { kind: "unparseable", hint: `直接说你的${PROFILE_LABEL[field as keyof typeof PROFILE_LABEL] ?? "情况"}就行（比如“${(question.options ?? ["……"])[0]}”）` };
+    structured = { field, value };
   } else if (question.purpose !== "semester_anchor" && !question.questionKey.startsWith("task_ref:")) {
     const parsed = parseAnswerByPurpose(question, text, { referenceDate, now, tz });
     if (!parsed.ok) return { kind: "unparseable", hint: parsed.hint };
@@ -931,6 +1014,11 @@ export function submitAnswer(input: { questionId: string; expectedVersion: numbe
 
   const result = recordAnswer({ questionId: input.questionId, expectedVersion: input.expectedVersion, rawText: text, structured });
   if (result.kind !== "answered") return result;
+
+  // 身份回答先落成事实（主人的明确陈述），等它的通知随后按新身份继续
+  if (question.purpose === "profile_fact" && structured) {
+    executeOperation({ command: "update_profile_fact", facts: [{ field: structured.field, value: structured.value }] }, { intakeId: null, itemId: null, itemKey: "", instanceEpoch: getInstanceState().deploymentEpoch, evidence: `回答：${text}`, explicit: true, conversationId: question.conversationId, now });
+  }
 
   // 恢复所有等这个答案的事项：回答后从 Resolve 继续，不重复提取/分类
   const waiting = listItemsWaitingOn(input.questionId);

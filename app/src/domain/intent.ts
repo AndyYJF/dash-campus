@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { addDays } from "./time";
 import { dateFromText, estimateFromText, isCompletionReport, parseNumber, timeFromText } from "./task-text";
+import { normalizeProfileValue, profileFactsFromText } from "./identity";
 
 /**
  * 主人指令的结构化意图（REPAIR-PLAN §5.1.1，AGENT-INTERFACE-CONTRACT §5.1）。
@@ -43,6 +44,13 @@ export const intentSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("remaining"), ref: refSchema, minutes: z.number().int().min(0).max(100_000) }),
   z.object({ op: z.literal("complete"), ref: refSchema, actualMinutes: z.number().int().min(1).max(1440).nullable().default(null) }),
   z.object({ op: z.literal("correct_practice"), minutes: z.number().int().min(1).max(1440) }),
+  z.object({ op: z.literal("profile"), facts: z.array(z.object({ field: z.enum(["education_level", "program", "campus", "grade_year", "study_year"]), value: z.string().min(1).max(200) })).min(1).max(5) }),
+  z.object({ op: z.literal("notice_filter"), field: z.enum(["education_level", "program", "campus", "grade_year", "study_year"]), value: z.string().min(1).max(200), remove: z.boolean().default(false) }),
+  z.object({ op: z.literal("explain"), topic: z.enum(["reminders", "plan"]) }),
+  z.object({ op: z.literal("export") }),
+  z.object({ op: z.literal("digest"), dailyEnabled: z.boolean().optional(), dailyTime: timeStr.optional(), weekdaysOnly: z.boolean().optional(), weeklyEnabled: z.boolean().optional(), weeklyWeekday: z.number().int().min(1).max(7).optional(), weeklyTime: timeStr.optional() }),
+  z.object({ op: z.literal("reminders"), enabled: z.boolean().optional(), quietStart: timeStr.optional(), quietEnd: timeStr.optional() }),
+  z.object({ op: z.literal("task_reminder"), ref: refSchema, leadMinutes: z.number().int().min(0).max(525_600) }),
   z.object({ op: z.literal("calendar_sync"), enabled: z.boolean(), intervalDays: z.number().int().min(1).max(30).nullable().default(null) }),
   z.object({ op: z.literal("course_cancel"), courseName: z.string().max(100).nullable().default(null), date: dateStr }),
   z.object({ op: z.literal("course_move"), courseName: z.string().max(100).nullable().default(null), sourceDate: dateStr, targetDate: dateStr, startLocalTime: timeStr.nullable().default(null) }),
@@ -79,6 +87,12 @@ function nameOf(text: string): string {
     .replace(/(的|这次|那次|这个|那个|安排|学习块|任务)+$/, "")
     .replace(/[\s，。,.!！、:：]/g, "")
     .trim();
+}
+
+/** 指令里的对象名都很短；一长串正文（通知、资料）里碰巧出现“优先”“暂停”不算指令 */
+function isShortName(subject: string): boolean {
+  const n = nameOf(subject).length;
+  return n >= 2 && n <= 12 && !/[：:]/.test(subject);
 }
 
 function refOf(subject: string, referenceDate: string): Ref {
@@ -166,6 +180,57 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
     if (minutes) return { op: "shorten_session", ref: refOf(shorten[1]!, referenceDate), durationMinutes: minutes };
   }
 
+  // 通知筛选规则：某类人群专属的通知不用给我 / 撤回
+  if (/通知/.test(c)) {
+    const audienceWord = /(研究生|硕士|博士|本科生?)/.exec(c)?.[1];
+    if (audienceWord && /(不用|不要|别|不必|不需要)(再)?(给我)?(推|发|看|显示|提醒|通知)?/.test(c) && /(专属|的|类)?通知/.test(c)) {
+      return { op: "notice_filter", field: "education_level", value: normalizeProfileValue("education_level", audienceWord), remove: false };
+    }
+    if (audienceWord && /(还是|恢复|重新)(给我)?(看|推|显示)/.test(c)) return { op: "notice_filter", field: "education_level", value: normalizeProfileValue("education_level", audienceWord), remove: true };
+  }
+  if (/(撤销|撤回|取消|去掉|删掉).{0,6}(筛选|过滤)(规则)?/.test(c)) return { op: "notice_filter", field: "education_level", value: "*", remove: true };
+  // 第一人称的身份陈述：“我是AI专业大一”“我在江安校区”
+  if (/^我(是|在|读|学|就读|现在)/.test(c) && !/(想|打算|准备|要去|希望)/.test(c)) {
+    const facts = profileFactsFromText(c);
+    if (facts.length) return { op: "profile", facts };
+  }
+  // 询问状态：为什么没提醒 / 为什么这样安排
+  if (/为什么|为啥|怎么/.test(c)) {
+    if (/(没|不)(有)?(提醒|收到|发)/.test(c)) return { op: "explain", topic: "reminders" };
+    if (/(这样|这么)(安排|排)|排在/.test(c)) return { op: "explain", topic: "plan" };
+  }
+  if (/(打包|导出|备份)(我的)?.{0,8}(成果|数据|记录|全部)/.test(c)) return { op: "export" };
+
+  // 摘要邮件
+  if (/(摘要|日报|每周回顾|周报)/.test(c)) {
+    if (/(不发|别发|不要|不用|关掉|关闭|取消|停掉|停止)/.test(c)) return /(每周回顾|周报)/.test(c) ? { op: "digest", weeklyEnabled: false } : { op: "digest", dailyEnabled: false };
+    const raw = timeFromText(c);
+    if (raw) {
+      const h = Number(raw.slice(0, 2));
+      const time = /晚|傍晚|下午/.test(c) && h < 12 ? `${String(h + 12).padStart(2, "0")}${raw.slice(2)}` : raw;
+      const wd = /每周\s*([一二三四五六日天])/.exec(c);
+      if (wd || /(每周回顾|周报)/.test(c)) return { op: "digest", weeklyEnabled: true, weeklyTime: time, ...(wd ? { weeklyWeekday: WEEKDAY_INDEX[wd[1]!]! } : {}) };
+      return { op: "digest", dailyEnabled: true, dailyTime: time, weekdaysOnly: /工作日|周一到周五/.test(c) };
+    }
+  }
+  // 提醒：某个任务提前多久、全局开关、安静时段
+  const lead = new RegExp(`^(.+?)提前\\s*((?:${NUM})\\s*(?:个)?\\s*(?:天|小时|钟头|分钟))(?:提醒|通知|叫我)`).exec(c);
+  if (lead && isShortName(lead[1]!)) {
+    const days = new RegExp(`(${NUM})\\s*天`).exec(lead[2]!);
+    const minutes = days ? Math.round((days[1] === "半" ? 0.5 : parseNumber(days[1]!)) * 1440) : durationOf(lead[2]!);
+    if (minutes !== null && !Number.isNaN(minutes)) return { op: "task_reminder", ref: refOf(lead[1]!, referenceDate), leadMinutes: minutes };
+  }
+  if (/提醒|邮件|打扰/.test(c)) {
+    const quiet = /(.+?点\s*(?:半)?)\s*(?:到|至|-)\s*(.+?点\s*(?:半)?)\s*(?:之间)?(?:别|不要|不用)(?:发|打扰|提醒)/.exec(c);
+    if (quiet) {
+      const start = eveningTime(quiet[1]!);
+      const end = timeFromText(quiet[2]!);
+      if (start && end) return { op: "reminders", quietStart: start, quietEnd: end };
+    }
+    if (/(别|不要|不用|不必)(再)?(给我)?(发)?提醒|关(掉|闭)提醒|取消提醒/.test(c)) return { op: "reminders", enabled: false };
+    if (/只提醒临近截止|临近截止(再|才)?提醒|截止前提醒我|(开启|打开|恢复)提醒/.test(c)) return { op: "reminders", enabled: true };
+  }
+
   // 校历/节假日自动核对的开关与频率
   // 必须明说“自动/定期/每隔多久”：单说“校历更新了”是陈述，不是要开启自动核对
   if (/(节假日|校历|调课|调休|假期安排)/.test(c) && /(获取|更新|同步|核对|检查|查)/.test(c) && /(自动|定期|每周|每天|每两周|每\d+\s*天)/.test(c)) {
@@ -248,20 +313,20 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
 
   // 暂停 / 恢复
   const pause = /^(?:把|将)?(.+?)(?:先)?(?:缓|缓一缓|放一放|暂停|停一下|搁置|放下|往后放)(.*)$/.exec(c);
-  if (pause && nameOf(pause[1]!).length >= 2) return { op: "pause_task", ref: refOf(pause[1]!, referenceDate), until: untilOf(pause[2]!, referenceDate) };
+  if (pause && isShortName(pause[1]!) && !/课$/.test(nameOf(pause[1]!))) return { op: "pause_task", ref: refOf(pause[1]!, referenceDate), until: untilOf(pause[2]!, referenceDate) };
   const resume = /^(?:恢复|继续做?|重新开始)(.+)$/.exec(c);
-  if (resume && nameOf(resume[1]!).length >= 2) return { op: "resume_task", ref: refOf(resume[1]!, referenceDate) };
+  if (resume && isShortName(resume[1]!)) return { op: "resume_task", ref: refOf(resume[1]!, referenceDate) };
 
   // 剩余需求：“报告还差一个小时”
   const remaining = new RegExp(`^(.+?)(?:还差|还剩|还需要|还要|还得)(?:大概|大约|差不多)?\\s*(${DURATION})`).exec(c);
   if (remaining) {
     const minutes = durationOf(remaining[2]!);
-    if (minutes !== null && nameOf(remaining[1]!).length >= 2) return { op: "remaining", ref: refOf(remaining[1]!, referenceDate), minutes };
+    if (minutes !== null && isShortName(remaining[1]!)) return { op: "remaining", ref: refOf(remaining[1]!, referenceDate), minutes };
   }
 
   // 优先级：“实验优先”“以后先保证数学”
   const first = /^(?:以后|今后)?(?:先保证|优先做|先做|优先)(.+)$/.exec(c) ?? /^(.+?)(?:优先|先做|排前面|更重要)$/.exec(c);
-  if (first && nameOf(first[1]!).length >= 2) return { op: "prioritize", ref: refOf(first[1]!, referenceDate) };
+  if (first && isShortName(first[1]!)) return { op: "prioritize", ref: refOf(first[1]!, referenceDate) };
 
   if (isCompletionReport(c)) {
     const name = c.replace(/做完了?|写完了?|搞定了?|完成了?|已经|已|提交了?|交了|弄完了?|结束了/g, "").replace(new RegExp(`(?:花了|用了)?\\s*${DURATION}`, "g"), "");
@@ -275,6 +340,11 @@ export function parseInstruction(text: string, referenceDate: string, now: Date,
   const intents: ParsedInstruction["intents"] = [];
   const rest: string[] = [];
   for (const line of text.split(/\n+/)) {
+    // 通知/公告体的正文是资料，不是主人的指令：整行留给分类
+    if (/^[^，。]{0,30}(通知|公告|公示|启事)[^，。]{0,10}[：:]/.test(line.trim()) || /^关于.{2,40}的(通知|公告)/.test(line.trim())) {
+      rest.push(line.trim());
+      continue;
+    }
     const clauses = line.split(/[，,；;。！!]+/).map((c) => c.trim()).filter(Boolean);
     const kept: string[] = [];
     for (let i = 0; i < clauses.length; i++) {

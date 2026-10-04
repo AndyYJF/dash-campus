@@ -8,6 +8,7 @@ import type { Command, CommandContext } from "@/contracts/commands";
 import { instanceTimezone, localDateInTz, wallTimeToUtc } from "@/domain/time";
 import { getTask, updateTask } from "@/repositories/planning";
 import { HttpError } from "@/workflows/http";
+import { refreshReminders } from "@/workflows/reminders";
 import { nowDate } from "@/domain/clock";
 
 /** 任务/实践 操作 handler。全部在 executeCommand 的事务内执行。 */
@@ -46,6 +47,8 @@ export function applyTask(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInpu
     .run(id, cmd.title, cmd.priority ?? "normal", cmd.estimateMinutes ?? null, due.kind, due.localDate, due.timezone, due.at, cmd.effortMode ?? "deliverable", cmd.remainingMinutes ?? null, cmd.remainingMinutes != null ? (ctx.now ?? nowDate()).toISOString() : null, now, now);
   changes.push({ entityKind: "task", entityId: id, action: "create", after: { title: cmd.title }, afterVersion: 1 });
   linkSource({ entityKind: "task", entityId: id, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
+  // 提醒按当前策略建立（主人关掉提醒、截止在安静时段等都在里面处理）；聊天、卡片、兼容接口同一套
+  if (due.kind !== "none") refreshReminders(getTask(id)!, now);
   return `任务创建：${cmd.title}`;
 }
 
@@ -87,6 +90,8 @@ function applyTaskUpdate(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInput
   const version = row.version as number;
   changes.push({ entityKind: "task", entityId: cmd.taskId!, action: "update", before, after, beforeVersion: version, afterVersion: version + 1 });
   linkSource({ entityKind: "task", entityId: cmd.taskId!, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
+  // 截止变了：旧提醒失效，按新截止重建
+  if (dueChanged) refreshReminders(getTask(cmd.taskId!)!, new Date().toISOString());
   bumpPlanningRevision();
   return `任务已修改：${(after.title as string) ?? (row.title as string)}`;
 }
@@ -137,6 +142,8 @@ export function applyPauseTask(cmd: Cmd<"pause_task">, ctx: CommandContext, chan
     released = pending.length;
   }
   linkSource({ entityKind: "task", entityId: cmd.taskId, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
+  // 暂停期间不提醒；恢复后按截止重建
+  refreshReminders(getTask(cmd.taskId)!, nowIso);
   bumpPlanningRevision();
   if (cmd.resume) return `「${row.title}」已恢复，会重新安排时间`;
   return `「${row.title}」先放一放${cmd.until ? `，${cmd.until} 起恢复安排` : "（没定恢复时间，想继续时说一声）"}${released ? `；让出 ${released} 个还没开始的学习块` : ""}`;

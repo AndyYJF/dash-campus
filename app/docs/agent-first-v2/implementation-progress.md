@@ -29,6 +29,15 @@
 - 回归中发现既有的时刻相关测试：计时停止用真实时钟、测试用 UTC 日期当“今天”，在当地 00:00–08:00 运行会失败（与本阶段改动无关，未改代码时同样失败）。修正：`focus-timer` 改用可注入时钟 `nowDate()`（生产仍是真实时间），计时测试固定在当地中午、单独一天；复盘测试“今天”按 Asia/Shanghai 取日期。
 - 全套 **361/361 通过**（P0 后 355 + 新 6）；`tsc --noEmit` 无错；eslint 0 错（2 个既有警告）；`next build` 通过。
 
+### 发布与生产冒烟（2026-10-05 00:27 +08）
+
+- 提交 `bf542ce` 推送 `main`；按 [deploy.md](../deploy.md) §4 发布：停桥接 timer 与 web/worker → 备份 `backups/production-20261005-p1-bf542ce`（schema30，sha256 `60f8c807…`）→ 覆盖源码 → 构建 → 迁移（已是 30，无新迁移）→ 启动 → 恢复 timer。回退材料：`/opt/dash-campus-src-d1efca0.tgz` 与镜像 `dash-campus:rollback-d1efca0`。停机约 1.5 分钟。
+- 生产源码散列与 `git -c core.autocrlf=false archive bf542ce` 一致（`b7499a9e…`）。
+- 冒烟：公网 health `schemaVersion 30`；80 端口 301 到 HTTPS；`/login` 200；`/api/v2/actions`、`/api/v2/dashboard`、`/api/v1/integrations/model-capabilities`、`POST /api/v2/intakes` 未登录均 401；worker 正常启动、恢复扫描 0 项；web 日志无错误。
+- 在生产 ops 容器里用已部署代码跑纯函数核对（不读写库）：36 个操作、授权级别 auto/explicit、意图目录 53 项、一致性问题为空；临时规则推断 allow、长期规则推断 confirm、确认后 allow、资料来源 deny、推断改预算 deny。
+- 生产库只读核对：没有处于等待中的旧格式确认事项（新指纹键对已有数据无兼容负担）。
+- 未做：登录态网页走查与真实投递端到端（需主人会话，不往生产写测试数据）。
+
 ### 未验证 / 未完成
 
 - 分类模型给出 `intents` 数组只在固定回放中验证；真实模型是否稳定给出多意图要到 P2 路由与 P3 评测才有数据。

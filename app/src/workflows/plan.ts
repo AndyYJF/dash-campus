@@ -290,7 +290,7 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
     }
     if (demand === 0) {
       // deliverable 投入已达估时仍未完成：不无依据再排满原估时，等用户报告剩余
-      if (t.effortMode === "deliverable") unscheduled.push({ taskId: t.id, title: t.title, reason: "needs_remaining_estimate" });
+      if (t.effortMode === "deliverable" || openBlocker(t.id)) unscheduled.push({ taskId: t.id, title: t.title, reason: "needs_remaining_estimate" });
       continue;
     }
     const need = Math.round(demand - k.minutes);
@@ -345,7 +345,9 @@ function localLabel(ms: number, tz: string): string {
 function placementReason(task: PlanTask, p: { start: number; end: number; skipped: Array<{ date: string; why: string }> }, starter: boolean, tz: string, base: Map<string, DayLedger>): string {
   const parts: string[] = [];
   const minutes = Math.round((p.end - p.start) / 60000);
-  if (starter) parts.push(`这件事的工作量还不清楚，先安排 ${minutes} 分钟梳理出下一步`);
+  const blocker = openBlocker(task.id);
+  if (blocker) parts.push(`上次卡在“${blocker.slice(0, 40)}”，先安排 ${minutes} 分钟处理这个卡点`);
+  else if (starter) parts.push(`这件事的工作量还不清楚，先安排 ${minutes} 分钟梳理出下一步`);
   if (task.dueAtMs != null) parts.push(`${localLabel(task.dueAtMs, tz)} 截止`);
   const date = localDateInTz(new Date(p.start), tz);
   const ledger = base.get(date);
@@ -387,8 +389,27 @@ function spentMinutes(taskId: string, since: string | null): number {
   return total;
 }
 
-/** 剩余需求：主人报告过剩余就从那里扣；否则估时 − 已确认投入；未知估时为 null */
+/** 任务最近一次实践留下、还没被后续记录消除的卡点 */
+export function openBlocker(taskId: string): string {
+  return blockerState(taskId).text;
+}
+
+/** 卡点及其排障块是否已经做过一次（做过却没有新反馈：不再自动续排，等主人说结果） */
+function blockerState(taskId: string): { text: string; handled: boolean } {
+  const db = getDb();
+  const r = db.prepare(`SELECT blocker, created_at FROM practice_entries WHERE task_id = ? ORDER BY occurred_on DESC, created_at DESC LIMIT 1`).get(taskId) as { blocker: string; created_at: string } | undefined;
+  if (!r?.blocker) return { text: "", handled: false };
+  const handled = Boolean(db.prepare(`SELECT 1 FROM plan_sessions WHERE task_id = ? AND status IN ('completed','skipped') AND updated_at > ?`).get(taskId, r.created_at));
+  return { text: r.blocker, handled };
+}
+
+/**
+ * 剩余需求：主人报告过剩余就从那里扣；否则估时 − 已确认投入；未知估时为 null。
+ * 有未解决的卡点时只排一个最小的排障步骤——卡着的时候花了多久推不出进度，也不该照旧排满。
+ */
 function remainingDemand(task: PlanTask, spent: Map<string, number>): number | null {
+  const blocker = blockerState(task.id);
+  if (blocker.text) return blocker.handled ? 0 : STARTER_MINUTES;
   const used = Math.round(spent.get(task.id) ?? 0);
   if (task.remainingMinutes !== null) return Math.max(0, task.remainingMinutes - used);
   if (task.estimateMinutes === null) return null;

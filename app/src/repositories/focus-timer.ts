@@ -36,13 +36,13 @@ export function getFocusSession(id: string): FocusRow | null {
 }
 
 /** 启动计时；已有进行中返回 null（调用方转 409） */
-export function startFocus(input: { taskId?: string | null; note: string }): FocusRow | null {
+export function startFocus(input: { taskId?: string | null; note: string; planSessionId?: string | null }): FocusRow | null {
   if (getInProgressFocus()) return null;
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   getDb()
-    .prepare(`INSERT INTO focus_sessions (id, task_id, note, started_at, accumulated_minutes, status, version, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 'in_progress', 1, ?, ?)`)
-    .run(id, input.taskId ?? null, input.note, now, now, now);
+    .prepare(`INSERT INTO focus_sessions (id, task_id, note, started_at, accumulated_minutes, status, version, plan_session_id, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 'in_progress', 1, ?, ?, ?)`)
+    .run(id, input.taskId ?? null, input.note, now, input.planSessionId ?? null, now, now);
   return getFocusSession(id);
 }
 

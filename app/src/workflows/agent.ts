@@ -78,6 +78,35 @@ function openTasks(): TaskRef[] {
   return getDb().prepare(`SELECT id, title FROM tasks WHERE status IN ('todo','doing','blocked') AND archived_at IS NULL ORDER BY created_at, id`).all() as TaskRef[];
 }
 
+function goalRefs(): TaskRef[] {
+  return getDb().prepare(`SELECT id, title FROM goals WHERE archived_at IS NULL AND status != 'completed' ORDER BY created_at`).all() as TaskRef[];
+}
+
+function projectRefs(): TaskRef[] {
+  return getDb().prepare(`SELECT id, title FROM projects WHERE archived_at IS NULL AND status != 'completed' ORDER BY created_at`).all() as TaskRef[];
+}
+
+/** 方向页展示的候选（与页面同序）：还没开始、没被否掉的 */
+export function candidateRefs(): TaskRef[] {
+  return getDb().prepare(`SELECT id, title FROM candidates WHERE status IN ('proposed','idea') AND project_id IS NULL ORDER BY updated_at DESC, id LIMIT 3`).all() as TaskRef[];
+}
+
+function primaryGoalId(): string | null {
+  return (getDb().prepare(`SELECT id FROM goals WHERE archived_at IS NULL AND status = 'active' AND priority = 1 LIMIT 1`).get() as { id: string } | undefined)?.id ?? null;
+}
+
+function recentResourceId(env: BindEnv): string | null {
+  for (const r of recentRefs(env)) if (r.kind === "resource") return r.id;
+  const since = new Date(env.now.getTime() - 86_400_000).toISOString();
+  return (getDb().prepare(`SELECT id FROM resources WHERE archived_at IS NULL AND created_at >= ? ORDER BY created_at DESC LIMIT 1`).get(since) as { id: string } | undefined)?.id ?? null;
+}
+
+function asResolved(m: ReturnType<typeof matchTask>, whyNone: string): Resolved<TaskRef> {
+  if (m.kind === "one") return { kind: "one", value: m.task };
+  if (m.kind === "ambiguous") return { kind: "many", values: m.candidates };
+  return { kind: "none", why: whyNone };
+}
+
 /** 对话里最近提到的对象（新→旧），外加从卡片带来的选中对象 */
 function recentRefs(env: BindEnv): EntityRef[] {
   const out: EntityRef[] = env.selected ? [env.selected] : [];
@@ -260,6 +289,37 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
       (getDb().prepare(`SELECT id FROM practice_entries WHERE created_at >= ? ORDER BY created_at DESC LIMIT 1`).get(new Date(env.now.getTime() - 7 * 86_400_000).toISOString()) as { id: string } | undefined);
     return row ? { kind: "run", command: { command: "correct_practice", practiceId: row.id, actualMinutes: intent.minutes } } : { kind: "fail", error: "最近没有可以纠正的实践记录" };
   }
+  if (intent.op === "goal") {
+    const existing = matchTask(intent.title, goalRefs());
+    return { kind: "run", command: { command: "upsert_goal", ...(existing.kind === "one" ? { goalId: existing.task.id } : { title: intent.title, horizon: intent.horizon }), primary: intent.primary } };
+  }
+  if (intent.op === "explore") return { kind: "run", command: { command: "request_exploration", query: intent.query } };
+  if (intent.op === "trial") {
+    const list = candidateRefs();
+    let picked: TaskRef | undefined;
+    if (intent.ordinal) picked = list[intent.ordinal - 1];
+    else if (intent.ref.kind === "recent") picked = recentRefs(env).map((r) => (r.kind === "candidate" ? list.find((c) => c.id === r.id) : undefined)).find(Boolean) ?? (list.length === 1 ? list[0] : undefined);
+    else {
+      const c = chooseOrAsk(asResolved(matchTask(intent.ref.text, list), `还没有和「${intent.ref.text}」对应的候选项目。可以说“帮我找一个……的小项目”，候选出来后再选`), env, "candidate", (v) => v.title, "候选项目");
+      if (c.kind !== "one") return c;
+      picked = c.value;
+    }
+    if (!picked) return { kind: "fail", error: list.length ? `有 ${list.length} 个候选，说一下是哪一个（名称或“第几个”）` : "现在没有候选项目。可以说“帮我找一个……的小项目”" };
+    return { kind: "run", command: { command: "select_candidate", candidateId: picked.id, mode: "trial", trialWeeks: intent.weeks, goalId: primaryGoalId() } };
+  }
+  if (intent.op === "project_state") {
+    const p = chooseOrAsk(asResolved(intent.ref.kind === "named" ? matchTask(intent.ref.text, projectRefs()) : { kind: "none" }, "没有找到这个项目"), env, "project", (v) => v.title, "项目");
+    if (p.kind !== "one") return p;
+    return { kind: "run", command: { command: "update_project_state", projectId: p.value.id, ...(intent.status ? { status: intent.status } : {}), ...(intent.commit ? { engagement: "committed" } : {}) } };
+  }
+  if (intent.op === "resource_link" || intent.op === "resource_role") {
+    const resourceId = recentResourceId(env);
+    if (!resourceId) return { kind: "fail", error: "不确定你说的是哪份资料——先把资料放进来，再告诉我它归到哪里" };
+    if (intent.op === "resource_role") return { kind: "run", command: { command: "link_resource", resourceId, role: intent.role, origin: "user" } };
+    const p = chooseOrAsk(asResolved(matchTask(intent.projectText, projectRefs()), `没有找到叫「${intent.projectText}」的项目`), env, "project", (v) => v.title, "项目");
+    if (p.kind !== "one") return p;
+    return { kind: "run", command: { command: "link_resource", resourceId, projectId: p.value.id, origin: "user" } };
+  }
   if (intent.op === "profile") return { kind: "run", command: { command: "update_profile_fact", facts: intent.facts } };
   if (intent.op === "notice_filter") {
     if (intent.value === "*") {
@@ -316,7 +376,13 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
   }
   // 以下都针对任务
   if (intent.op === "pause_task" || intent.op === "resume_task" || intent.op === "prioritize" || intent.op === "set_due" || intent.op === "remaining" || intent.op === "complete") {
-    const t = chooseOrAsk(resolveTask(intent.ref, env), env, "task", (v) => v.title, "任务");
+    const resolved = resolveTask(intent.ref, env);
+    // “数学优先”但没有叫数学的任务：这是在说目标/方向的优先，而不是某个任务
+    if (intent.op === "prioritize" && resolved.kind === "none" && intent.ref.kind === "named") {
+      const goal = matchTask(intent.ref.text, goalRefs());
+      return { kind: "run", command: { command: "upsert_goal", ...(goal.kind === "one" ? { goalId: goal.task.id } : { title: intent.ref.text, horizon: "semester" }), primary: true } };
+    }
+    const t = chooseOrAsk(resolved, env, "task", (v) => v.title, "任务");
     if (t.kind !== "one") return t;
     const taskId = t.value.id;
     if (intent.op === "pause_task") return { kind: "run", command: { command: "pause_task", taskId, until: intent.until } };

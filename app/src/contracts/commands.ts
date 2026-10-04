@@ -26,6 +26,9 @@ export const recordPracticeSchema = z.object({
   taskId: z.string().uuid().nullable().default(null),
   /** other = 运动/事务等非学习活动，占时间但不消耗学习预算 */
   category: z.enum(["study", "other"]).default("study"),
+  /** 卡点原话（没跑通、报错……）：之后先安排最小的排障步骤 */
+  blocker: z.string().max(500).default(""),
+  projectId: z.string().uuid().nullable().default(null),
 });
 
 /**
@@ -297,6 +300,52 @@ export const resolveNoticeSchema = z.object({
 /** 生成一份业务数据导出（24 小时内可下载；不含密钥、会话、后台队列） */
 export const requestExportSchema = z.object({ command: z.literal("request_export"), type: z.literal("full_json").default("full_json") });
 
+/** 目标：不带 goalId 新建；primary=true 设为唯一的主要方向 */
+export const upsertGoalSchema = z.object({
+  command: z.literal("upsert_goal"),
+  goalId: z.string().uuid().nullable().default(null),
+  title: z.string().trim().min(1).max(200).optional(),
+  reason: z.string().max(2000).optional(),
+  horizon: z.enum(["long_term", "semester"]).optional(),
+  status: z.enum(["active", "paused", "completed"]).optional(),
+  primary: z.boolean().optional(),
+});
+
+/** 选一个候选开始：trial 试做（默认两周，只建第一步）；commit 正式投入 */
+export const selectCandidateSchema = z.object({
+  command: z.literal("select_candidate"),
+  candidateId: z.string().uuid(),
+  mode: z.enum(["trial", "commit"]).default("trial"),
+  trialWeeks: z.number().int().min(1).max(12).default(2),
+  goalId: z.string().uuid().nullable().default(null),
+});
+
+export const updateProjectStateSchema = z.object({
+  command: z.literal("update_project_state"),
+  projectId: z.string().uuid(),
+  status: z.enum(["active", "paused", "completed"]).optional(),
+  engagement: z.enum(["trial", "committed"]).optional(),
+});
+
+/** 找候选项目（检索有来源的资料，最多 3 个候选） */
+export const requestExplorationSchema = z.object({
+  command: z.literal("request_exploration"),
+  query: z.string().trim().min(1).max(500),
+  background: z.string().max(2000).default(""),
+});
+
+/** 资料入库/关联/纠正事实类型：reference 参考 / requirement 别人的要求 / achievement 自己的成果 */
+export const linkResourceSchema = z.object({
+  command: z.literal("link_resource"),
+  resourceId: z.string().uuid().nullable().default(null),
+  title: z.string().max(200).optional(),
+  body: z.string().max(20_000).optional(),
+  url: z.string().url().optional(),
+  projectId: z.string().uuid().nullable().default(null),
+  role: z.enum(["reference", "requirement", "achievement"]).optional(),
+  origin: z.enum(["user", "assumed"]).default("assumed"),
+});
+
 export const commandSchema = z.discriminatedUnion("command", [
   upsertCourseSetSchema,
   recordPracticeSchema,
@@ -322,6 +371,11 @@ export const commandSchema = z.discriminatedUnion("command", [
   applyNoticeSchema,
   resolveNoticeSchema,
   requestExportSchema,
+  upsertGoalSchema,
+  selectCandidateSchema,
+  updateProjectStateSchema,
+  requestExplorationSchema,
+  linkResourceSchema,
 ]);
 
 export type Command = z.infer<typeof commandSchema>;
@@ -366,6 +420,11 @@ export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   apply_notice: { title: "通知", description: "按身份与规则判断一条通知：明确适用的义务建任务，其余只保留事实。", group: "profile", authorization: "auto", undo: "journal", affects: ["plan", "reminders", "notices"] },
   resolve_notice: { title: "通知归类", description: "主人纠正某条通知是否与自己有关、要不要做。", group: "profile", authorization: "owner_explicit", undo: "journal", affects: ["plan", "notices"] },
   request_export: { title: "导出数据", description: "生成一份业务数据导出文件供下载。", group: "recovery", authorization: "owner_explicit", undo: "none", affects: [] },
+  upsert_goal: { title: "目标", description: "新建或修改目标；primary=true 设为当前唯一的主要方向。", group: "goal", authorization: "owner_explicit", undo: "journal", affects: ["direction"] },
+  select_candidate: { title: "开始项目", description: "选一个候选开始试做（默认两周、只建第一步）或正式投入。不代表对外报名。", group: "goal", authorization: "owner_explicit", undo: "journal", affects: ["plan", "direction"] },
+  update_project_state: { title: "项目状态", description: "暂停/恢复/结束项目，或把试做转为正式投入。", group: "goal", authorization: "owner_explicit", undo: "journal", affects: ["plan", "direction"] },
+  request_exploration: { title: "找候选项目", description: "按主人给的问题检索有来源的资料并生成最多 3 个候选。", group: "goal", authorization: "owner_explicit", undo: "none", affects: ["direction"] },
+  link_resource: { title: "资料", description: "把资料存下来、关联到项目，或纠正它是参考资料/别人的要求/自己的成果。", group: "goal", authorization: "auto", undo: "journal", affects: ["direction"] },
   complete_task: { title: "完成任务", description: "把指定任务标记完成，取消其未执行学习块与提醒。", group: "task", authorization: "owner_explicit", undo: "journal", affects: ["plan", "reminders"] },
 };
 

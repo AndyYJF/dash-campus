@@ -120,7 +120,9 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   // R2（迁移 0026）：服务端对话与轮次（主人原话、结果引用）
   conversations: {},
   conversation_turns: {},
-  // 非敏感设置（邮件模板、预算）；调度内部状态不导出
+  // R2/R5（迁移 0027）：资料与项目/任务的关联及事实类型
+  resource_links: {},
+    // 非敏感设置（邮件模板、预算）；调度内部状态不导出
   settings: {},
 };
 

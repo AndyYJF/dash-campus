@@ -17,10 +17,13 @@ type Cmd<N extends Command["command"]> = Extract<Command, { command: N }>;
 
 export function applyPractice(cmd: Cmd<"record_practice">, ctx: CommandContext, changes: ChangeInput[]): string {
   if (cmd.taskId && !getTask(cmd.taskId)) throw new HttpError(422, "INVALID_REFERENCE", "关联的任务不存在");
-  const id = insertPracticeEntry({ occurredOn: cmd.occurredOn, actualMinutes: cmd.actualMinutes, note: cmd.note, taskId: cmd.taskId, category: cmd.category });
+  // 关联了任务的记录自动带上任务所属项目：项目页的证据来自真实投入
+  const projectId = cmd.projectId ?? (cmd.taskId ? ((getDb().prepare(`SELECT project_id FROM tasks WHERE id = ?`).get(cmd.taskId) as { project_id: string | null } | undefined)?.project_id ?? null) : null);
+  const id = insertPracticeEntry({ occurredOn: cmd.occurredOn, actualMinutes: cmd.actualMinutes, note: cmd.note, taskId: cmd.taskId, category: cmd.category, blocker: cmd.blocker, projectId });
   changes.push({ entityKind: "practice_entry", entityId: id, action: "create", after: { occurredOn: cmd.occurredOn, actualMinutes: cmd.actualMinutes, taskId: cmd.taskId, category: cmd.category }, afterVersion: 1 });
   linkSource({ entityKind: "practice_entry", entityId: id, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
-  return `实践记录：${cmd.occurredOn}${cmd.actualMinutes ? ` ${cmd.actualMinutes} 分钟` : "（分钟未知）"}`;
+  if (cmd.taskId || cmd.blocker) bumpPlanningRevision();
+  return `实践记录：${cmd.occurredOn}${cmd.actualMinutes ? ` ${cmd.actualMinutes} 分钟` : "（分钟未知）"}${cmd.blocker ? `；卡点已记下，下一步先排一小段处理它` : ""}`;
 }
 
 type TaskCmd = Cmd<"create_or_update_task">;

@@ -44,6 +44,12 @@ export const intentSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("remaining"), ref: refSchema, minutes: z.number().int().min(0).max(100_000) }),
   z.object({ op: z.literal("complete"), ref: refSchema, actualMinutes: z.number().int().min(1).max(1440).nullable().default(null) }),
   z.object({ op: z.literal("correct_practice"), minutes: z.number().int().min(1).max(1440) }),
+  z.object({ op: z.literal("goal"), title: z.string().min(1).max(200), horizon: z.enum(["long_term", "semester"]).default("semester"), primary: z.boolean().default(true) }),
+  z.object({ op: z.literal("trial"), ref: refSchema, ordinal: z.number().int().min(1).max(10).nullable().default(null), weeks: z.number().int().min(1).max(12).default(2), commit: z.boolean().default(false) }),
+  z.object({ op: z.literal("project_state"), ref: refSchema, status: z.enum(["active", "paused", "completed"]).nullable().default(null), commit: z.boolean().default(false) }),
+  z.object({ op: z.literal("explore"), query: z.string().min(1).max(500) }),
+  z.object({ op: z.literal("resource_link"), projectText: z.string().min(1).max(100) }),
+  z.object({ op: z.literal("resource_role"), role: z.enum(["reference", "requirement", "achievement"]) }),
   z.object({ op: z.literal("profile"), facts: z.array(z.object({ field: z.enum(["education_level", "program", "campus", "grade_year", "study_year"]), value: z.string().min(1).max(200) })).min(1).max(5) }),
   z.object({ op: z.literal("notice_filter"), field: z.enum(["education_level", "program", "campus", "grade_year", "study_year"]), value: z.string().min(1).max(200), remove: z.boolean().default(false) }),
   z.object({ op: z.literal("explain"), topic: z.enum(["reminders", "plan"]) }),
@@ -178,6 +184,35 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
   if (shorten) {
     const minutes = durationOf(shorten[2]!);
     if (minutes) return { op: "shorten_session", ref: refOf(shorten[1]!, referenceDate), durationMinutes: minutes };
+  }
+
+  // 找候选项目
+  if (/(帮我|给我|替我)(找|挑|选|推荐|看看有没有).{0,40}(项目|方向|课题|练手)/.test(c)) return { op: "explore", query: c.slice(0, 500) };
+  // 资料的归属与事实类型
+  const toProject = /(?:这篇|这份|这个|刚才的?|那份|上面的?)?(?:文章|资料|链接|笔记|材料)?(?:归到|放到|归入|关联到)(.+?)(?:项目)?(?:里|下)?$/.exec(c);
+  if (toProject && /(文章|资料|链接|笔记|材料|这篇|这份|刚才)/.test(c)) return { op: "resource_link", projectText: nameOf(toProject[1]!) || toProject[1]! };
+  if (/不是我(自己)?(完成|做|写)的|是(老师|导师|助教|课程|学院|别人|同学)(的|给的|布置的)?(要求|作业要求|规定|布置)/.test(c)) return { op: "resource_role", role: "requirement" };
+  if (/(这|那|刚才).{0,6}是我(自己)?(完成|做|写)的(成果)?/.test(c)) return { op: "resource_role", role: "achievement" };
+  // 试做 / 正式投入
+  const trial = /^(.*?)(?:先)?(?:试做|试一试|试试|试一下|试着做)(.*)$/.exec(c) ?? /^(?:那|就|我)?(?:先)?试()((?:这个|那个|它|第\s*[一二三四五六七八九十\d]+\s*个).*)$/.exec(c);
+  if (trial) {
+    const weeks = new RegExp(`(${NUM})\\s*(?:个)?\\s*(?:周|星期|礼拜)`).exec(c);
+    const n = weeks ? parseNumber(weeks[1]!) : 2;
+    const subject = trial[1]!.replace(/^(那|就|先|我想|我要|想)+/, "") || trial[2]!.replace(new RegExp(`(${NUM})\\s*(?:个)?\\s*(?:周|星期|礼拜)`), "");
+    const ord = /第\s*([一二三四五六七八九十\d]+)\s*个/.exec(c);
+    return { op: "trial", ref: ord || !nameOf(subject) || /^(这个|那个|它|这)$/.test(subject.trim()) ? { kind: "recent" } : refOf(subject, referenceDate), ordinal: ord ? parseNumber(ord[1]!) : null, weeks: Number.isInteger(n) && n >= 1 && n <= 12 ? n : 2, commit: false };
+  }
+  const commit = /^(.+?)(?:转为|改为|改成|变成)?正式(?:投入|做|开始)/.exec(c);
+  if (commit && isShortName(commit[1]!)) return { op: "project_state", ref: refOf(commit[1]!, referenceDate), status: null, commit: true };
+  const projectEnd = /^(.+?)项目(?:先)?(暂停|停一下|放一放|结束|做完了|恢复|继续)/.exec(c);
+  if (projectEnd && isShortName(projectEnd[1]!)) {
+    const w = projectEnd[2]!;
+    return { op: "project_state", ref: refOf(projectEnd[1]!, referenceDate), status: /暂停|停一下|放一放/.test(w) ? "paused" : /结束|做完/.test(w) ? "completed" : "active", commit: false };
+  }
+  // 目标：这学期先……/主要目标是……
+  const goal = /^(这学期|本学期|这个学期|今年|长期)(?:的)?(?:主要|重点)?(?:目标|方向)?(?:是|先|主要是|重点是)?(.+)$/.exec(c);
+  if (goal && /(先|主要|重点|目标|方向)/.test(c) && !/(交|截止|预计|小时|分钟|安排|排)/.test(c) && nameOf(goal[2]!).length >= 2 && nameOf(goal[2]!).length <= 20) {
+    return { op: "goal", title: goal[2]!.replace(/^(先|主要|重点)/, "").trim(), horizon: /长期/.test(goal[1]!) ? "long_term" : "semester", primary: true };
   }
 
   // 通知筛选规则：某类人群专属的通知不用给我 / 撤回

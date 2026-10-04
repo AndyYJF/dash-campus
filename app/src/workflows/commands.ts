@@ -13,6 +13,7 @@ import { applyAcademicCalendar, applyCalendarSyncPolicy, applyHolidayCalendar, a
 import { applyPlanningPolicy } from "@/workflows/ops/policy";
 import { applyDigestPolicy, applyReminderPolicy } from "@/workflows/ops/reminders";
 import { applyNotice, applyNoticeRule, applyProfileFacts, applyResolveNotice } from "@/workflows/ops/notices";
+import { applyGoal, applyLinkResource, applyProjectState, applyRequestExploration, applySelectCandidate } from "@/workflows/ops/direction";
 import { reevaluateAllCurrent } from "@/workflows/inbox";
 import { createExport } from "@/workflows/exports";
 import { refreshAllReminders } from "@/workflows/reminders";
@@ -109,6 +110,11 @@ const HANDLERS: { [N in Command["command"]]: Handler<N> } = {
   apply_notice: applyNotice,
   resolve_notice: applyResolveNotice,
   request_export: applyRequestExport,
+  upsert_goal: applyGoal,
+  select_candidate: applySelectCandidate,
+  update_project_state: applyProjectState,
+  request_exploration: applyRequestExploration,
+  link_resource: applyLinkResource,
 };
 
 export function isRegisteredOperation(name: unknown): name is Command["command"] {

@@ -719,7 +719,7 @@ function recordAgentTurn(intake: IntakeRow): void {
   const batches = db.prepare(`SELECT id, command FROM agent_action_batches WHERE intake_id = ? AND status = 'applied' ORDER BY created_at, rowid`).all(intake.id) as Array<{ id: string; command: string }>;
   const refs: EntityRef[] = [];
   const seen = new Set<string>();
-  const KINDS = new Set(["plan_session", "task", "practice_entry"]);
+  const KINDS = new Set(["plan_session", "task", "practice_entry", "resource", "project", "candidate", "goal"]);
   // 直接改动的对象排在前面，重排新建的块在后
   for (const b of [...batches.filter((x) => x.command !== "plan_sessions"), ...batches.filter((x) => x.command === "plan_sessions")]) {
     for (const c of listChanges(b.id)) {
@@ -791,6 +791,7 @@ function commandForItem(intake: IntakeRow, item: IntakeItemRow): unknown | null 
         note: summary,
         taskId: match.kind === "one" ? match.task.id : null,
         category: nonStudy ? "other" : "study",
+        blocker: blockerFromText((item.evidence?.excerpt as string | undefined) ?? summary),
       };
     }
     const due = dueFromText(text, intake.referenceDate);
@@ -798,6 +799,11 @@ function commandForItem(intake: IntakeRow, item: IntakeItemRow): unknown | null 
   }
   if (item.kind === "notice") {
     return item.payload.messageId ? { command: "apply_notice", messageId: item.payload.messageId } : null;
+  }
+  if (item.kind === "note") {
+    // 资料存下来才能被找到、关联项目或纠正类型；默认是参考资料，不当成主人自己的成果
+    const body = ((item.evidence?.excerpt as string | undefined) ?? (item.payload.text as string | undefined) ?? "").trim();
+    return body ? { command: "link_resource", title: ((item.payload.summary as string | undefined) ?? body).slice(0, 60), body } : null;
   }
   if (item.kind === "holiday") {
     const h = item.payload.holiday as Record<string, unknown> | undefined;
@@ -822,6 +828,12 @@ function commandForItem(intake: IntakeRow, item: IntakeItemRow): unknown | null 
     };
   }
   return null;
+}
+
+/** 卡点原话：含“卡在/报错/没跑通”等说法的那一句 */
+function blockerFromText(text: string): string {
+  const clause = text.split(/[，,。；;\n]/).map((c) => c.trim()).find((c) => /卡在|卡住|一直报错|报错|没跑通|跑不通|跑不起来|搞不定|没搞懂|不会/.test(c));
+  return clause ? clause.slice(0, 200) : "";
 }
 
 /** 明显不是学习的活动：占时间但不消耗学习预算（REPAIR-PLAN §4.2 补充规则） */

@@ -29,6 +29,10 @@ const KIND_TABLE: Record<string, { table: string; versioned: boolean; idColumn?:
   planning_preferences: { table: "planning_preferences", versioned: true },
   setting: { table: "settings", versioned: true, idColumn: "key" },
   profile_fact: { table: "profile_facts", versioned: true },
+  project: { table: "projects", versioned: true },
+  candidate: { table: "candidates", versioned: true },
+  resource: { table: "resources", versioned: true },
+  resource_link: { table: "resource_links", versioned: true },
   inbox_task_link: { table: "inbox_task_links", versioned: false },
   inbox_decision: { table: "inbox_decisions", versioned: true },
 };
@@ -77,6 +81,9 @@ function revertOne(c: ChangeRow): void {
   if (c.action === "create") {
     // 任务被撤销删除时，其学习块（排程衍生数据，可重建）一并删除，否则 FK 阻止
     if (c.entityKind === "task") db.prepare(`DELETE FROM plan_sessions WHERE task_id = ?`).run(c.entityId);
+    // 项目/资料连带的关联行、修订快照是衍生数据，随主体一并撤掉
+    if (c.entityKind === "project") db.prepare(`DELETE FROM project_goals WHERE project_id = ?`).run(c.entityId);
+    if (c.entityKind === "resource") db.prepare(`DELETE FROM resource_revisions WHERE resource_id = ?`).run(c.entityId);
     leaveTombstone(c);
     db.prepare(`DELETE FROM ${meta.table} WHERE ${idColumn} = ?`).run(c.entityId);
     return;

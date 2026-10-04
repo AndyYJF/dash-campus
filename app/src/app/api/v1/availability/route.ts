@@ -5,6 +5,7 @@ import { getDb } from '@/repositories/db';
 import { getPlanningRevision } from '@/repositories/proposals';
 import { calendarSchema } from '@/contracts/calendar';
 import { calendarTable,writeCalendar } from '@/repositories/calendar';
+import { journaledWrite } from '@/workflows/compat';
 import { errorResponse,handleIdempotentCreate } from '@/workflows/http';
 import { detailedOccurrences } from '@/domain/calendar-occurrences';
 import { instanceTimezone,localDateInTz,mondayOf,addDays,wallTimeToUtc } from '@/domain/time';
@@ -18,5 +19,5 @@ export function GET(request:NextRequest){
 export async function POST(request:NextRequest){
  const auth=requireOwner(request);if(!auth.ok)return auth.response;
  const kind=new URL(request.url).searchParams.get('kind');if(!calendarTable(kind))return errorResponse('VALIDATION','请选择可用时间或固定活动',422);
- return handleIdempotentCreate(request,{actorScope:`owner:${auth.session.ownerId}`,route:`availability.${kind}`,schema:calendarSchema,resourceType:kind!,execute:input=>({id:writeCalendar(kind!,null,input)})});
+ return handleIdempotentCreate(request,{actorScope:`owner:${auth.session.ownerId}`,route:`availability.${kind}`,schema:calendarSchema,resourceType:kind!,execute:input=>({id:kind==='fixed-event'?journaledWrite('fixed_event',null,()=>writeCalendar(kind!,null,input),id=>id):writeCalendar(kind!,null,input)})});
 }

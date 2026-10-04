@@ -169,3 +169,53 @@ test("E35：旧表单对任务的新建/修改/归档写进同一份变更记录
   assert.equal(task(madeId), undefined);
   assert.equal(blocksOf(madeId).length, 0);
 });
+
+test("E35：旧表单对目标、项目、固定活动的写入也进同一份变更记录，可撤销；固定活动删除后撤销原样恢复", async () => {
+  const { POST: createGoalRoute } = await import("@/app/api/v1/goals/route");
+  const { PATCH: patchGoalRoute } = await import("@/app/api/v1/goals/[id]/route");
+  const { POST: createProjectRoute } = await import("@/app/api/v1/projects/route");
+  const { POST: createFixedRoute } = await import("@/app/api/v1/fixed-events/route");
+  const { PATCH: patchFixedRoute, DELETE: deleteFixedRoute } = await import("@/app/api/v1/fixed-events/[id]/route");
+  const batches = (kind: string, id: string) =>
+    getDb().prepare(`SELECT b.id, b.reason FROM agent_action_batches b JOIN agent_action_changes c ON c.batch_id = b.id WHERE c.entity_kind = ? AND c.entity_id = ? ORDER BY b.created_at, b.rowid`).all(kind, id) as Array<{ id: string; reason: string }>;
+
+  // 目标：新建 → 改名 → 撤销改名
+  const g = await createGoalRoute(req("/api/v1/goals", "POST", { title: "打好数学基础", horizon: "semester" }));
+  assert.equal(g.status, 201, await g.clone().text());
+  const goalId = ((await g.json()) as { id: string }).id;
+  const gp = await patchGoalRoute(req(`/api/v1/goals/${goalId}`, "PATCH", { expectedVersion: 1, title: "打好数学与统计基础" }), { params: Promise.resolve({ id: goalId }) });
+  assert.equal(gp.status, 200, await gp.clone().text());
+  assert.deepEqual(batches("goal", goalId).map((b) => b.reason), ["目标创建：打好数学基础（编辑表单）", "目标修改：打好数学与统计基础（编辑表单）"]);
+  assert.equal(undoWithFollowUps(batches("goal", goalId)[1]!.id).kind, "undone");
+  assert.equal((getDb().prepare(`SELECT title FROM goals WHERE id = ?`).get(goalId) as { title: string }).title, "打好数学基础");
+
+  // 项目：新建并关联目标 → 撤销新建，关联行一起撤掉
+  const p = await createProjectRoute(req("/api/v1/projects", "POST", { title: "复现一个分类基线", goalIds: [goalId] }));
+  assert.equal(p.status, 201, await p.clone().text());
+  const projectId = ((await p.json()) as { id: string }).id;
+  assert.equal(count(`SELECT COUNT(*) AS n FROM project_goals WHERE project_id = ?`, projectId), 1);
+  assert.equal(undoWithFollowUps(batches("project", projectId)[0]!.id).kind, "undone");
+  assert.equal(count(`SELECT COUNT(*) AS n FROM projects WHERE id = ?`, projectId), 0);
+  assert.equal(count(`SELECT COUNT(*) AS n FROM project_goals WHERE project_id = ?`, projectId), 0);
+
+  // 固定活动：新建 → 改时间 → 撤销改时间 → 删除 → 撤销删除
+  const input = { title: "志愿服务", weekday: 6, localStart: "14:00", localEnd: "16:00", timezone: TZ };
+  const f = await createFixedRoute(req("/api/v1/fixed-events", "POST", input));
+  assert.equal(f.status, 201, await f.clone().text());
+  const fixedId = ((await f.json()) as { id: string }).id;
+  assert.ok(eventsForDay("2026-10-17", TZ).some((e) => e.title === "志愿服务"));
+  const fp = await patchFixedRoute(req(`/api/v1/fixed-events/${fixedId}`, "PATCH", { ...input, localStart: "15:00", localEnd: "17:00", expectedVersion: 1 }), { params: Promise.resolve({ id: fixedId }) });
+  assert.equal(fp.status, 200, await fp.clone().text());
+  const row = () => getDb().prepare(`SELECT local_start, local_end, version FROM fixed_events WHERE id = ?`).get(fixedId) as { local_start: string; local_end: string; version: number } | undefined;
+  assert.deepEqual([row()!.local_start, row()!.local_end], ["15:00", "17:00"]);
+  assert.equal(undoWithFollowUps(batches("fixed_event", fixedId)[1]!.id).kind, "undone");
+  assert.deepEqual([row()!.local_start, row()!.local_end, row()!.version], ["14:00", "16:00", 3], "字段回去，版本继续前进");
+
+  const del = await deleteFixedRoute(req(`/api/v1/fixed-events/${fixedId}`, "DELETE", { expectedVersion: 3 }), { params: Promise.resolve({ id: fixedId }) });
+  assert.equal(del.status, 200, await del.clone().text());
+  assert.equal(row(), undefined);
+  const delBatch = batches("fixed_event", fixedId).find((b) => b.reason.startsWith("固定活动删除"))!;
+  assert.equal(undoWithFollowUps(delBatch.id).kind, "undone");
+  assert.deepEqual([row()!.local_start, row()!.local_end], ["14:00", "16:00"]);
+  assert.ok(eventsForDay("2026-10-17", TZ).some((e) => e.title === "志愿服务"), "撤销删除后占用回来了");
+});

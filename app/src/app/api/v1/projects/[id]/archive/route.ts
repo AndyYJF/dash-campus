@@ -4,6 +4,7 @@ import { expectedVersionSchema } from "@/contracts/planning";
 import { archiveProject } from "@/repositories/planning";
 import { requireOwner } from "@/workflows/auth-guard";
 import { conflict409, errorResponse, notFound404 } from "@/workflows/http";
+import { journaledWrite } from "@/workflows/compat";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,7 @@ export async function POST(request: NextRequest, ctx: Params) {
   if (!parsed.success) {
     return errorResponse("VALIDATION", "输入不合法", 422, parsed.error.issues);
   }
-  const result = archiveProject(id, parsed.data.expectedVersion);
+  const result = journaledWrite("project", id, () => archiveProject(id, parsed.data.expectedVersion), (r) => (typeof r === "string" ? null : r.id));
   if (result === "not_found") return notFound404("项目不存在或已归档");
   if (result === "conflict") return conflict409();
   return NextResponse.json({ project: result });

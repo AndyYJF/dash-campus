@@ -4,6 +4,7 @@ import { listFixedEvents } from "@/domain/workload";
 import { getDb } from "@/repositories/db";
 import { calendarSchema } from "@/contracts/calendar";
 import { writeCalendar } from "@/repositories/calendar";
+import { journaledWrite } from "@/workflows/compat";
 import { handleIdempotentCreate } from "@/workflows/http";
 export const dynamic="force-dynamic";
 export function GET(request:NextRequest) {
@@ -12,5 +13,5 @@ export function GET(request:NextRequest) {
 }
 export async function POST(request:NextRequest) {
   const auth=requireOwner(request);if(!auth.ok)return auth.response;
-  return handleIdempotentCreate(request,{actorScope:`owner:${auth.session.ownerId}`,route:"availability.fixed-event",schema:calendarSchema,resourceType:"fixed-event",execute:input=>({id:writeCalendar("fixed-event",null,input)})});
+  return handleIdempotentCreate(request,{actorScope:`owner:${auth.session.ownerId}`,route:"availability.fixed-event",schema:calendarSchema,resourceType:"fixed-event",execute:input=>({id:journaledWrite("fixed_event",null,()=>writeCalendar("fixed-event",null,input),id=>id)})});
 }

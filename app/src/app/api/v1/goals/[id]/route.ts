@@ -4,6 +4,7 @@ import { expectedVersionSchema, goalPatchSchema } from "@/contracts/planning";
 import { getGoal, updateGoal } from "@/repositories/planning";
 import { requireOwner } from "@/workflows/auth-guard";
 import { conflict409, errorResponse, notFound404 } from "@/workflows/http";
+import { journaledWrite } from "@/workflows/compat";
 
 export const dynamic = "force-dynamic";
 
@@ -29,7 +30,7 @@ export async function PATCH(request: NextRequest, ctx: Params) {
     return errorResponse("VALIDATION", "输入不合法", 422, parsed.error.issues);
   }
   const { expectedVersion, ...patch } = parsed.data;
-  const result = updateGoal(id, patch, expectedVersion);
+  const result = journaledWrite("goal", id, () => updateGoal(id, patch, expectedVersion), (r) => (typeof r === "string" ? null : r.id));
   if (result === "not_found") return notFound404("目标不存在或已归档");
   if (result === "conflict") return conflict409();
   return NextResponse.json({ goal: result });

@@ -4,6 +4,7 @@ import { goalSchema } from "@/contracts/planning";
 import { createGoal, listGoals } from "@/repositories/planning";
 import { requireOwner } from "@/workflows/auth-guard";
 import { handleIdempotentCreate } from "@/workflows/http";
+import { journaledWrite } from "@/workflows/compat";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,6 @@ export async function POST(request: NextRequest) {
     route: "goals",
     schema: goalSchema,
     resourceType: "goal",
-    execute: (input) => createGoal(input),
+    execute: (input) => journaledWrite("goal", null, () => createGoal(input), (g) => g.id),
   });
 }

@@ -4,6 +4,7 @@ import { projectSchema } from "@/contracts/planning";
 import { createProject, listProjects } from "@/repositories/planning";
 import { requireOwner } from "@/workflows/auth-guard";
 import { handleIdempotentCreate } from "@/workflows/http";
+import { journaledWrite } from "@/workflows/compat";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,6 @@ export async function POST(request: NextRequest) {
     route: "projects",
     schema: projectSchema,
     resourceType: "project",
-    execute: (input) => createProject(input),
+    execute: (input) => journaledWrite("project", null, () => createProject(input), (p) => p.id),
   });
 }

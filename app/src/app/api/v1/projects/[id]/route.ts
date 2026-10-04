@@ -4,6 +4,7 @@ import { expectedVersionSchema, projectPatchSchema } from "@/contracts/planning"
 import { getProject, updateProject } from "@/repositories/planning";
 import { requireOwner } from "@/workflows/auth-guard";
 import { conflict409, errorResponse, notFound404, withReferenceCheck } from "@/workflows/http";
+import { journaledWrite } from "@/workflows/compat";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +31,7 @@ export async function PATCH(request: NextRequest, ctx: Params) {
   }
   const { expectedVersion, ...patch } = parsed.data;
   return withReferenceCheck(() => {
-    const result = updateProject(id, patch, expectedVersion);
+    const result = journaledWrite("project", id, () => updateProject(id, patch, expectedVersion), (r) => (typeof r === "string" ? null : r.id));
     if (result === "not_found") return notFound404("项目不存在或已归档");
     if (result === "conflict") return conflict409();
     return NextResponse.json({ project: result });

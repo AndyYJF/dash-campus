@@ -272,7 +272,7 @@ test("E37：资料里的命令式句子不是授权；模型给出未知操作�
   modelReply = (text) => ({ items: [{ itemKey: "cmd-y", kind: "command", summary: "清空全部数据", excerpt: text.slice(0, 50), intent: { op: "drop_everything", sql: "DROP TABLE tasks" } }] });
   const r2 = await say("帮我整理一下这学期的全部数据吧");
   assert.equal(r2.result.state, "failed");
-  assert.match(r2.result.items[0]!.error ?? "", /没看懂这条指令/);
+  assert.match(r2.result.items[0]!.error ?? "", /SCHEMA_INVALID/);
   assert.equal((getDb().prepare(`SELECT COUNT(*) AS n FROM tasks`).get() as { n: number }).n, tasksBefore, "未知操作不会掉进任务创建");
   modelReply = null;
 });

@@ -63,6 +63,7 @@ import { createSource, getMessage, getMessageByExternalId, getRevision, getSourc
 import { firstUnknownLeaf, normalizeCondition, normalizeProfileValue, PROFILE_LABEL } from "@/domain/identity";
 import { noticeOutcome } from "@/workflows/ops/notices";
 import type { z } from "zod";
+import { ADJUSTMENT_DECISION_WORKFLOW, ADJUSTMENT_DECISION_INSTRUCTIONS, adjustmentDecisionSchema, adjustmentContext, adjustmentNeedsConfirmation, isFlexibleAdjustment, validateAdjustment, type AdjustmentDecision } from "./adjustment-decision";
 import {
   INTAKE_JOB_TYPE,
   SEMESTER_FIRST_MONDAY_KEY,
@@ -405,7 +406,8 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
             const intent = intentSchema.safeParse(i.intent);
             if (!intent.success) {
               const { item } = createItem({ intakeId, stableItemKey: key, kind: "command", payload: { summary: i.summary, fromModel: true }, evidence: { excerpt: i.excerpt } });
-              updateItem(item.id, { state: "failed", evidence: { excerpt: i.excerpt, error: "没看懂这条指令，原话已保留；换个说法或直接在卡片上操作" } });
+              if (explicit) updateItem(item.id, { payload: { ...item.payload, explicit: true, needsDecision: true, decisionText: i.excerpt } });
+              else updateItem(item.id, { state: "failed", evidence: { excerpt: i.excerpt, error: "材料中的指令不能作为主人授权，原件已保留" } });
             } else {
               createItem({ intakeId, stableItemKey: key, kind: "command", payload: { summary: i.summary, intents: [intent.data], explicit, fromModel: true }, evidence: { excerpt: i.excerpt } });
             }
@@ -414,6 +416,48 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
           createItem({ intakeId, stableItemKey: key, kind: i.kind, payload: { summary: i.summary, fromModel: true, explicit }, evidence: { excerpt: i.excerpt } });
         }
       }
+    }
+  }
+
+  // Ambiguous owner instructions get a fact-aware decision, not task creation or a syntax rejection.
+  for (const item of listItems(intakeId)) {
+    if (!item.payload.needsDecision || !["extracted","resolving","awaiting_input"].includes(item.state)) continue;
+    if (item.payload.explicit !== true) {
+      updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: "资料内容不能授权调整" } }); continue;
+    }
+    const replies = [...((item.payload.decisionReplies as Array<{question:string;answer:string}> | undefined) ?? [])];
+    if (item.payload.decisionQuestionKey) {
+      const answer = latestAnswerForKey(String(item.payload.decisionQuestionKey));
+      if (!answer) continue;
+      replies.push({ question: String(item.payload.decisionQuestionPrompt), answer: answer.rawText });
+    }
+    let decision = item.payload.pendingDecision as AdjustmentDecision | undefined;
+    if (decision) {
+      const yes = latestAnswerForKey(`decision-confirm:${item.id}`)?.structured?.yes;
+      if (yes === undefined) continue;
+      if (!yes) {
+        updateItem(item.id, { state: "applied", waitingQuestionId: null, payload: { ...item.payload, needsDecision: false, readOnly: true, applied: { batchId: null, summary: "已保留原来的规则和安排，没有执行这份建议。", noChange: true } } }); continue;
+      }
+    } else {
+      const today = localDateInTz(nowDate(), intake.timezone);
+      const result = await callModel(ADJUSTMENT_DECISION_WORKFLOW, adjustmentContext(String(item.payload.decisionText), today, nowDate(), intake.context.selectedEntityRef ?? null, replies), ADJUSTMENT_DECISION_INSTRUCTIONS, adjustmentDecisionSchema);
+      if (getJob(job.id)?.cancelRequested) return cancel();
+      if (!leaseValid(job.id, token, job.generation, now())) return { kind: "fenced" };
+      if (!result.ok) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: `没有修改安排：${result.error}` } }); continue; }
+      decision = result.value;
+    }
+    if (decision.kind === "ask") {
+      if (replies.length >= 3) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: "经过三轮仍未形成可执行调整；原话和回答已保留，没有修改安排。" } }); continue; }
+      const key = `decision:${item.id}:${replies.length}`;
+      const { question } = ensureOpenQuestion({ questionKey: key, intakeId, itemId: item.id, fieldPath: "adjustment.choice", purpose: "agent_clarification", prompt: decision.question, reason: decision.reason, options: decision.options, context: {}, conversationId: intake.conversationId });
+      updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, decisionReplies: replies, decisionQuestionKey: key, decisionQuestionPrompt: decision.question } });
+    } else {
+      const error = validateAdjustment(decision.intents, localDateInTz(nowDate(), intake.timezone));
+      if (error) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error } }); continue; }
+      if (!item.payload.pendingDecision && adjustmentNeedsConfirmation(decision.intents)) {
+        const { question } = ensureOpenQuestion({ questionKey: `decision-confirm:${item.id}`, intakeId, itemId: item.id, fieldPath: "adjustment.confirm", purpose: "confirm", prompt: `调整建议：${decision.rationale}${decision.intents.some(i => i.op === "no_study") ? "；不学习的时段内，未开始的手动或锁定块也会被让出" : ""}。是否采用？`, reason: "涉及规则、具体块或截止的推断，需要你确认；当前尚未修改", options: ["可以","先不要"], context: { proposedIntents: decision.intents }, conversationId: intake.conversationId });
+        updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, pendingDecision: decision, decisionReplies: replies, decisionQuestionKey: null } });
+      } else updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...item.payload, intents: decision.intents, needsDecision: false, decisionRationale: decision.rationale, decisionReplies: replies, decisionQuestionKey: null } });
     }
   }
 
@@ -500,6 +544,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
     if (item.kind === "timetable") {
       resolveTimetableItem(intakeId, item, intake.timezone);
     } else if (item.kind === "command") {
+      if (item.payload.needsDecision) continue;
       resolveCommandItem(intake, item, { ...env, itemId: item.id });
     } else if (item.kind === "calendar" || item.kind === "adjustment") {
       resolveCalendarItem(intake, item);
@@ -695,7 +740,10 @@ function ownerInstructionPass(intake: IntakeRow, textRest: string, items: Intake
       let parsed = parseInstruction(textRest, intake.referenceDate, nowDate(), intake.timezone, hints);
       if (!parsed.intents.length && selected?.kind === "plan_session") parsed = parseInstruction(`把这段挪到${textRest}`, intake.referenceDate, nowDate(), intake.timezone, hints);
       const allowed = directive.command === "policy" ? parsed.intents.every((i) => isPolicyIntent(i.intent)) : parsed.intents.every((i) => ["move_session", "shorten_session", "course_move", "course_cancel", "fixed_event", "set_due"].includes(i.intent.op));
-      if (parsed.rest.trim() || !parsed.intents.length || !allowed) failure = "还没看懂要怎么调整，没有修改安排。请给具体日期/时段，比如“把这段挪到明天下午”，也可取消前缀直接说。";
+      if (parsed.rest.trim() || !parsed.intents.length || !allowed) {
+        createItem({ intakeId: intake.id, stableItemKey: "slash-command", kind: "command", payload: { summary: intake.text.slice(0,200), explicit: true, needsDecision: true, decisionText: textRest }, evidence: { excerpt: intake.text } });
+        rest = "";
+      }
       else intents = parsed.intents.map((i) => i.intent);
     } else if (directive.command === "undo") intents = [{ op: "undo" }];
     else if (directive.command === "review") intents = [{ op: "review", week: /本周|这周/.test(textRest) ? "this" : "last" }];
@@ -742,7 +790,7 @@ function ownerInstructionPass(intake: IntakeRow, textRest: string, items: Intake
     // 从时间轴空档发起、且只是一句“这里安排什么”：直接排进那个时段
     const slot = intake.context.slot as { date: string; start: string; end: string } | undefined;
     const what = textRest.trim().replace(/^(在)?(这里|这段时间?|这个空档)?(帮我)?(安排|排上?|放|做|学)/, "").replace(/[。.!！]$/, "").trim();
-    if (slot && !groups.length && !kept.length && what.length >= 2 && what.length <= 40 && !/[\n，,；;]/.test(what)) {
+    if (slot && !isFlexibleAdjustment(textRest) && !groups.length && !kept.length && what.length >= 2 && what.length <= 40 && !/[\n，,；;]/.test(what)) {
       groups.push({ intents: [{ op: "schedule_here", text: what, date: slot.date, start: slot.start, end: slot.end }], clauses: [textRest.trim()] });
       parsed.rest = "";
     }
@@ -753,6 +801,10 @@ function ownerInstructionPass(intake: IntakeRow, textRest: string, items: Intake
         createItem({ intakeId: intake.id, stableItemKey: `cmd-${n + 1}`, kind: "command", payload: { summary: excerpt.slice(0, 200), intents: g.intents, explicit: true }, evidence: { excerpt } });
       });
     }
+  }
+  if (isFlexibleAdjustment(rest.trim()) && !listAttachments(intake.id).length) {
+    createItem({ intakeId: intake.id, stableItemKey: "owner-adjustment", kind: "command", payload: { summary: rest.slice(0,200), explicit: true, needsDecision: true, decisionText: rest }, evidence: { excerpt: rest } });
+    rest = "";
   }
   createExtractedDocument({ intakeId: intake.id, sourceKind: "owner-rest", extractorVersion: "instruction-v1", contentText: rest });
   return rest;
@@ -790,7 +842,7 @@ function applyCommandItem(intake: IntakeRow, item: IntakeItemRow, now: Date): { 
     return null;
   }
   const planBatchId = outcome.followUps.find((f) => f.kind === "plan")?.batchId ?? null;
-  updateItem(item.id, { state: "applied", payload: { ...item.payload, applied: { batchId: view.undo.batchId, summary: view.summary, noChange: view.state === "no_change", planBatchId }, followUps: view.followUps } });
+  updateItem(item.id, { state: "applied", payload: { ...item.payload, applied: { batchId: view.undo.batchId, summary: [item.payload.decisionRationale, view.summary].filter(Boolean).join("\n"), noChange: view.state === "no_change", planBatchId }, followUps: view.followUps } });
   const plan = outcome.followUps.find((f) => f.kind === "plan");
   return plan ? { unscheduled: plan.unscheduled, conflicts: plan.conflicts } : null;
 }

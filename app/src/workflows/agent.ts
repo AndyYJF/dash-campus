@@ -593,6 +593,7 @@ function sourceDateFromText(text: string, target: string): string | null {
 
 export function parseAnswerByPurpose(q: QuestionRow, text: string, env: { referenceDate: string; now: Date; tz: string }): AnswerParse {
   const options = q.options ?? [];
+  if (q.purpose === "agent_clarification") return { ok: true, structured: { text: text.trim() } };
   if (q.purpose === "entity_ref") {
     const candidates = (q.context.candidates as Array<{ kind: string; id: string; label: string }>) ?? [];
     const i = optionIndex(text, candidates.map((c) => c.label));

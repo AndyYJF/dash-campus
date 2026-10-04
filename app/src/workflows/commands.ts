@@ -198,7 +198,7 @@ export type OperationOutcome = { result: CommandResult; followUps: FollowUp[] };
 export function executeOperation(raw: unknown, ctx: CommandContext, opts: { replanDates?: string[] } = {}): OperationOutcome {
   const result = executeCommand(raw, ctx);
   const followUps: FollowUp[] = [];
-  if (result.ok && !result.noChange && result.affects.includes("plan")) {
+  if (result.ok && ((!result.noChange && result.affects.includes("plan")) || (opts.replanDates?.length && ctx.explicit && (raw as { command?: string }).command === "update_planning_policy"))) {
     try {
       const plan = rebuildPlan(ctx.now ?? nowDate(), { causedBy: result.batchId, conversationId: ctx.conversationId ?? null, intakeId: ctx.intakeId, replanDates: opts.replanDates });
       followUps.push({ kind: "plan", state: plan.changed ? "updated" : "unchanged", batchId: plan.batchId, placed: plan.placed, superseded: plan.superseded, unscheduled: plan.unscheduled, conflicts: plan.conflicts });

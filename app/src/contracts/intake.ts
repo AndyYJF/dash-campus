@@ -41,6 +41,10 @@ export const intakeCreateSchema = z.object({
   urls: z.array(z.string().max(2048)).max(2, "一次最多 2 个链接").default([]),
   /** 继续哪次对话；缺省沿用当前对话 */
   conversationId: z.string().uuid().optional(),
+  /** “继续这个目标”：接着办哪个 Agent 目标（跨刷新/设备/空闲窗口），对话随目标恢复 */
+  goalId: z.string().uuid().optional(),
+  /** 卡片上看到的目标版本：目标已有新版本时返回 409，不在旧版本上继续 */
+  expectedGoalRevision: z.number().int().min(1).optional(),
   /** 这句话是在回答哪个问题（点着问题卡回答） */
   questionId: z.string().uuid().optional(),
   /** Version shown on the question card: never silently answer a newer question. */

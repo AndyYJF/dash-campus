@@ -88,7 +88,7 @@ before(() => {
   provider = new ScriptedChatProvider((req, messages, options) => {
     if (req.workflow === "agent_route") return onRoute(messages, options, ++routeN);
     if (req.workflow === INTAKE_JOB_TYPE) return final(onClassify(String((JSON.parse(String(messages[1]!.content)) as { context: { text?: string } }).context.text ?? "")));
-    if (req.workflow === "adjustment_decision") return final(onDecide());
+    if (req.workflow === "agent_decide") return final(onDecide());
     return { ok: false, code: "HTTP_ERROR", message: `脚本没有处理 ${req.workflow}`, retryable: false };
   });
   setProvidersForTests({ model: { mode: "fixture", provider } });
@@ -250,7 +250,7 @@ test("材料内指令：粘贴通知里的“删任务/取消课”只作资料�
   assert.ok(!commands.some((c) => /archive|task|session/.test(c)), commands.join(","));
 
   // 校验函数本身：引用不在原话里整份拒绝
-  assert.equal(validateRoute({ items: [{ itemKey: "x", excerpt: "原话里没有的句子", outcome: { kind: "material", note: "" } }] }, text).ok, false);
+  assert.equal(validateRoute({ items: [{ itemKey: "x", excerpt: "原话里没有的句子", outcome: { kind: "material", note: "" }, continuesGoal: false }] }, text).ok, false);
 });
 
 test("追问续答：路由缺关键事实就问，回答后只重新理解这一件事并执行；已落库的不重复", async () => {

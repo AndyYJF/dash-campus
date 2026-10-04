@@ -68,7 +68,7 @@ before(() => {
     model: {
       mode: "fixture",
       provider: new FakeModelProvider((r: ModelRequest) => {
-        assert.ok(r.workflow === INTAKE_JOB_TYPE || r.workflow === "adjustment_decision", `意外的模型调用 ${r.workflow}`);
+        assert.ok(r.workflow === INTAKE_JOB_TYPE || r.workflow === "agent_decide", `意外的模型调用 ${r.workflow}`);
         return { ok: true, validatedResult: r.workflow === INTAKE_JOB_TYPE ? classify(String((r.context as { text?: string }).text ?? "")) : decide() };
       }),
     },

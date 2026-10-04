@@ -8,6 +8,7 @@ import { nowDate } from "@/domain/clock";
 import { estimateAdvice, type EstimateSample } from "@/domain/estimate-advice";
 import { getIntake, listItems, type IntakeRow } from "@/repositories/intakes";
 import { listQuestionsForIntake } from "@/repositories/questions";
+import { getGoal } from "@/repositories/goals";
 
 /**
  * 统一业务结果（AGENT-INTERFACE-CONTRACT §5.3）：聊天、卡片按钮、兼容 API 的结果同一形状。
@@ -170,6 +171,8 @@ export type IntakeResultView = {
   undo: { available: boolean; batchIds: string[]; note: string };
   snapshotRevision: string;
   error: { message: string; recoverable: boolean } | null;
+  /** 所属目标：current=false 表示目标已被改口/停止，这一轮的结果不再是最新 */
+  goal: { id: string; revision: number; intakeRevision: number; current: boolean; state: string; objective: string } | null;
 };
 
 const REASON_TEXT: Record<string, string> = {
@@ -310,10 +313,12 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
                   : "no_change";
   const done = items.filter((i) => i.state === "applied").map((i) => (i.payload.applied as { summary?: string } | undefined)?.summary).filter((x): x is string => Boolean(x));
   const saved = items.filter((i) => i.state === "ready" && (i.kind === "note" || i.kind === "notice"));
+  const goal = goalView(intake);
+  const superseded = goal && !goal.current ? [`这个目标已按你后来的要求改为第 ${goal.revision} 版${goal.state === "cancelled" ? "（已停止）" : ""}，这一轮还没执行的部分已作废`] : [];
   const summary =
     state === "accepted" || state === "working"
       ? "已收到，正在整理"
-      : [...done, ...(saved.length ? [`已存为资料 ${saved.length} 条（没有需要你行动的事项）`] : []), ...failed.map((f) => `没有办成：${f.error ?? "处理失败"}`)].join("；") || (state === "needs_input" ? "需要你回答一个问题才能继续" : "已处理");
+      : [...done, ...(saved.length ? [`已存为资料 ${saved.length} 条（没有需要你行动的事项）`] : []), ...failed.map((f) => `没有办成：${f.error ?? "处理失败"}`), ...superseded].join("；") || (state === "needs_input" ? "需要你回答一个问题才能继续" : "已处理");
   const undoable = applied.filter((b) => OPERATIONS[b.command as Command["command"]]?.undo !== "none").map((b) => b.id);
   const correctedRead = items.some((i) => i.payload.readCorrection === true);
   return {
@@ -334,7 +339,15 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
     undo: { available: !correctedRead && undoable.length > 0, batchIds: correctedRead ? [] : undoable, note: correctedRead ? "误建任务与学习块已取消，原始变更记录保留" : commandBatches.some((b) => b.status === "undone") ? "部分变更已撤销" : "" },
     snapshotRevision: snapshotRevision(),
     error: state === "failed" ? { message: failed[0]?.error ?? intake.lastError ?? "处理失败", recoverable: items.some((i) => i.state === "failed" && i.payload.retryable === true) } : null,
+    goal,
   };
+}
+
+function goalView(intake: IntakeRow): IntakeResultView["goal"] {
+  if (!intake.goalId) return null;
+  const g = getGoal(intake.goalId);
+  if (!g) return null;
+  return { id: g.id, revision: g.revision, intakeRevision: intake.goalRevision ?? 1, current: (intake.goalRevision ?? 1) === g.revision, state: g.state, objective: g.objective.slice(0, 200) };
 }
 
 export function intakeResultById(id: string): IntakeResultView | null {

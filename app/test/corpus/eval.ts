@@ -84,7 +84,7 @@ function migrate(): void {
   })();
 }
 
-function useDb(file: string): void {
+export function switchDb(file: string): void {
   closeDb();
   process.env.DATABASE_PATH = file;
   resetConfigCache();
@@ -102,7 +102,7 @@ export function buildTemplate(workDir: string, fixture = "week-basic"): string {
   fs.mkdirSync(workDir, { recursive: true });
   const file = path.join(workDir, `template-${fixture}.db`);
   removeDb(file);
-  useDb(file);
+  switchDb(file);
   migrate();
   const original = crypto.randomUUID;
   const originalGlobal = globalThis.crypto.randomUUID;
@@ -135,9 +135,11 @@ function observe(intakeId: string): CaseResult["observed"] {
   const confirms = (db.prepare(`SELECT COUNT(*) AS n FROM clarification_questions WHERE intake_id = ? AND status = 'open' AND purpose = 'confirm'`).get(intakeId) as { n: number }).n;
   const parsed = items.map((i) => ({ ...i, payload: JSON.parse(i.payload_json) as Record<string, unknown>, evidence: JSON.parse(i.evidence_json ?? "{}") as Record<string, unknown> }));
   const commands = parsed.filter((i) => i.kind === "command");
+  // “先别做”在接收时确定性停止当前目标（P4），等同于取消进行中的投递
   const intentsOf = (p: Record<string, unknown>) => [
     ...((p.intents as Array<{ op: string }> | undefined) ?? []),
     ...(((p.pendingDecision as { intents?: Array<{ op: string }> } | undefined)?.intents) ?? []),
+    ...(p.goalStop ? [{ op: "cancel_intake" }] : []),
   ];
   const ops = [...new Set(commands.flatMap((i) => intentsOf(i.payload).map((x) => x.op)))];
   // 路由给出的 act 等主人确认（pendingDecision、无 decisionText）仍是 act；decide 指走决策器的事项
@@ -216,7 +218,14 @@ type FetchLike = typeof fetch;
 
 function recordingFetch(sink: RecordedRequest[]): FetchLike {
   return (async (url: string | URL | Request, init?: RequestInit) => {
-    const res = await fetch(url, init);
+    let res: Response;
+    try {
+      res = await fetch(url, init);
+    } catch (e) {
+      // 网络层失败（超时/断连）也要录下：回放时同样抛出，请求次数与重试路径才对得上
+      sink.push({ prompt: promptFingerprint(String(init?.body ?? "{}")), status: 0, body: e instanceof Error ? e.message : String(e) });
+      throw e;
+    }
     const text = await res.text();
     let body: unknown = text.slice(0, 2000);
     if (res.ok) {
@@ -242,6 +251,7 @@ function replayFetch(rec: Recording, stale: string[]): FetchLike {
     }
     const fp = promptFingerprint(String(init?.body ?? "{}"));
     if (fp !== r.prompt) stale.push(`第 ${n} 次请求的提示词/工具/结构与录制不同`);
+    if (r.status === 0) throw new Error(String(r.body));
     return new Response(typeof r.body === "string" ? r.body : JSON.stringify(r.body), { status: r.status, headers: { "content-type": "application/json" } });
   }) as FetchLike;
 }
@@ -278,7 +288,7 @@ export async function runEval(opts: EvalOptions): Promise<{ results: CaseResult[
     const file = path.join(opts.workDir, `case-${entry.id}.db`);
     removeDb(file);
     fs.copyFileSync(template, file);
-    useDb(file);
+    switchDb(file);
     setNowForTests(new Date(entry.now));
     const sink: RecordedRequest[] = [];
     const stale: string[] = [];

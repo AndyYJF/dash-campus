@@ -13,7 +13,7 @@ import { runDueJobsOnce } from "@/worker/runner";
 import { intakeResultById } from "@/workflows/results";
 import { executeOperation } from "@/workflows/commands";
 import { dashboardSnapshot } from "@/workflows/snapshot";
-import { isFlexibleAdjustment, adjustmentScope, validateAdjustment } from "@/workflows/adjustment-decision";
+import { isFlexibleAdjustment, decisionScope as adjustmentScope, validateDecision as validateAdjustment } from "@/workflows/agent-decide";
 import type { ModelRequest } from "@/contracts/model";
 const NOW = new Date("2026-10-04T08:00:00+08:00");
 let token="",csrf="",seq=0,calls=0;
@@ -37,7 +37,7 @@ after(()=>setNowForTests(null));
 test("plain and slash ambiguous requests use real context and apply bounded replan without creating tasks",async()=>{
  const tasks=getDb().prepare("SELECT * FROM tasks ORDER BY id").all(),courses=getDb().prepare("SELECT * FROM courses ORDER BY id").all();
  const manual=getDb().prepare("SELECT * FROM plan_sessions WHERE origin='user' ORDER BY id").all();
- reply=r=>{assert.equal(r.workflow,"adjustment_decision");assert.equal(((r.context as Record<string,unknown>).days as unknown[]).length,7);assert.match(JSON.stringify(r.context),/微积分/);assert.match(JSON.stringify(r.context),/09:00/);assert.deepEqual((r.context as Record<string,unknown>).defaultScope,{dateFrom:"2026-10-04",dateTo:"2026-10-10"});return replan();};
+ reply=r=>{assert.equal(r.workflow,"agent_decide");assert.equal(((r.context as Record<string,unknown>).days as unknown[]).length,7);assert.match(JSON.stringify(r.context),/微积分/);assert.match(JSON.stringify(r.context),/09:00/);assert.deepEqual((r.context as Record<string,unknown>).defaultScope,{dateFrom:"2026-10-04",dateTo:"2026-10-10"});return replan();};
  for(const text of ["根据每天的课程重新安排时间","/调整 根据每天的课程重新安排时间","学习安排优化一下，课多的日子轻松些"]){const r=await say(text);assert.ok(["applied","no_change"].includes(r.state),JSON.stringify(r));assert.match(r.summary,/七天/);assert.ok(r.followUps.some(f=>f.kind==="plan"));}
  assert.deepEqual(getDb().prepare("SELECT * FROM tasks ORDER BY id").all(),tasks);assert.deepEqual(getDb().prepare("SELECT * FROM courses ORDER BY id").all(),courses);assert.deepEqual(getDb().prepare("SELECT * FROM plan_sessions WHERE origin='user' ORDER BY id").all(),manual);
  for(let i=4;i<=10;i++){const d=dashboardSnapshot(`2026-10-${String(i).padStart(2,"0")}`,NOW).today;for(const s of d.sessions.filter(s=>["planned","tentative"].includes(s.status)))for(const e of d.events)assert.ok(s.endUtc<=e.startUtc||s.startUtc>=e.endUtc);}
@@ -52,7 +52,7 @@ test("inferred persistent rules require a concrete confirmation, rejection keeps
  const before=facts();const r=await say("/调整 最近安排太累了");assert.equal(r.state,"needs_input");const q=r.questions.find(q=>q.purpose==="confirm");assert.ok(q);assert.match(q.prompt,/120/);assert.deepEqual(facts(),before);await answer(q,"先不要");assert.equal(intakeResultById(r.intakeId)!.state,"answered");assert.deepEqual(facts(),before);
 });
 test("bad scope and unrelated or mixed actions never write domain data",async()=>{
- for(const intents of [[{op:"replan",dateFrom:"2026-10-04",dateTo:"2027-01-01"}],[{op:"course_cancel",date:"2026-10-05",courseName:null}],[{op:"move_session",ref:{kind:"recent"}},{op:"replan",dateFrom:"2026-10-04",dateTo:"2026-10-10"}]]){
+ for(const intents of [[{op:"replan",dateFrom:"2026-10-04",dateTo:"2027-01-01"}],[{op:"course_cancel",date:"2026-10-05",courseName:null}],[{op:"replan",dateFrom:"2026-10-04",dateTo:"2026-10-10"},{op:"course_cancel",date:"2026-10-05",courseName:null}]]){
   reply=()=>({kind:"act",rationale:"不合范围的建议",intents});const before=facts();const r=await say("/调整 按课程优化时间");assert.equal(r.state,"failed",JSON.stringify(r));assert.deepEqual(facts(),before);
  }
  assert.ok(validateAdjustment([{op:"replan",dateFrom:"2026-10-04",dateTo:"2026-99-99"}],"2026-10-04"));

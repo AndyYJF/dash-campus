@@ -29,7 +29,9 @@ type Result = {
   undo: { available: boolean; batchIds: string[]; note: string };
   understanding?: { routedBy: "model" | "fast" | "rules" | null; fallbackReason: string | null; sources: string[] };
   error: { message: string; recoverable: boolean } | null;
+  goal?: { id: string; revision: number; current: boolean; state: string; objective: string } | null;
 };
+type GoalRef = { id: string; revision: number; objective: string };
 
 function understandingLine(u: Result["understanding"]): string | null {
   if (!u?.routedBy) return null;
@@ -81,6 +83,7 @@ export default function UniversalIntake() {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [context, setContext] = useState<ComposeDetail | null>(null);
+  const [goal, setGoal] = useState<GoalRef | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<Result[]>([]);
@@ -181,7 +184,7 @@ export default function UniversalIntake() {
     const parsed = parseAgentText(value);
     const issue = agentInputIssue(parsed, { hasFiles: files.length > 0, hasUrls: /https?:\/\//.test(value), hasTask: context?.selectedEntityRef?.kind === "task", hasQuestion: Boolean(context?.question), hasSlot: Boolean(context?.slot) });
     if (issue) { setError(issue); return; }
-    const contextJson = JSON.stringify(context);
+    const contextJson = JSON.stringify([context, goal]);
     const previous = lastAttempt.current;
     if (previous && (previous.value !== value || previous.contextJson !== contextJson || previous.files.length !== files.length || previous.files.some((f, i) => f !== files[i]))) idemKey.current = newIdempotencyKey();
     lastAttempt.current = { value, contextJson, files: [...files] };
@@ -198,12 +201,13 @@ export default function UniversalIntake() {
         if (context?.selectedEntityRef) form.append("selectedEntityRef", JSON.stringify(context.selectedEntityRef));
         if (context?.slot) form.append("slot", JSON.stringify(context.slot));
         if (context?.question) { form.append("questionId", context.question.id); form.append("questionVersion", String(context.question.version)); }
+        if (goal && !context?.question) { form.append("goalId", goal.id); form.append("expectedGoalRevision", String(goal.revision)); }
         res = await fetch("/api/v2/intakes", { method: "POST", headers: { "x-csrf-token": csrf(), "idempotency-key": idemKey.current }, body: form });
       } else {
         res = await fetch("/api/v2/intakes", {
           method: "POST",
           headers: { "content-type": "application/json", "x-csrf-token": csrf(), "idempotency-key": idemKey.current },
-          body: JSON.stringify({ text: value, urls, ...(context?.selectedEntityRef ? { selectedEntityRef: context.selectedEntityRef } : {}), ...(context?.slot ? { slot: context.slot } : {}), ...(context?.question ? { questionId: context.question.id, questionVersion: context.question.version } : {}) }),
+          body: JSON.stringify({ text: value, urls, ...(context?.selectedEntityRef ? { selectedEntityRef: context.selectedEntityRef } : {}), ...(context?.slot ? { slot: context.slot } : {}), ...(context?.question ? { questionId: context.question.id, questionVersion: context.question.version } : goal ? { goalId: goal.id, expectedGoalRevision: goal.revision } : {}) }),
         });
       }
       const body = (await res.json().catch(() => null)) as { error?: { message?: string }; answered?: boolean; results?: Array<{ summary: string; error?: { message: string } | null }>; note?: string } | null;
@@ -217,6 +221,7 @@ export default function UniversalIntake() {
       setText("");
       setFiles([]);
       setContext(null);
+      setGoal(null);
       await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "网络异常，内容保留在输入框，可重试");
@@ -312,6 +317,14 @@ export default function UniversalIntake() {
         <span>之前的草稿已保留</span>
         <button type="button" className={styles.linkBtn} disabled={busy} onClick={() => { const current = draftRef.current; setText(savedDraft.text); setFiles(savedDraft.files); setContext(savedDraft.context); setSavedDraft(current.text.trim() || current.files.length ? current : null); setError(null); }}>恢复草稿</button>
       </div>}
+      {goal && !context?.question && (
+        <div className={styles.context}>
+          <span title={goal.objective}>继续：{goal.objective}</span>
+          <button type="button" className={styles.chipClose} onClick={() => setGoal(null)} aria-label="不再继续这个目标">
+            ×
+          </button>
+        </div>
+      )}
       {context?.label && (
         <div className={styles.context}>
           <span title={context.label}>{context.question ? "回答：" : "关于："}{context.label}</span>
@@ -432,6 +445,11 @@ export default function UniversalIntake() {
                   </button>
                 )}
                 {r.undo.note && <span className={styles.when}>{r.undo.note}</span>}
+                {!ACTIVE.has(r.state) && r.goal?.current && r.goal.state !== "cancelled" && (
+                  <button type="button" className={styles.linkBtn} onClick={() => { setGoal({ id: r.goal!.id, revision: r.goal!.revision, objective: r.goal!.objective }); boxRef.current?.focus(); }}>
+                    继续这个目标
+                  </button>
+                )}
                 {!ACTIVE.has(r.state) && (wrongSent[r.intakeId]
                   ? <span className={styles.when}>已记下，谢谢纠正</span>
                   : wrong?.intakeId !== r.intakeId && <button type="button" className={styles.linkBtn} onClick={() => setWrong({ intakeId: r.intakeId, verdict: "wrong_intent", text: "", key: newIdempotencyKey() })}>理解错了</button>)}

@@ -22,6 +22,9 @@ export type IntakeRow = {
   conversationId: string | null;
   /** 投递时附带的上下文：回答的问题、从哪张卡片/哪个空档发起 */
   context: Record<string, unknown>;
+  /** 属于哪个 Agent 目标的哪一版（迁移 0031）；不是当前版的投递不能再写入 */
+  goalId: string | null;
+  goalRevision: number | null;
 };
 
 export type IntakeItemRow = {
@@ -55,6 +58,8 @@ function mapIntake(r: Record<string, unknown>): IntakeRow {
     updatedAt: r.updated_at as string,
     conversationId: (r.conversation_id as string | null) ?? null,
     context: r.context_json ? (JSON.parse(r.context_json as string) as Record<string, unknown>) : {},
+    goalId: (r.goal_id as string | null) ?? null,
+    goalRevision: (r.goal_revision as number | null) ?? null,
   };
 }
 

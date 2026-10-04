@@ -14,7 +14,7 @@
 
 ## 开发入口
 
-- `src/workflows/adjustment-decision.ts`：决策输出 schema、上下文、提示词、主人调整表达的入口识别与执行范围校验。
+- `src/workflows/adjustment-decision.ts`（2026-10-05 起并入 `src/workflows/agent-decide.ts`，工作流名 `agent_decide`）：决策输出 schema、上下文、提示词、主人调整表达的入口识别与执行范围校验。
 - `src/workflows/intake.ts`：固定语法失败的 `/调整`、`/规则` 以及模糊自然语言调整转入决策；持久化追问/确认/依据，再接现有意图绑定和注册操作。
 - `src/workflows/agent.ts`：`agent_clarification` 回答支持自然语言。
 - `src/workflows/commands.ts`：同一重排授权已经存在时，新一次重排请求仍调用排程器，不因规则没变化而跳过计算。

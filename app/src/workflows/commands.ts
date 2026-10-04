@@ -3,6 +3,7 @@ import { getDb } from "@/repositories/db";
 import { addChange, createBatch, type ChangeInput } from "@/repositories/journal";
 import { commandSchema, COMMAND_POLICY_VERSION, OPERATIONS, type Command, type CommandContext, type OperationAffect } from "@/contracts/commands";
 import { getInstanceState } from "@/repositories/instance";
+import { intakeRevisionCurrent } from "@/repositories/goals";
 import { authorizeCommand } from "@/domain/authorization";
 import { applyArchive, applyCourseSet, applyException, applyFixedEvents } from "@/workflows/ops/courses";
 import { applyCompleteTask, applyCorrectPractice, applyPauseTask, applyPractice, applyTask } from "@/workflows/ops/tasks";
@@ -152,6 +153,9 @@ export function executeCommand(raw: unknown, ctx: CommandContext): CommandResult
   try {
     return getDb()
       .transaction((): CommandResult => {
+        // 目标已被改口或停下：旧版本投递的写入在同一事务里拒绝（旧模型响应晚到也写不进来）
+        const revision = ctx.intakeId ? intakeRevisionCurrent(ctx.intakeId) : { current: true as const };
+        if (!revision.current) return { ok: false, code: "STALE_GOAL_REVISION", error: `目标已按新要求改为第 ${revision.goalRevision} 版，这一步没有执行` };
         const changes: ChangeInput[] = [];
         const handler = HANDLERS[parsed.data.command] as Handler<Command["command"]>;
         const output = handler(parsed.data, ctx, changes);

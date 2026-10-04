@@ -55,6 +55,13 @@ export function currentConversationId(at: Date = new Date()): string {
   return id;
 }
 
+/** “继续这个目标”：目标所在的对话重新成为当前对话（跨空闲窗口），其他打开的对话收起 */
+export function reopenConversation(id: string, at: Date = new Date()): void {
+  const db = getDb();
+  db.prepare(`UPDATE conversations SET status = 'closed' WHERE status = 'open' AND id != ?`).run(id);
+  db.prepare(`UPDATE conversations SET status = 'open', updated_at = ? WHERE id = ?`).run(at.toISOString(), id);
+}
+
 export function latestConversationId(): string | null {
   return (getDb().prepare(`SELECT id FROM conversations ORDER BY updated_at DESC LIMIT 1`).get() as { id: string } | undefined)?.id ?? null;
 }

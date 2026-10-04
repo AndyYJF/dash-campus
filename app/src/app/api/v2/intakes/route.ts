@@ -49,9 +49,9 @@ export async function POST(request: NextRequest) {
       if (agentText.command) context.agentCommand = agentText.command;
       if (input.selectedEntityRef) context.selectedEntityRef = input.selectedEntityRef;
       if (input.slot) context.slot = input.slot;
-      const r = receiveIntake({ channel: "web", text: input.text, referenceDate: input.referenceDate, urls: input.urls, conversationId: input.conversationId, context });
+      const r = receiveIntake({ channel: "web", text: input.text, referenceDate: input.referenceDate, urls: input.urls, conversationId: input.conversationId, context, goalId: input.goalId, expectedGoalRevision: input.expectedGoalRevision });
       if (files.length) saveAttachments(r.intakeId, files);
-      return { statusCode: 202, body: { intakeId: r.intakeId, status: r.status, conversationId: r.conversationId }, resourceType: "intake", resourceId: r.intakeId };
+      return { statusCode: 202, body: { intakeId: r.intakeId, status: r.status, conversationId: r.conversationId, goalId: r.goalId, goalRevision: r.goalRevision }, resourceType: "intake", resourceId: r.intakeId };
     },
   });
 }
@@ -104,6 +104,8 @@ async function parseMultipart(request: NextRequest): Promise<ParsedInput> {
     questionVersion: form.get("questionVersion") ? Number(form.get("questionVersion")) : undefined,
     selectedEntityRef: json("selectedEntityRef"),
     slot: json("slot"),
+    goalId: (form.get("goalId") as string) || undefined,
+    expectedGoalRevision: form.get("expectedGoalRevision") ? Number(form.get("expectedGoalRevision")) : undefined,
   };
   const parsed = intakeCreateSchema.safeParse(fields);
   if (!parsed.success) return { ok: false, response: errorResponse("VALIDATION", parsed.error.issues.map((i) => i.message).join("；"), 422) };
@@ -116,6 +118,6 @@ async function parseMultipart(request: NextRequest): Promise<ParsedInput> {
   // 幂等键去重按规范化摘要：multipart 原始字节含随机 boundary，不能直接做请求体比对
   // 文件按内容摘要参与比对：同名同大小但内容不同不是重试（E38）
   const digests = files.map((f) => `${f.name}:${f.bytes.length}:${crypto.createHash("sha256").update(f.bytes).digest("hex")}`);
-  const raw = JSON.stringify({ text: fields.text, urls: fields.urls, referenceDate: fields.referenceDate, conversationId: fields.conversationId, questionId: fields.questionId, questionVersion: fields.questionVersion, selectedEntityRef: fields.selectedEntityRef, slot: fields.slot, files: digests });
+  const raw = JSON.stringify({ text: fields.text, urls: fields.urls, referenceDate: fields.referenceDate, conversationId: fields.conversationId, questionId: fields.questionId, questionVersion: fields.questionVersion, selectedEntityRef: fields.selectedEntityRef, slot: fields.slot, goalId: fields.goalId, expectedGoalRevision: fields.expectedGoalRevision, files: digests });
   return { ok: true, input: parsed.data, files, raw };
 }

@@ -810,7 +810,7 @@ export function parseAnswerByPurpose(q: QuestionRow, text: string, env: { refere
     const url = /https?:\/\/\S+/.exec(text)?.[0];
     return url ? { ok: true, structured: { url } } : { ok: false, hint: "贴一个链接；如果手上是通知原文或文件，直接放进上面的输入框就行" };
   }
-  if (q.purpose === "tradeoff" || q.purpose === "conflict") {
+  if (q.purpose === "tradeoff" || q.purpose === "conflict" || q.purpose === "locate") {
     const i = optionIndex(text, options);
     return i >= 0 ? { ok: true, structured: { choice: i } } : { ok: false, hint: `选一个：${options.map((o, n) => `${n + 1}. ${o}`).join("；")}` };
   }

@@ -122,6 +122,9 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   conversation_turns: {},
   // R2/R5（迁移 0027）：资料与项目/任务的关联及事实类型
   resource_links: {},
+  // Agent 增强 P4（迁移 0031）：目标与修订是业务流程状态，随业务导出与恢复
+  agent_goals: {},
+  agent_goal_revisions: {},
     // 非敏感设置（邮件模板、预算）；调度内部状态不导出
   settings: {},
 };

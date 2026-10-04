@@ -21,6 +21,9 @@ export type BatchRow = {
   status: "applied" | "undone";
   createdAt: string;
   undoneAt: string | null;
+  reason: string;
+  causedBy: string | null;
+  conversationId: string | null;
 };
 
 export type ChangeRow = {
@@ -47,14 +50,17 @@ export function createBatch(input: {
   itemId: string | null;
   policyVersion: string;
   instanceEpoch: number;
+  /** 由哪个批次引起（修改触发的重排是独立批次） */
+  causedBy?: string | null;
+  conversationId?: string | null;
 }): string {
   const id = crypto.randomUUID();
   getDb()
     .prepare(
-      `INSERT INTO agent_action_batches (id, command, reason, intake_id, item_id, policy_version, instance_epoch, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'applied', ?)`,
+      `INSERT INTO agent_action_batches (id, command, reason, intake_id, item_id, policy_version, instance_epoch, status, caused_by, conversation_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'applied', ?, ?, ?)`,
     )
-    .run(id, input.command, input.reason, input.intakeId, input.itemId, input.policyVersion, input.instanceEpoch, now());
+    .run(id, input.command, input.reason, input.intakeId, input.itemId, input.policyVersion, input.instanceEpoch, input.causedBy ?? null, input.conversationId ?? null, now());
   return id;
 }
 
@@ -89,7 +95,15 @@ export function getBatch(id: string): BatchRow | null {
     status: r.status as BatchRow["status"],
     createdAt: r.created_at as string,
     undoneAt: (r.undone_at as string) ?? null,
+    reason: (r.reason as string) ?? "",
+    causedBy: (r.caused_by as string) ?? null,
+    conversationId: (r.conversation_id as string) ?? null,
   };
+}
+
+/** 由某个批次引起、仍然生效的后续批次（如修改触发的重排） */
+export function listCausedBatches(batchId: string): string[] {
+  return (getDb().prepare(`SELECT id FROM agent_action_batches WHERE caused_by = ? AND status = 'applied' ORDER BY created_at DESC, rowid DESC`).all(batchId) as Array<{ id: string }>).map((r) => r.id);
 }
 
 export function listChanges(batchId: string): ChangeRow[] {

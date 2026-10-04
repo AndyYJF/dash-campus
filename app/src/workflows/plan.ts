@@ -67,6 +67,10 @@ export type PlanConflict = { sessionId: string; taskId: string; reason: "overlap
 export type RebuildOptions = {
   /** 主人明确要求重新安排的日期：这些天里未锁定、未开始的块全部重排（不受 24h 保护） */
   replanDates?: string[];
+  /** 这次重排由哪个变更批次引起、属于哪次对话与投递（撤销与结果展示用） */
+  causedBy?: string | null;
+  conversationId?: string | null;
+  intakeId?: string | null;
 };
 export type RebuildResult = {
   kind: "planned";
@@ -144,7 +148,16 @@ export function dayLedger(date: string, asOf: Date, prefs: Prefs, tz: string, se
   };
 }
 
-type PlanTask = SchedTask & { effortMode: "deliverable" | "time_budget" };
+type PlanTask = SchedTask & {
+  effortMode: "deliverable" | "time_budget";
+  /** 主人报告的剩余需求及报告时刻：之后的投入从这里扣，不再用“估时 − 已花”硬推 */
+  remainingMinutes: number | null;
+  remainingReportedAt: string | null;
+};
+
+const STARTER_MINUTES = 25;
+const BUSY_COURSE_MINUTES = 240;
+const PART_WINDOWS: Record<string, [string, string]> = { morning: ["08:00", "12:00"], afternoon: ["13:00", "18:00"], evening: ["19:00", "23:00"] };
 
 /** 重排：保留有效旧块 → 只为缺口新增 → journal，单事务原子。 */
 export function rebuildPlan(asOf: Date, opts: RebuildOptions = {}): RebuildResult {
@@ -158,9 +171,9 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
   const asOfMs = asOf.getTime();
   const fromLocal = localDateInTz(asOf, tz);
   const horizon = next7Days(fromLocal);
-  const tasks = listSchedulableTasks(tz);
+  const tasks = listSchedulableTasks(tz, fromLocal);
   const taskById = new Map(tasks.map((t) => [t.id, t]));
-  const spent = spentMinutesByTask();
+  const spent = new Map(tasks.map((t) => [t.id, spentMinutes(t.id, t.remainingReportedAt)] as const));
 
   const active = (db
     .prepare(`SELECT * FROM plan_sessions WHERE status IN ('tentative','planned','in_progress') AND end_utc > ? ORDER BY start_utc, id`)
@@ -198,7 +211,8 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
   const replan = new Set(opts.replanDates ?? []);
   const sessionDate = (s: PlanSessionRow) => localDateInTz(new Date(s.startUtc), tz);
   const started = (s: PlanSessionRow) => s.status === "in_progress" || Date.parse(s.startUtc) <= asOfMs;
-  const isProtected = (s: PlanSessionRow) => started(s) || s.locked || (Date.parse(s.startUtc) <= asOfMs + DAY_MS && !granted(sessionDate(s)) && !replan.has(sessionDate(s)));
+  // 主人亲自指定位置的块（origin=user）与锁定块一样不被自动挪动
+  const isProtected = (s: PlanSessionRow) => started(s) || s.locked || s.origin === "user" || (Date.parse(s.startUtc) <= asOfMs + DAY_MS && !granted(sessionDate(s)) && !replan.has(sessionDate(s)));
 
   for (const s of active.filter(isProtected)) {
     // 任务已完成/取消/归档：未开始的块不再有意义；进行中的保留，由用户结束
@@ -244,18 +258,34 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
 
   // 2) 为缺口新增：空闲区间扣掉保留块（含块间休息），当日容量扣掉保留的未来分钟
   const keptPadded = kept.map((s) => [Date.parse(s.startUtc) - GAP_MS, Date.parse(s.endUtc) + GAP_MS] as Interval);
+  const part = rules.find((r) => r.kind === "preferred_window")?.value.part as string | undefined;
   const days: SchedDay[] = horizon.map((date) => {
-    let free = subtractIntervals(base.get(date)!.w, keptPadded);
+    const ledger = base.get(date)!;
+    let free = subtractIntervals(ledger.w, keptPadded);
     if (date === fromLocal) free = free.map(([s, e]) => [Math.max(s, asOfMs), e] as Interval).filter(([s, e]) => e > s);
-    return { date, free, cDay: Math.max(0, Math.floor(dayCapacity(date) - keptDay.get(date)!)) };
+    const weekend = ledger.calendar.weekday >= 6;
+    const preferred: Interval[] =
+      part && PART_WINDOWS[part]
+        ? [[wallTimeToUtc(date, PART_WINDOWS[part]![0], tz).getTime(), wallTimeToUtc(date, PART_WINDOWS[part]![1], tz).getTime()]]
+        : part === "weekend" && weekend
+          ? [dayRange(date, tz)]
+          : [];
+    return { date, free, cDay: Math.max(0, Math.floor(dayCapacity(date) - keptDay.get(date)!)), busy: ledger.courseMinutes >= BUSY_COURSE_MINUTES, preferred };
   });
   const needs: SchedTask[] = [];
   const unscheduled: Unscheduled[] = [];
+  const starters = new Set<string>();
   for (const t of tasks) {
     const k = keptTask.get(t.id) ?? { minutes: 0, blocks: 0 };
     const demand = remainingDemand(t, spent);
     if (demand === null) {
-      if (k.blocks === 0) needs.push({ ...t, estimateMinutes: null });
+      if (k.blocks > 0) continue;
+      // 工作量未知：只安排一次有产出的起步块；做过之后要结合反馈才知道下一步，不无限续排
+      if (hadStarter(t.id) || (spent.get(t.id) ?? 0) > 0) needs.push({ ...t, estimateMinutes: null });
+      else {
+        starters.add(t.id);
+        needs.push({ ...t, estimateMinutes: STARTER_MINUTES, maxNewBlocks: 1 });
+      }
       continue;
     }
     if (demand === 0) {
@@ -278,45 +308,91 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
   const batchId = createBatch({
     command: "plan_sessions",
     reason: JSON.stringify({ placed: placed.placements.length, kept: kept.length, unscheduled, conflicts }),
-    intakeId: null,
+    intakeId: opts.intakeId ?? null,
     itemId: null,
     policyVersion: COMMAND_POLICY_VERSION,
     instanceEpoch: 0,
+    causedBy: opts.causedBy ?? null,
+    conversationId: opts.conversationId ?? null,
   });
   for (const s of dropped) {
     supersedeSession(s.id);
     addChange(batchId, { entityKind: "plan_session", entityId: s.id, action: "update", before: { status: s.status }, after: { status: "superseded" }, beforeVersion: s.version, afterVersion: s.version + 1 });
   }
   for (const p of placed.placements) {
-    const id = insertSession({ taskId: p.taskId, startUtc: new Date(p.start).toISOString(), endUtc: new Date(p.end).toISOString(), timezone: tz, batchId });
+    const starter = starters.has(p.taskId);
+    const id = insertSession({
+      taskId: p.taskId,
+      startUtc: new Date(p.start).toISOString(),
+      endUtc: new Date(p.end).toISOString(),
+      timezone: tz,
+      batchId,
+      kind: starter ? "starter" : "work",
+      reason: placementReason(taskById.get(p.taskId)!, p, starter, tz, base),
+    });
     addChange(batchId, { entityKind: "plan_session", entityId: id, action: "create", after: { taskId: p.taskId, start: p.start, end: p.end }, afterVersion: 1 });
   }
   return { ...result, batchId };
 }
 
-/** 已确认投入：任务关联的学习记录 + 没有对应实际记录的已完成块（同一任务同一天只取其一） */
-function spentMinutesByTask(): Map<string, number> {
-  const db = getDb();
-  const tz = instanceTimezone();
-  const spent = new Map<string, number>();
-  const daysWithActual = new Set<string>();
-  const practice = db.prepare(`SELECT task_id, occurred_on, actual_minutes FROM practice_entries WHERE task_id IS NOT NULL AND actual_minutes IS NOT NULL AND category = 'study'`).all() as Array<{ task_id: string; occurred_on: string; actual_minutes: number }>;
-  for (const p of practice) {
-    spent.set(p.task_id, (spent.get(p.task_id) ?? 0) + p.actual_minutes);
-    daysWithActual.add(`${p.task_id}|${p.occurred_on}`);
-  }
-  const done = db.prepare(`SELECT task_id, start_utc, end_utc FROM plan_sessions WHERE status = 'completed'`).all() as Array<{ task_id: string; start_utc: string; end_utc: string }>;
-  for (const s of done) {
-    if (daysWithActual.has(`${s.task_id}|${localDateInTz(new Date(s.start_utc), tz)}`)) continue;
-    spent.set(s.task_id, (spent.get(s.task_id) ?? 0) + (Date.parse(s.end_utc) - Date.parse(s.start_utc)) / 60000);
-  }
-  return spent;
+function localLabel(ms: number, tz: string): string {
+  const d = localDateInTz(new Date(ms), tz);
+  const t = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(ms));
+  return `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))} ${t}`;
 }
 
-/** 剩余需求：估时 − 已确认投入；未知估时为 null */
+/** 安排依据：只写具体事实（截止、连续空档、预算、之前的日子为什么没排），不写空话 */
+function placementReason(task: PlanTask, p: { start: number; end: number; skipped: Array<{ date: string; why: string }> }, starter: boolean, tz: string, base: Map<string, DayLedger>): string {
+  const parts: string[] = [];
+  const minutes = Math.round((p.end - p.start) / 60000);
+  if (starter) parts.push(`这件事的工作量还不清楚，先安排 ${minutes} 分钟梳理出下一步`);
+  if (task.dueAtMs != null) parts.push(`${localLabel(task.dueAtMs, tz)} 截止`);
+  const date = localDateInTz(new Date(p.start), tz);
+  const ledger = base.get(date);
+  if (ledger) {
+    const window = ledger.w.find(([s, e]) => s <= p.start && e >= p.end);
+    if (window) parts.push(`这段时间有 ${Math.round((window[1] - Math.max(window[0], p.start)) / 60000)} 分钟连续空档`);
+  }
+  const why: Record<string, string> = { budget: "当天学习预算不够一整段", no_slot: "没有够长的连续空档", busy_day: "课比较满" };
+  const skipped = p.skipped.slice(-2).map((s) => `${Number(s.date.slice(5, 7))}/${Number(s.date.slice(8, 10))} ${why[s.why] ?? ""}`);
+  if (skipped.length) parts.push(`没排在更早：${skipped.join("、")}`);
+  return parts.join("；");
+}
+
+/** 这个任务是否已经排过起步块（被替换的不算） */
+function hadStarter(taskId: string): boolean {
+  return Boolean(getDb().prepare(`SELECT 1 FROM plan_sessions WHERE task_id = ? AND kind = 'starter' AND status != 'superseded'`).get(taskId));
+}
+
+/**
+ * 已确认投入：任务关联的学习记录 + 没有对应实际记录的已完成块（同一任务同一天只取其一）。
+ * since 给出时只算那之后的投入（主人报告过剩余需求）。
+ */
+function spentMinutes(taskId: string, since: string | null): number {
+  const db = getDb();
+  const tz = instanceTimezone();
+  let total = 0;
+  const daysWithActual = new Set<string>();
+  const practice = db.prepare(`SELECT occurred_on, actual_minutes, created_at FROM practice_entries WHERE task_id = ? AND actual_minutes IS NOT NULL AND category = 'study'`).all(taskId) as Array<{ occurred_on: string; actual_minutes: number; created_at: string }>;
+  for (const p of practice) {
+    daysWithActual.add(p.occurred_on);
+    if (!since || p.created_at >= since) total += p.actual_minutes;
+  }
+  const done = db.prepare(`SELECT start_utc, end_utc, updated_at FROM plan_sessions WHERE task_id = ? AND status = 'completed'`).all(taskId) as Array<{ start_utc: string; end_utc: string; updated_at: string }>;
+  for (const s of done) {
+    if (daysWithActual.has(localDateInTz(new Date(s.start_utc), tz))) continue;
+    if (since && s.updated_at < since) continue;
+    total += (Date.parse(s.end_utc) - Date.parse(s.start_utc)) / 60000;
+  }
+  return total;
+}
+
+/** 剩余需求：主人报告过剩余就从那里扣；否则估时 − 已确认投入；未知估时为 null */
 function remainingDemand(task: PlanTask, spent: Map<string, number>): number | null {
+  const used = Math.round(spent.get(task.id) ?? 0);
+  if (task.remainingMinutes !== null) return Math.max(0, task.remainingMinutes - used);
   if (task.estimateMinutes === null) return null;
-  return Math.max(0, task.estimateMinutes - Math.round(spent.get(task.id) ?? 0));
+  return Math.max(0, task.estimateMinutes - used);
 }
 
 function closedTaskIds(ids: string[]): Set<string> {
@@ -349,10 +425,14 @@ function eventsOf(day: CalendarDay): DayEvent[] {
   return out;
 }
 
-function listSchedulableTasks(tz: string): PlanTask[] {
+function listSchedulableTasks(tz: string, today: string): PlanTask[] {
+  // 暂停中的任务不排；到期自动恢复（一次暂停不是撤销）
   const rows = getDb()
-    .prepare(`SELECT id, title, estimate_minutes, due_kind, due_local_date, due_timezone, due_at, priority, created_at, effort_mode FROM tasks WHERE status IN ('todo','doing') AND archived_at IS NULL ORDER BY created_at, id`)
-    .all() as Array<Record<string, unknown>>;
+    .prepare(
+      `SELECT id, title, estimate_minutes, due_kind, due_local_date, due_timezone, due_at, priority, created_at, effort_mode, remaining_minutes, remaining_reported_at
+       FROM tasks WHERE status IN ('todo','doing') AND archived_at IS NULL AND (paused_until IS NULL OR paused_until <= ?) ORDER BY created_at, id`,
+    )
+    .all(today) as Array<Record<string, unknown>>;
   return rows.map((r) => {
     const dueAt = (r.due_at as string) ?? null;
     const dueDate = (r.due_local_date as string) ?? null;
@@ -367,6 +447,8 @@ function listSchedulableTasks(tz: string): PlanTask[] {
       priority: r.priority as SchedTask["priority"],
       createdAt: r.created_at as string,
       effortMode: r.effort_mode as PlanTask["effortMode"],
+      remainingMinutes: (r.remaining_minutes as number | null) ?? null,
+      remainingReportedAt: (r.remaining_reported_at as string | null) ?? null,
     };
   });
 }

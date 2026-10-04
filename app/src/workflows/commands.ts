@@ -3,9 +3,15 @@ import { addChange, createBatch, type ChangeInput } from "@/repositories/journal
 import { commandSchema, COMMAND_POLICY_VERSION, OPERATIONS, type Command, type CommandContext, type OperationAffect } from "@/contracts/commands";
 import { getInstanceState } from "@/repositories/instance";
 import { applyArchive, applyCourseSet, applyException, applyFixedEvents } from "@/workflows/ops/courses";
-import { applyCompleteTask, applyPractice, applyTask } from "@/workflows/ops/tasks";
+import { applyCompleteTask, applyCorrectPractice, applyPauseTask, applyPractice, applyTask } from "@/workflows/ops/tasks";
+import { applyRescheduleSession, applySessionState } from "@/workflows/ops/sessions";
+import { listCausedBatches } from "@/repositories/journal";
+import { undoBatch, type UndoResult } from "@/workflows/undo";
+import { HttpError } from "@/workflows/http";
 import { applyAcademicCalendar, applyCalendarSyncPolicy, applyHolidayCalendar, applyTeachingOverride } from "@/workflows/ops/calendar";
 import { applyPlanningPolicy } from "@/workflows/ops/policy";
+import { rebuildPlan, type PlanConflict } from "@/workflows/plan";
+import type { Unscheduled } from "@/domain/scheduler";
 
 /**
  * 操作执行器（MASTER-PLAN §4.2/§5.3，AGENT-INTERFACE-CONTRACT §3/§4）：
@@ -21,7 +27,41 @@ export type CommandResult =
   | { ok: true; batchId: null; summary: string; noChange: true; affects: OperationAffect[]; refs: EntityRef[] }
   | { ok: false; error: string; code: string };
 
-type Handler<N extends Command["command"]> = (cmd: Extract<Command, { command: N }>, ctx: CommandContext, changes: ChangeInput[]) => string;
+/** handler 返回给人看的摘要；自己管理变更记录的操作（如撤销）返回 effect，执行器不再另写批次 */
+type HandlerOutput = string | { summary: string; effectBatchId: string };
+type Handler<N extends Command["command"]> = (cmd: Extract<Command, { command: N }>, ctx: CommandContext, changes: ChangeInput[]) => HandlerOutput;
+
+/**
+ * 撤销一个批次：先撤它引起的重排（否则会留下无解释的新安排），再撤它本身。
+ * 之后有新修改的对象不覆盖，整体不动并说明冲突。
+ */
+export function undoWithFollowUps(batchId: string): UndoResult {
+  class Abort extends Error {
+    constructor(readonly result: UndoResult) {
+      super("undo aborted");
+    }
+  }
+  try {
+    return getDb().transaction((): UndoResult => {
+      // 重排批次动过的块如果后来又被改，就留着它，交给撤销后的重排去对账
+      for (const child of listCausedBatches(batchId)) undoBatch(child);
+      const r = undoBatch(batchId);
+      if (r.kind !== "undone") throw new Abort(r); // 主批次撤不了：连带撤掉的重排一起回滚，整体不动
+      return r;
+    })();
+  } catch (e) {
+    if (e instanceof Abort) return e.result;
+    throw e;
+  }
+}
+
+function applyUndoBatch(cmd: Extract<Command, { command: "undo_batch" }>): HandlerOutput {
+  const r = undoWithFollowUps(cmd.batchId);
+  if (r.kind === "not_found") throw new HttpError(404, "NOT_FOUND", "要撤销的变更不存在");
+  if (r.kind === "already_undone") return "这次变更已经撤销过了";
+  if (r.kind === "conflict") throw new HttpError(409, "UNDO_CONFLICT", `撤销不了：${r.conflicts.join("；")}`);
+  return { summary: "已撤销", effectBatchId: cmd.batchId };
+}
 
 /** 每个注册操作必须有 handler：少一个编译不过，schema、类型、执行三者不会漂移 */
 const HANDLERS: { [N in Command["command"]]: Handler<N> } = {
@@ -37,6 +77,11 @@ const HANDLERS: { [N in Command["command"]]: Handler<N> } = {
   apply_teaching_day_override: applyTeachingOverride,
   update_calendar_sync_policy: applyCalendarSyncPolicy,
   update_planning_policy: applyPlanningPolicy,
+  pause_task: applyPauseTask,
+  correct_practice: applyCorrectPractice,
+  reschedule_session: applyRescheduleSession,
+  set_session_state: applySessionState,
+  undo_batch: applyUndoBatch,
 };
 
 export function isRegisteredOperation(name: unknown): name is Command["command"] {
@@ -66,8 +111,10 @@ export function executeCommand(raw: unknown, ctx: CommandContext): CommandResult
       .transaction((): CommandResult => {
         const changes: ChangeInput[] = [];
         const handler = HANDLERS[parsed.data.command] as Handler<Command["command"]>;
-        const summary = handler(parsed.data, ctx, changes);
+        const output = handler(parsed.data, ctx, changes);
+        const summary = typeof output === "string" ? output : output.summary;
         const refs = uniqueRefs(changes);
+        if (typeof output !== "string") return { ok: true, batchId: output.effectBatchId, summary, noChange: false, affects: meta.affects, refs };
         if (!changes.length) return { ok: true, batchId: null, summary, noChange: true, affects: [], refs };
         const batchId = createBatch({
           command: parsed.data.command,
@@ -76,6 +123,7 @@ export function executeCommand(raw: unknown, ctx: CommandContext): CommandResult
           itemId: ctx.itemId,
           policyVersion: COMMAND_POLICY_VERSION,
           instanceEpoch: ctx.instanceEpoch,
+          conversationId: ctx.conversationId ?? null,
         });
         for (const c of changes) addChange(batchId, c);
         return { ok: true, batchId, summary, noChange: false, affects: meta.affects, refs };
@@ -97,4 +145,25 @@ function uniqueRefs(changes: ChangeInput[]): EntityRef[] {
     out.push({ kind: c.entityKind, id: c.entityId });
   }
   return out;
+}
+
+export type FollowUp = { kind: "plan"; state: "updated" | "unchanged" | "failed"; batchId: string | null; placed: number; superseded: number; unscheduled: Unscheduled[]; conflicts: PlanConflict[]; error?: string };
+export type OperationOutcome = { result: CommandResult; followUps: FollowUp[] };
+
+/**
+ * 执行操作并完成必要的后续（AGENT-INTERFACE-CONTRACT §3）：领域事务提交后再做重排等派生更新，
+ * 各自状态分开报告——“已保存”和“安排已更新”不合并成一个完成。
+ */
+export function executeOperation(raw: unknown, ctx: CommandContext, opts: { replanDates?: string[] } = {}): OperationOutcome {
+  const result = executeCommand(raw, ctx);
+  const followUps: FollowUp[] = [];
+  if (result.ok && !result.noChange && result.affects.includes("plan")) {
+    try {
+      const plan = rebuildPlan(ctx.now ?? new Date(), { causedBy: result.batchId, conversationId: ctx.conversationId ?? null, intakeId: ctx.intakeId, replanDates: opts.replanDates });
+      followUps.push({ kind: "plan", state: plan.changed ? "updated" : "unchanged", batchId: plan.batchId, placed: plan.placed, superseded: plan.superseded, unscheduled: plan.unscheduled, conflicts: plan.conflicts });
+    } catch (e) {
+      followUps.push({ kind: "plan", state: "failed", batchId: null, placed: 0, superseded: 0, unscheduled: [], conflicts: [], error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+  return { result, followUps };
 }

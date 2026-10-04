@@ -30,7 +30,7 @@ export const INTAKE_ITEM_STATES = [
 ] as const;
 export type IntakeItemState = (typeof INTAKE_ITEM_STATES)[number];
 
-export const INTAKE_ITEM_KINDS = ["timetable", "notice", "practice", "task", "note", "ics"] as const;
+export const INTAKE_ITEM_KINDS = ["timetable", "notice", "practice", "task", "note", "ics", "command", "calendar", "holiday", "adjustment"] as const;
 export type IntakeItemKind = (typeof INTAKE_ITEM_KINDS)[number];
 
 /** POST /api/v2/intakes JSON 请求体；multipart（附件）由路由解析后走同一 envelope */

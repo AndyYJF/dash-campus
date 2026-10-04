@@ -40,6 +40,9 @@ export const createOrUpdateTaskSchema = z.object({
   dueLocalDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   dueLocalTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).nullable().optional(),
   effortMode: z.enum(["deliverable", "time_budget"]).optional(),
+  /** 主人报告的剩余需求（“还差一个小时”）；之后的投入从这里扣 */
+  remainingMinutes: z.number().int().min(0).max(100_000).nullable().optional(),
+  priority: z.enum(["normal", "high"]).optional(),
 });
 
 /** 完成原任务：取消其未执行的学习块与提醒；可顺带记下这次的实际投入 */
@@ -199,6 +202,51 @@ export const updatePlanningPolicySchema = z.object({
   evidence: z.string().max(500).default(""),
 });
 
+/** 暂停任务到某天（null = 先不定）；resume=true 恢复。暂停让出未执行的学习块，不是取消任务 */
+export const pauseTaskSchema = z.object({
+  command: z.literal("pause_task"),
+  taskId: z.string().uuid(),
+  until: dateStr.nullable().default(null),
+  resume: z.boolean().default(false),
+});
+
+/** 纠正一条实践记录：只改给出的字段，旧值留在变更历史里 */
+export const correctPracticeSchema = z.object({
+  command: z.literal("correct_practice"),
+  practiceId: z.string().uuid(),
+  actualMinutes: z.number().int().min(1).max(24 * 60).nullable().optional(),
+  occurredOn: dateStr.optional(),
+  note: z.string().max(500).optional(),
+  taskId: z.string().uuid().nullable().optional(),
+  category: z.enum(["study", "other"]).optional(),
+});
+
+/** 把指定学习块挪到某天的某个时段或具体钟点；可只改这一段的长度（任务总需求不变） */
+export const rescheduleSessionSchema = z.object({
+  command: z.literal("reschedule_session"),
+  sessionId: z.string().min(1).max(64),
+  targetDate: dateStr.nullable().default(null),
+  part: z.enum(["morning", "afternoon", "evening", "any"]).default("any"),
+  startLocalTime: timeStr.nullable().default(null),
+  durationMinutes: z.number().int().min(5).max(240).nullable().default(null),
+  expectedVersion: z.number().int().min(1).nullable().default(null),
+});
+
+export const setSessionStateSchema = z.object({
+  command: z.literal("set_session_state"),
+  sessionId: z.string().min(1).max(64),
+  action: z.enum(["start", "complete", "skip", "lock", "unlock"]),
+  expectedVersion: z.number().int().min(1).nullable().default(null),
+  actualMinutes: z.number().int().min(1).max(24 * 60).nullable().default(null),
+  note: z.string().max(500).default(""),
+});
+
+/** 撤销一个变更批次（及它引起的重排）；后来又被改过的对象不会被覆盖 */
+export const undoBatchSchema = z.object({
+  command: z.literal("undo_batch"),
+  batchId: z.string().uuid(),
+});
+
 export const commandSchema = z.discriminatedUnion("command", [
   upsertCourseSetSchema,
   recordPracticeSchema,
@@ -212,6 +260,11 @@ export const commandSchema = z.discriminatedUnion("command", [
   applyTeachingDayOverrideSchema,
   updateCalendarSyncPolicySchema,
   updatePlanningPolicySchema,
+  pauseTaskSchema,
+  correctPracticeSchema,
+  rescheduleSessionSchema,
+  setSessionStateSchema,
+  undoBatchSchema,
 ]);
 
 export type Command = z.infer<typeof commandSchema>;
@@ -244,6 +297,11 @@ export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   apply_teaching_day_override: { title: "调课/停课", description: "单次例外：某门课取消或移到别的时间；或整天停课、按另一天的课表上课。周次条件按原教学日期判断。", group: "calendar", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
   update_calendar_sync_policy: { title: "日历自动更新设置", description: "开启/关闭校历与节假日的有限自动核对，设置学校、人群、间隔与官方入口。", group: "calendar", authorization: "owner_explicit", undo: "journal", affects: [] },
   update_planning_policy: { title: "时间安排规则", description: "修改作息模板字段、按星期/工作日的上限、某段时间不学、假期策略、集中时段偏好，或授权重新安排某天。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
+  pause_task: { title: "暂停任务", description: "把任务先放一放（到某天或先不定），让出未执行的学习块；resume 恢复。", group: "task", authorization: "owner_explicit", undo: "journal", affects: ["plan", "reminders"] },
+  correct_practice: { title: "纠正实践记录", description: "修改一条已有实践记录的分钟、日期、说明或关联任务。", group: "practice", authorization: "owner_explicit", undo: "journal", affects: ["plan", "direction"] },
+  reschedule_session: { title: "调整学习安排", description: "把一个具体学习块挪到别的日期/时段/钟点，或只改这一段的长度。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
+  set_session_state: { title: "学习块状态", description: "开始、完成、跳过、锁定或解锁一个学习块。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
+  undo_batch: { title: "撤销", description: "撤销最近一次（或指定的）变更。", group: "recovery", authorization: "owner_explicit", undo: "none", affects: ["plan", "calendar"] },
   complete_task: { title: "完成任务", description: "把指定任务标记完成，取消其未执行学习块与提醒。", group: "task", authorization: "owner_explicit", undo: "journal", affects: ["plan", "reminders"] },
 };
 

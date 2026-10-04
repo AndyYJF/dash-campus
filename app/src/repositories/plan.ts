@@ -40,6 +40,9 @@ export type PlanSessionRow = {
   locked: boolean;
   batchId: string | null;
   version: number;
+  reason: string;
+  kind: "work" | "starter";
+  origin: "agent" | "user";
 };
 
 function mapSession(r: Record<string, unknown>): PlanSessionRow {
@@ -53,6 +56,9 @@ function mapSession(r: Record<string, unknown>): PlanSessionRow {
     locked: Boolean(r.locked),
     batchId: (r.batch_id as string) ?? null,
     version: r.version as number,
+    reason: (r.reason as string) ?? "",
+    kind: ((r.kind as string) ?? "work") as PlanSessionRow["kind"],
+    origin: ((r.origin as string) ?? "agent") as PlanSessionRow["origin"],
   };
 }
 
@@ -77,14 +83,14 @@ export function supersedeSession(id: string): void {
   getDb().prepare(`UPDATE plan_sessions SET status = 'superseded', version = version + 1, updated_at = ? WHERE id = ?`).run(now(), id);
 }
 
-export function insertSession(input: { taskId: string; startUtc: string; endUtc: string; timezone: string; batchId: string }): string {
+export function insertSession(input: { taskId: string; startUtc: string; endUtc: string; timezone: string; batchId: string; reason?: string; kind?: "work" | "starter"; origin?: "agent" | "user" }): string {
   const id = crypto.randomUUID();
   getDb()
     .prepare(
-      `INSERT INTO plan_sessions (id, task_id, start_utc, end_utc, timezone, status, batch_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'planned', ?, ?, ?)`,
+      `INSERT INTO plan_sessions (id, task_id, start_utc, end_utc, timezone, status, batch_id, reason, kind, origin, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'planned', ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, input.taskId, input.startUtc, input.endUtc, input.timezone, input.batchId, now(), now());
+    .run(id, input.taskId, input.startUtc, input.endUtc, input.timezone, input.batchId, input.reason ?? "", input.kind ?? "work", input.origin ?? "agent", now(), now());
   return id;
 }
 

@@ -39,10 +39,10 @@ export function applyTask(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInpu
   const due = dueColumns(cmd);
   getDb()
     .prepare(
-      `INSERT INTO tasks (id, title, description, status, priority, estimate_minutes, due_kind, due_local_date, due_timezone, due_at, effort_mode, created_at, updated_at)
-       VALUES (?, ?, '', 'todo', 'normal', ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (id, title, description, status, priority, estimate_minutes, due_kind, due_local_date, due_timezone, due_at, effort_mode, remaining_minutes, remaining_reported_at, created_at, updated_at)
+       VALUES (?, ?, '', 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, cmd.title, cmd.estimateMinutes ?? null, due.kind, due.localDate, due.timezone, due.at, cmd.effortMode ?? "deliverable", now, now);
+    .run(id, cmd.title, cmd.priority ?? "normal", cmd.estimateMinutes ?? null, due.kind, due.localDate, due.timezone, due.at, cmd.effortMode ?? "deliverable", cmd.remainingMinutes ?? null, cmd.remainingMinutes != null ? (ctx.now ?? new Date()).toISOString() : null, now, now);
   changes.push({ entityKind: "task", entityId: id, action: "create", after: { title: cmd.title }, afterVersion: 1 });
   linkSource({ entityKind: "task", entityId: id, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
   return `任务创建：${cmd.title}`;
@@ -63,6 +63,14 @@ function applyTaskUpdate(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInput
   if (cmd.title !== undefined) set("title", "title", cmd.title);
   if (cmd.estimateMinutes !== undefined) set("estimateMinutes", "estimate_minutes", cmd.estimateMinutes);
   if (cmd.effortMode !== undefined) set("effortMode", "effort_mode", cmd.effortMode);
+  if (cmd.priority !== undefined) set("priority", "priority", cmd.priority);
+  if (cmd.remainingMinutes !== undefined) {
+    // 报告剩余需求：记下报告时刻，之后的投入从这个数扣
+    before.remainingMinutes = row.remaining_minutes ?? null;
+    after.remainingMinutes = cmd.remainingMinutes;
+    before.remainingReportedAt = row.remaining_reported_at ?? null;
+    after.remainingReportedAt = cmd.remainingMinutes === null ? null : (ctx.now ?? new Date()).toISOString();
+  }
   if (cmd.dueLocalDate !== undefined) {
     const due = dueColumns(cmd);
     set("dueKind", "due_kind", due.kind);
@@ -104,4 +112,66 @@ export function applyCompleteTask(cmd: Cmd<"complete_task">, ctx: CommandContext
   linkSource({ entityKind: "task", entityId: cmd.taskId, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
   bumpPlanningRevision();
   return `任务完成：${current.title}${pending.length ? `（取消 ${pending.length} 个未执行的学习块）` : ""}`;
+}
+
+/** 暂停/恢复任务：暂停让出还没开始的学习块（进行中的保留），不取消任务本身 */
+export function applyPauseTask(cmd: Cmd<"pause_task">, ctx: CommandContext, changes: ChangeInput[]): string {
+  const db = getDb();
+  const row = db.prepare(`SELECT id, title, status, paused_until, version FROM tasks WHERE id = ? AND archived_at IS NULL`).get(cmd.taskId) as
+    | { id: string; title: string; status: string; paused_until: string | null; version: number }
+    | undefined;
+  if (!row) throw new HttpError(404, "NOT_FOUND", "要暂停的任务不存在");
+  const nowIso = new Date().toISOString();
+  const next = cmd.resume ? null : (cmd.until ?? "9999-12-31");
+  if ((row.paused_until ?? null) === next) return cmd.resume ? `「${row.title}」本来就没有暂停` : `「${row.title}」已经是暂停状态`;
+  db.prepare(`UPDATE tasks SET paused_until = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(next, nowIso, cmd.taskId);
+  changes.push({ entityKind: "task", entityId: cmd.taskId, action: "update", before: { pausedUntil: row.paused_until ?? null }, after: { pausedUntil: next }, beforeVersion: row.version, afterVersion: row.version + 1 });
+  let released = 0;
+  if (!cmd.resume) {
+    const pending = db.prepare(`SELECT id, status, version FROM plan_sessions WHERE task_id = ? AND status IN ('tentative','planned')`).all(cmd.taskId) as Array<{ id: string; status: string; version: number }>;
+    for (const s of pending) {
+      db.prepare(`UPDATE plan_sessions SET status = 'superseded', version = version + 1, updated_at = ? WHERE id = ?`).run(nowIso, s.id);
+      changes.push({ entityKind: "plan_session", entityId: s.id, action: "update", before: { status: s.status }, after: { status: "superseded" }, beforeVersion: s.version, afterVersion: s.version + 1 });
+    }
+    released = pending.length;
+  }
+  linkSource({ entityKind: "task", entityId: cmd.taskId, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
+  bumpPlanningRevision();
+  if (cmd.resume) return `「${row.title}」已恢复，会重新安排时间`;
+  return `「${row.title}」先放一放${cmd.until ? `，${cmd.until} 起恢复安排` : "（没定恢复时间，想继续时说一声）"}${released ? `；让出 ${released} 个还没开始的学习块` : ""}`;
+}
+
+/** 纠正实践记录：旧值进变更历史，预算与任务剩余随之刷新 */
+export function applyCorrectPractice(cmd: Cmd<"correct_practice">, ctx: CommandContext, changes: ChangeInput[]): string {
+  const db = getDb();
+  const row = db.prepare(`SELECT * FROM practice_entries WHERE id = ?`).get(cmd.practiceId) as Record<string, unknown> | undefined;
+  if (!row) throw new HttpError(404, "NOT_FOUND", "这条实践记录不存在");
+  if (cmd.taskId && !getTask(cmd.taskId)) throw new HttpError(422, "INVALID_REFERENCE", "关联的任务不存在");
+  const before: Record<string, unknown> = {};
+  const after: Record<string, unknown> = {};
+  const set = (camel: string, column: string, value: unknown) => {
+    if (value === undefined || (row[column] ?? null) === (value ?? null)) return;
+    before[camel] = row[column] ?? null;
+    after[camel] = value ?? null;
+  };
+  set("actualMinutes", "actual_minutes", cmd.actualMinutes);
+  set("occurredOn", "occurred_on", cmd.occurredOn);
+  set("note", "note", cmd.note);
+  set("taskId", "task_id", cmd.taskId);
+  set("category", "category", cmd.category);
+  const fields = Object.keys(after);
+  if (!fields.length) return "这条记录没有变化";
+  const sets = fields.map((f) => `${f.replace(/[A-Z]/g, (m) => `_${m.toLowerCase()}`)} = ?`);
+  db.prepare(`UPDATE practice_entries SET ${sets.join(", ")}, version = version + 1, updated_at = ? WHERE id = ?`).run(...Object.values(after), new Date().toISOString(), cmd.practiceId);
+  const version = row.version as number;
+  changes.push({ entityKind: "practice_entry", entityId: cmd.practiceId, action: "update", before, after, beforeVersion: version, afterVersion: version + 1 });
+  linkSource({ entityKind: "practice_entry", entityId: cmd.practiceId, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
+  bumpPlanningRevision();
+  const parts: string[] = [];
+  if ("actualMinutes" in after) parts.push(`${before.actualMinutes ?? "未知"} 分钟 → ${after.actualMinutes ?? "未知"} 分钟`);
+  if ("occurredOn" in after) parts.push(`日期改为 ${after.occurredOn}`);
+  if ("category" in after) parts.push(after.category === "other" ? "不算学习投入" : "算学习投入");
+  if ("taskId" in after) parts.push(after.taskId ? "已关联任务" : "不再关联任务");
+  if ("note" in after) parts.push("说明已更新");
+  return `实践记录已纠正：${parts.join("，")}`;
 }

@@ -2,7 +2,8 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 import { requireOwner } from "@/workflows/auth-guard";
 import { errorResponse, parseJson, runIdempotent } from "@/workflows/http";
-import { undoBatch } from "@/workflows/undo";
+import { undoWithFollowUps } from "@/workflows/commands";
+import { rebuildPlan } from "@/workflows/plan";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +28,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     actorScope: `owner:${auth.session.ownerId}`,
     route: "v2.actions.undo",
     execute: () => {
-      const result = undoBatch(batchId);
+      // 连同它引起的重排一起撤，再按撤销后的事实对一次账（不留下无解释的新安排）
+      const result = undoWithFollowUps(batchId);
       if (result.kind === "not_found") return { statusCode: 404, body: { error: { code: "NOT_FOUND", message: "批次不存在" } }, resourceType: null, resourceId: null };
       if (result.kind === "already_undone") {
         return { statusCode: 409, body: { error: { code: "ALREADY_UNDONE", message: "该批次已撤销，不能重复撤销" } }, resourceType: null, resourceId: null };
@@ -40,6 +42,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           resourceId: null,
         };
       }
+      rebuildPlan(new Date());
       return { statusCode: 200, body: { batchId, status: "undone" }, resourceType: "action_batch", resourceId: batchId };
     },
   });

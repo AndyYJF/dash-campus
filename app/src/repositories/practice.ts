@@ -9,14 +9,17 @@ export function insertPracticeEntry(input: {
   note: string;
   taskId?: string | null;
   category?: "study" | "other";
+  planSessionId?: string | null;
+  focusSessionId?: string | null;
+  minutesOrigin?: "timer" | "user_reported";
 }): string {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   getDb()
     .prepare(
-      `INSERT INTO practice_entries (id, task_id, occurred_on, actual_minutes, minutes_origin, note, category, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'user_reported', ?, ?, ?, ?)`,
+      `INSERT INTO practice_entries (id, task_id, occurred_on, actual_minutes, minutes_origin, note, category, plan_session_id, focus_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, input.taskId ?? null, input.occurredOn, input.actualMinutes, input.note, input.category ?? "study", now, now);
+    .run(id, input.taskId ?? null, input.occurredOn, input.actualMinutes, input.minutesOrigin ?? "user_reported", input.note, input.category ?? "study", input.planSessionId ?? null, input.focusSessionId ?? null, now, now);
   return id;
 }

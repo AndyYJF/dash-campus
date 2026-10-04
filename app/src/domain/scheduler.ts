@@ -24,21 +24,28 @@ export type SchedDay = {
   date: string; // YYYY-MM-DD（本地）
   free: Interval[]; // W 区间（已扣课程/生活/已保留块，当天已裁到 asOf 之后）
   cDay: number; // 当日还可新增的学习分钟（共享账本的 futureCapacity）
+  /** 课程密集日：没有截止的任务先放到更宽裕的日子 */
+  busy?: boolean;
+  /** 已确认的集中时段偏好落在当天的区间；同等条件下优先，不会因此错过截止 */
+  preferred?: Interval[];
 };
 
-export type Placement = { taskId: string; start: number; end: number };
+/** 之前的日子为什么没排：预算不够一整段，或没有够长的连续空档 */
+export type SkipNote = { date: string; why: "budget" | "no_slot" | "busy_day" };
+export type Placement = { taskId: string; start: number; end: number; skipped: SkipNote[] };
 export type UnscheduledReason = "unknown_requirement" | "deadline_unfeasible" | "insufficient_capacity" | "no_contiguous_slot" | "needs_remaining_estimate";
 export type Unscheduled = { taskId: string; title: string; reason: UnscheduledReason; missingMinutes?: number };
 
 const GAP_MS = 10 * 60000;
 export const MAX_BLOCKS_PER_TASK = 3;
 
-type DayState = { date: string; cDay: number; intervals: Interval[]; usedMinutes: number };
+type DayState = { date: string; cDay: number; intervals: Interval[]; usedMinutes: number; busy: boolean; preferred: Interval[] };
 type Opts = { minBlock: number; maxBlock: number };
+type Progress = { remaining: number; blocks: number; maxBlocks: number; skipped: SkipNote[] };
 
 export function placeTasks(tasks: SchedTask[], days: SchedDay[], opts: Opts): { placements: Placement[]; unscheduled: Unscheduled[] } {
   const ordered = [...tasks].sort(compareTasks);
-  const state: DayState[] = days.map((d) => ({ date: d.date, cDay: d.cDay, intervals: d.free.map((w) => [...w] as Interval), usedMinutes: 0 }));
+  const state: DayState[] = days.map((d) => ({ date: d.date, cDay: d.cDay, intervals: d.free.map((w) => [...w] as Interval), usedMinutes: 0, busy: Boolean(d.busy), preferred: d.preferred ?? [] }));
   const placements: Placement[] = [];
   const unscheduled: Unscheduled[] = [];
   for (const t of ordered) {
@@ -47,11 +54,14 @@ export function placeTasks(tasks: SchedTask[], days: SchedDay[], opts: Opts): { 
       continue;
     }
     const due = dueMs(t);
-    const progress = { remaining: t.estimateMinutes, blocks: 0, maxBlocks: t.maxNewBlocks ?? MAX_BLOCKS_PER_TASK };
+    const progress: Progress = { remaining: t.estimateMinutes, blocks: 0, maxBlocks: t.maxNewBlocks ?? MAX_BLOCKS_PER_TASK, skipped: [] };
     // 有截止：最早可行优先，窗口不够整块时用截止前最大的可用片段；
-    // 无截止：先找能放下整块的连续空档，全程找不到再退而用片段。
-    if (due === null) placeOne(t, state, placements, opts, progress, false);
-    placeOne(t, state, placements, opts, progress, true);
+    // 无截止：先在不那么满的日子找整块连续空档，再放宽到课程密集日，全程找不到再退而用片段。
+    if (due === null) {
+      placeOne(t, state, placements, opts, progress, { fragments: false, skipBusy: true });
+      placeOne(t, state, placements, opts, progress, { fragments: false, skipBusy: false });
+    }
+    placeOne(t, state, placements, opts, progress, { fragments: true, skipBusy: false });
     if (progress.remaining > 0) {
       unscheduled.push({ taskId: t.id, title: t.title, reason: reasonFor(due, progress.remaining, state), missingMinutes: progress.remaining });
     }
@@ -80,26 +90,41 @@ function compareTasks(a: SchedTask, b: SchedTask): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-function placeOne(t: SchedTask, days: DayState[], placements: Placement[], opts: Opts, progress: { remaining: number; blocks: number; maxBlocks: number }, allowFragments: boolean): void {
+function note(progress: Progress, date: string, why: SkipNote["why"]): void {
+  if (!progress.skipped.some((s) => s.date === date)) progress.skipped.push({ date, why });
+}
+
+function placeOne(t: SchedTask, days: DayState[], placements: Placement[], opts: Opts, progress: Progress, mode: { fragments: boolean; skipBusy: boolean }): void {
   const due = dueMs(t) ?? Number.POSITIVE_INFINITY;
   for (const day of days) {
     if (progress.blocks >= progress.maxBlocks || progress.remaining <= 0) break;
     if (t.dueLocalDate && day.date > t.dueLocalDate) break;
-    while (progress.blocks < progress.maxBlocks && progress.remaining > 0 && day.usedMinutes < day.cDay) {
+    if (mode.skipBusy && day.busy) {
+      note(progress, day.date, "busy_day");
+      continue;
+    }
+    while (progress.blocks < progress.maxBlocks && progress.remaining > 0) {
       const remaining = progress.remaining;
       const want = remaining >= opts.minBlock ? Math.min(remaining, opts.maxBlock) : remaining; // 剩余不足最小块：作为有依据的收尾块
       let len = Math.min(want, day.cDay - day.usedMinutes);
-      if (len < opts.minBlock && remaining > len) break; // 当天预算放不下有效块就换天；除非这就是收尾块
-      let spot = findSpot(day.intervals, len, due);
-      if (!spot && allowFragments) {
+      if (len <= 0 || (len < opts.minBlock && remaining > len)) {
+        // 当天预算放不下有效块就换天；除非这就是收尾块
+        if (day.intervals.length) note(progress, day.date, "budget");
+        break;
+      }
+      let spot = findSpot(day, len, due);
+      if (spot === null && mode.fragments) {
         const largest = Math.min(len, largestSpot(day.intervals, due));
         if (largest >= opts.minBlock) {
           len = largest;
-          spot = findSpot(day.intervals, len, due);
+          spot = findSpot(day, len, due);
         }
       }
-      if (!spot) break;
-      placements.push({ taskId: t.id, start: spot, end: spot + len * 60000 });
+      if (spot === null) {
+        note(progress, day.date, "no_slot");
+        break;
+      }
+      placements.push({ taskId: t.id, start: spot, end: spot + len * 60000, skipped: progress.skipped.filter((s) => s.date < day.date) });
       day.usedMinutes += len;
       progress.remaining -= len;
       progress.blocks++;
@@ -107,17 +132,32 @@ function placeOne(t: SchedTask, days: DayState[], placements: Placement[], opts:
   }
 }
 
-/** 在区间列表里找截止前能放下 len 分钟的最早起点，原地消费该段（含块后间隔） */
-function findSpot(intervals: Interval[], lenMin: number, due: number): number | null {
+/** 在当天空闲区间里找截止前能放下 len 分钟的起点（先看偏好时段，再取最早），原地消费该段（含块前后间隔） */
+function findSpot(day: DayState, lenMin: number, due: number): number | null {
   const need = lenMin * 60000;
-  for (const w of intervals) {
-    if (Math.min(w[1], due) - w[0] >= need) {
-      const start = w[0];
-      w[0] = start + need + GAP_MS;
-      return start;
+  for (const p of day.preferred) {
+    for (let i = 0; i < day.intervals.length; i++) {
+      const w = day.intervals[i]!;
+      const start = Math.max(w[0], p[0]);
+      const end = Math.min(w[1], p[1], due);
+      if (end - start >= need) return consume(day.intervals, i, start, need);
     }
   }
+  for (let i = 0; i < day.intervals.length; i++) {
+    const w = day.intervals[i]!;
+    if (Math.min(w[1], due) - w[0] >= need) return consume(day.intervals, i, w[0], need);
+  }
   return null;
+}
+
+/** 从第 i 个区间里切走 [start, start+need) 及前后间隔；剩余两侧保留 */
+function consume(intervals: Interval[], i: number, start: number, need: number): number {
+  const w = intervals[i]!;
+  const parts: Interval[] = [];
+  if (start - GAP_MS > w[0]) parts.push([w[0], start - GAP_MS]);
+  if (start + need + GAP_MS < w[1]) parts.push([start + need + GAP_MS, w[1]]);
+  intervals.splice(i, 1, ...parts);
+  return start;
 }
 
 function largestSpot(intervals: Interval[], due: number): number {

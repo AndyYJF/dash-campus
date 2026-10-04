@@ -117,6 +117,9 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   calendar_sync_sources: {},
   source_tombstones: {},
   planning_policy_rules: {},
+  // R2（迁移 0026）：服务端对话与轮次（主人原话、结果引用）
+  conversations: {},
+  conversation_turns: {},
   // 非敏感设置（邮件模板、预算）；调度内部状态不导出
   settings: {},
 };

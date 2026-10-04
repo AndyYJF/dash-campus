@@ -60,6 +60,28 @@ export function fixtureModelResponder(req: ModelRequest): ModelResult {
     const quote = text.includes("本科生") ? "本科生" : text.includes("研究生") ? "研究生" : null;
     return {ok: true, validatedResult: {structured: quote ? {noticeType: "（示例）通知", condition: {kind: "leaf", field: "education_level", op: "eq", value: quote === "本科生" ? "本科" : "研究生", quote}, action: {actionKey: "primary", title: "（示例）核对通知要求", description: "合成提取结果，仅用于本地流程验证。", required: false}} : null, actionQuote: quote ? text.slice(0, Math.min(text.length, 200)) : null, dueQuote: null, unknownReason: "（示例）请人工核对，不能据此替代真实提取"}};
   }
+  if (req.workflow === "intake_process") {
+    // （示例）不用模型的规则分类，只为本地走通流程：逐句归类，引用就是原句。不能读图，也不代表真实模型的理解能力
+    const ctx = req.context as { text?: string; images?: string[] };
+    const sentences = (ctx.text ?? "")
+      .split(/\n+|(?<=[。！!])/)
+      .map((x) => x.trim())
+      .filter((x) => x.length >= 2)
+      .slice(0, 20);
+    const items = sentences.map((text, i) => {
+      const kind = /学了|做了|跑了|看了|练了|复习了|打了.{0,6}(分钟|小时)/.test(text)
+        ? "practice"
+        : /通知|公告/.test(text)
+          ? "notice"
+          : /要交|前交|截止|预计|打算|准备|要做|复现|完成/.test(text)
+            ? "task"
+            : "note";
+      return { itemKey: `fx-${i + 1}`, kind, summary: text.replace(/[。！!]$/, "").slice(0, 60), excerpt: text.slice(0, 500) };
+    });
+    if (!items.length && ctx.images?.length) return { ok: true, validatedResult: { items: [{ itemKey: "fx-img", kind: "note", summary: "图片（示例模型不能读图，原件已保留）", excerpt: "图片" }] } };
+    if (!items.length) return { ok: false, error: { code: "UNKNOWN", message: "（示例）没有可分类的文字", retryable: false } };
+    return { ok: true, validatedResult: { items } };
+  }
   if (req.workflow === MODEL_WORKFLOW_PLAN) {
     const ctx = req.context as { question?: string };
     return { ok: true, validatedResult: { queries: [String(ctx.question ?? "实践").slice(0, 200)] } };

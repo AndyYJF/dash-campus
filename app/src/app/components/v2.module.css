@@ -269,3 +269,363 @@
 .ghost {
   composes: btnGhost;
 }
+
+/* ===== R3：时间轴页面布局 ===== */
+.pageWide {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.titleSub {
+  margin-left: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.subtitle {
+  font-size: 13px;
+  font-weight: 650;
+  margin: 12px 0 2px;
+  color: var(--color-text-muted);
+}
+
+.lead {
+  font-size: 18px;
+  font-weight: 650;
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+}
+
+.statText {
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.tagBadge {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: var(--radius-xs);
+  padding: 1px 6px;
+  margin-left: 6px;
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+
+.tagBadge[data-tone="warn"] {
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+}
+
+.tagBadge[data-tone="ok"] {
+  background: var(--color-ok-soft);
+  color: var(--color-ok);
+}
+
+.weekBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.weekBar .title {
+  margin: 0;
+}
+
+.weekNav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.grid {
+  display: grid;
+  gap: 4px;
+  align-items: start;
+}
+
+.gridCol {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.dayHead {
+  display: grid;
+  gap: 2px;
+  padding: 4px 4px 6px;
+  border-bottom: 2px solid var(--color-border);
+  min-height: 62px;
+  align-content: start;
+}
+
+.dayHeadToday {
+  border-bottom-color: var(--color-primary);
+}
+
+.dayName {
+  font-size: 13px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.dayBadges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.dayBadges .tagBadge {
+  margin-left: 0;
+}
+
+.dayMeta {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.dayNote {
+  margin: 0 0 10px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-warning-text);
+  overflow-wrap: anywhere;
+}
+
+.dayTabs {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.dayTab {
+  appearance: none;
+  position: relative;
+  display: grid;
+  gap: 1px;
+  justify-items: center;
+  padding: 6px 0 8px;
+  min-height: var(--tap);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dayTabDate {
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.dayTabToday {
+  border-color: var(--color-primary);
+}
+
+.dayTabActive {
+  background: var(--color-text);
+  border-color: var(--color-text);
+  color: var(--color-surface);
+}
+
+.dayTabActive .dayTabDate {
+  color: var(--color-surface);
+}
+
+.dayTabDot {
+  position: absolute;
+  bottom: 3px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.side {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  min-width: 0;
+}
+
+@media (max-width: 899px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.detail {
+  border: 1px solid var(--color-text);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: 12px 14px;
+  box-shadow: var(--shadow-md);
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.detailHead {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+  overflow-wrap: anywhere;
+}
+
+.detailActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.detailActions .btn,
+.detailActions .btnPrimary,
+.detailActions .btnGhost {
+  min-height: 34px;
+}
+
+.why {
+  margin: 2px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 6px 10px;
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-muted);
+  overflow-wrap: anywhere;
+}
+
+.inlineField {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.inlineField input {
+  width: 64px;
+  padding: 4px 8px;
+  min-height: 32px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-xs);
+  font: inherit;
+  font-size: 13px;
+  background: var(--color-surface);
+  color: inherit;
+}
+
+.action {
+  padding: 10px 0;
+  border-top: 1px dashed var(--color-border);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+
+.action:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.actionHead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.timerForm {
+  display: flex;
+  gap: 8px;
+}
+
+.timerForm input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  min-height: 36px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 14px;
+  background: var(--color-surface);
+  color: inherit;
+}
+
+.confirmBox {
+  border: 1px solid var(--color-warning-text);
+  background: var(--color-warning-bg);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+
+.changeRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  padding: 2px 0;
+}
+
+.linkBtn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.linkBtn:hover {
+  text-decoration: underline;
+}
+
+.ruleList {
+  list-style: none;
+  margin: 6px 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.ruleList li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  overflow-wrap: anywhere;
+}

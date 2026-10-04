@@ -19,6 +19,7 @@ import { GET as getIntakeRoute } from "@/app/api/v2/intakes/[id]/route";
 import { GET as questionsRoute } from "@/app/api/v2/questions/route";
 import { POST as answerRoute } from "@/app/api/v2/questions/[id]/answers/route";
 import { GET as weekRoute } from "@/app/api/v2/week/route";
+import { GET as calendarContextRoute } from "@/app/api/v2/calendar-context/route";
 
 /**
  * R2 材料入口（REPAIR-PLAN §3.3，ACADEMIC-CALENDAR §4；E01、E18、E40–E42、E46–E48 的隔离行为）。
@@ -336,4 +337,16 @@ test("E49：一句话开关自动核对；每天最多排一次核对任务；�
   scheduleCalendarSync();
   scheduleCalendarSync();
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE type = 'calendar_sync'`).get() as { n: number }).n, 1, "worker 读到的是同一份设置；同一天只排一次");
+});
+
+test("GET /api/v2/calendar-context：按范围返回公历日类型、教学周、有效课程与同步状态；与页面同一个解释器", async () => {
+  const res = await calendarContextRoute(jsonReq("/api/v2/calendar-context?from=2026-10-08&to=2026-10-10", "GET"));
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { days: Array<{ date: string; civil: { type: string }; teachingWeek: number | null; teaching: { status: string }; courses: Array<{ name: string; sourceDate: string }> }>; sync: { sources: unknown[] } };
+  assert.deepEqual(body.days.map((d) => d.date), ["2026-10-08", "2026-10-09", "2026-10-10"]);
+  const sat = body.days[2]!;
+  assert.equal(sat.teaching.status, "makeup");
+  assert.ok(sat.courses.every((c) => c.sourceDate === "2026-10-09"), "补课实例带着源教学日期");
+  assert.ok(Array.isArray(body.sync.sources));
+  assert.equal((await calendarContextRoute(jsonReq("/api/v2/calendar-context?from=2026-10-10&to=2026-10-01", "GET"))).status, 422);
 });

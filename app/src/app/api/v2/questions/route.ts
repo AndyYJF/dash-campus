@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
       questionKey: q.questionKey,
       fieldPath: q.fieldPath,
       prompt: q.prompt,
-      options: q.options,
+      options: q.options ?? [],
       purpose: q.purpose,
       reason: q.reason,
       version: q.version,

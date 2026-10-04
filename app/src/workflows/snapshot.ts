@@ -1,7 +1,9 @@
 import { getDb } from "@/repositories/db";
 import { instanceTimezone, localDateInTz, mondayOf, wallTimeToUtc, addDays } from "@/domain/time";
 import { nowDate } from "@/domain/clock";
-import { getPrefs, listSessionsInRange } from "@/repositories/plan";
+import { getPrefs, listSessionsInRange, sessionFromRow } from "@/repositories/plan";
+import { activePolicyRules } from "@/repositories/calendar-facts";
+import type { PolicyRule } from "@/domain/day-policy";
 import { listOpenQuestions } from "@/repositories/questions";
 import { getInProgressFocus } from "@/repositories/focus-timer";
 import { getPlanningRevision } from "@/repositories/proposals";
@@ -93,6 +95,10 @@ function calendarView(l: DayLedger) {
     schoolEvents: c.schoolEvents.map((e) => ({ kind: e.kind, title: e.title })),
     policyNotes: l.policy.notes,
     noStudy: l.policy.noStudy,
+    // 当天可安排窗口与明确不学的时段：时间线上的空档只在这里面给
+    windowStart: l.policy.windowStart,
+    windowEnd: l.policy.windowEnd,
+    closed: l.policy.closed,
   };
 }
 
@@ -101,24 +107,73 @@ function daySessions(date: string, tz: string) {
   return listSessionsInRange(first, last).filter((s) => s.status !== "superseded").map(sessionView);
 }
 
+/** 作息模板与当前生效的规则：页面上要看得见默认值，才谈得上确认或一句话修改 */
+function policyView() {
+  const prefs = getPrefs();
+  const WEEKDAY = "一二三四五六日";
+  const describe = (r: PolicyRule): string => {
+    const v = r.value;
+    const range = r.dateFrom === r.dateTo ? (r.dateFrom ?? "") : `${r.dateFrom} 至 ${r.dateTo}`;
+    if (r.kind === "weekday_limit") return `周${WEEKDAY[(r.weekday ?? 1) - 1]}最多 ${v.limitMinutes} 分钟`;
+    if (r.kind === "group_limit") return `${v.group === "workday" ? "工作日" : "周末"}每天最多 ${v.limitMinutes} 分钟`;
+    if (r.kind === "date_limit") return `${range} 最多 ${v.limitMinutes} 分钟（只这一次）`;
+    if (r.kind === "no_study") return `${range}${v.fromTime ? ` ${v.fromTime} 起` : ""}不安排学习`;
+    if (r.kind === "holiday_policy") return `假期${v.mode === "weekend_template" ? "按周末时段安排" : v.mode === "reduced" ? "少排" : "不安排学习"}${r.origin === "assumed" ? "（暂定）" : ""}`;
+    if (r.kind === "preferred_window") return `集中学习优先放在${{ morning: "上午", afternoon: "下午", evening: "晚上", weekend: "周末" }[v.part as string] ?? ""}`;
+    return `${range} 的学习安排可以由我重新调整`;
+  };
+  return {
+    status: prefs.status,
+    workdayStart: prefs.workdayStart,
+    workdayEnd: prefs.workdayEnd,
+    weekendStart: prefs.weekendStart,
+    weekendEnd: prefs.weekendEnd,
+    meals: prefs.meals,
+    commuteMinutes: prefs.commuteMinutes,
+    dailyLimitMinutes: prefs.dailyLimitMinutes,
+    minBlockMinutes: prefs.minBlockMinutes,
+    bufferPercent: prefs.bufferPercent,
+    rules: activePolicyRules().map((r) => ({ id: r.id, kind: r.kind, scope: r.scope, text: describe(r) })),
+  };
+}
+
+function mainGoalTitle(): string | null {
+  return (getDb().prepare(`SELECT title FROM goals WHERE archived_at IS NULL AND status = 'active' AND priority = 1 LIMIT 1`).get() as { title: string } | undefined)?.title ?? null;
+}
+
+/** 接下来最多 3 段学习安排（今天没有就取之后最近的）：何时、做什么、为什么 */
+function nextActions(asOf: Date, tz: string) {
+  const rows = getDb()
+    .prepare(`SELECT * FROM plan_sessions WHERE status IN ('planned','tentative','in_progress') AND end_utc > ? ORDER BY start_utc LIMIT 3`)
+    .all(asOf.toISOString()) as Array<Record<string, unknown>>;
+  return rows.map((r) => ({ ...sessionView(sessionFromRow(r)), date: localDateInTz(new Date(r.start_utc as string), tz) }));
+}
+
 export function dashboardSnapshot(dateLocal: string, asOf: Date) {
   const tz = instanceTimezone();
   const prefs = getPrefs();
   const ledger = dayLedger(dateLocal, asOf, prefs, tz);
+  const events = eventViews(dateLocal, tz);
+  const nextClass = events.find((e) => e.kind === "course" && e.endUtc > asOf.toISOString()) ?? null;
   return {
     snapshotRevision: snapshotRevision(),
     asOf: asOf.toISOString(),
+    timezone: tz,
     date: dateLocal,
     today: {
       courseMinutes: ledger.courseMinutes,
       eventMinutes: ledger.eventMinutes,
       fixedMinutes: ledger.fixedMinutes,
       calendar: calendarView(ledger),
-      events: eventViews(dateLocal, tz),
+      events,
       sessions: daySessions(dateLocal, tz),
       budget: budgetView(ledger, prefs.status),
+      nextClass,
     },
-    questions: listOpenQuestions(3).map((q) => ({ id: q.id, prompt: q.prompt, version: q.version })),
+    nextActions: nextActions(asOf, tz),
+    mainGoal: mainGoalTitle(),
+    policy: policyView(),
+    questions: listOpenQuestions(3).map((q) => ({ id: q.id, prompt: q.prompt, reason: q.reason, options: q.options ?? [], purpose: q.purpose, version: q.version })),
     focus: (() => {
       const f = getInProgressFocus();
       return f ? { id: f.id, note: f.note, startedAt: f.startedAt, version: f.version } : null;
@@ -145,11 +200,19 @@ export function weekSnapshot(mondayLocal: string, asOf: Date) {
       sessions: daySessions(date, tz),
     };
   });
+  const minutesOf = (status: string[]) => days.reduce((a, d) => a + d.sessions.filter((s) => status.includes(s.status)).reduce((x, s) => x + s.minutes, 0), 0);
   return {
     snapshotRevision: snapshotRevision(),
     asOf: asOf.toISOString(),
+    timezone: tz,
     monday: mondayLocal,
+    today: localDateInTz(asOf, tz),
+    teachingWeek: days.find((d) => d.calendar.teachingWeek !== null)?.calendar.teachingWeek ?? null,
     days,
+    plannedMinutes: minutesOf(["planned", "tentative", "in_progress", "completed"]),
+    actualMinutes: days.reduce((a, d) => a + d.budget.actualMinutes, 0),
+    courseMinutes: days.reduce((a, d) => a + d.courseMinutes, 0),
+    policy: policyView(),
     weekBudget: days.reduce((a, d) => a + d.cDay, 0),
     unscheduled: latestPlanUnscheduled(),
     conflicts: latestPlanConflicts(),

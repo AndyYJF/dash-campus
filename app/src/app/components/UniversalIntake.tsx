@@ -1,199 +1,381 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, newIdempotencyKey } from "./api";
+import { api, ApiError, newIdempotencyKey } from "./api";
+import { DASH_COMPOSE, emitChanged, useDashRefresh, type ComposeDetail } from "./dashBus";
 import styles from "./intake.module.css";
 
 /**
- * 全局统一输入（Agent-first V2 P1，MASTER-PLAN §1.1）：
- * 一个入口投递文字材料；提交即“已收到”，随后轮询展示整理结果与必要问题。
- * 提交记录 id 存本机 localStorage，刷新/换页后仍能看到同一条记录与结果。
+ * 全局统一输入（REPAIR-PLAN §5.1，MASTER-PLAN §1.1）：
+ * 一个入口放文字、截图、文件、链接或直接下指令；提交即“已收到”，处理在后台继续。
+ * 每条输入的结果（实际变化、下一步/阻碍、待答问题、撤销）都从服务端读取——刷新或换设备后还在。
  */
 
-type IntakeView = {
-  intake: { id: string; status: string; lastError: string | null };
-  items: Array<{ id: string; kind: string; state: string; summary: string | null; error: string | null }>;
-  questions: Array<{ id: string; prompt: string; status: string; version: number }>;
+type Question = { id: string; prompt: string; reason: string; options: string[]; purpose: string; version: number };
+type Result = {
+  intakeId: string;
+  createdAt: string;
+  text: string;
+  state: "accepted" | "working" | "needs_input" | "applied" | "partly_applied" | "no_change" | "failed" | "cancelled";
+  summary: string;
+  items: Array<{ id: string; kind: string; state: string; summary: string; error: string | null }>;
+  changes: Array<{ label: string; detail: string }>;
+  questions: Question[];
+  nextActions: string[];
+  followUps: Array<{ state: string; summary: string }>;
+  undo: { available: boolean; batchIds: string[]; note: string };
+  error: { message: string; recoverable: boolean } | null;
 };
 
-type QuestionView = { id: string; prompt: string; version: number; createdAt: string };
-
-const STATUS_LABEL: Record<string, string> = {
-  received: "已收到",
-  processing: "整理中…",
-  waiting_input: "需要补充",
-  partially_applied: "部分完成",
-  completed: "已更新",
-  failed: "处理失败",
+const STATE_LABEL: Record<Result["state"], string> = {
+  accepted: "已收到",
+  working: "整理中…",
+  needs_input: "需要你回答",
+  applied: "已更新",
+  partly_applied: "部分完成",
+  no_change: "已保存",
+  failed: "没有办成",
   cancelled: "已取消",
 };
-const KIND_LABEL: Record<string, string> = {
-  timetable: "课表",
-  notice: "通知",
-  practice: "实践记录",
-  task: "任务/想法",
-  note: "资料",
-};
-const ITEM_STATE_LABEL: Record<string, string> = {
-  extracted: "已读取",
-  resolving: "整理中",
-  awaiting_input: "等待回答",
-  ready: "已整理",
-  applied: "已生效",
-  ignored: "已忽略",
-  failed: "处理失败",
-  cancelled: "已取消",
-};
-const ACTIVE = new Set(["received", "processing"]);
-const INTAKE_IDS_KEY = "v2.intakeIds";
+const ACTIVE = new Set(["accepted", "working"]);
+const ACCEPT = "image/png,image/jpeg,image/webp,application/pdf,text/plain,text/csv,text/calendar,.ics,.csv,.txt,.md";
+const MAX_FILES = 10;
 
-function loadIds(): string[] {
+function timeLabel(iso: string): string {
+  const d = new Date(iso);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  const hm = d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return sameDay ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+
+function csrf(): string {
   try {
-    return JSON.parse(localStorage.getItem(INTAKE_IDS_KEY) ?? "[]") as string[];
+    return localStorage.getItem("csrfToken") ?? "";
   } catch {
-    return [];
+    return "";
   }
 }
 
 export default function UniversalIntake() {
   const [text, setText] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
+  const [context, setContext] = useState<ComposeDetail | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [intakes, setIntakes] = useState<IntakeView[]>([]);
-  const [questions, setQuestions] = useState<QuestionView[]>([]);
+  const [results, setResults] = useState<Result[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [questions, setQuestions] = useState<Question[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [hints, setHints] = useState<Record<string, string>>({});
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [showHistory, setShowHistory] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const idemKey = useRef(newIdempotencyKey());
+  const boxRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
-  const refreshQuestions = useCallback(() => {
-    api<{ questions: QuestionView[] }>("/api/v2/questions")
-      .then((r) => setQuestions(r.questions))
-      .catch(() => {/* 拉取失败保留现状，下个周期再试 */});
+  const load = useCallback(async (): Promise<Result[]> => {
+    const [page, q] = await Promise.all([
+      api<{ intakes: Result[]; nextCursor: string | null }>("/api/v2/intakes?limit=6").catch(() => null),
+      api<{ questions: Question[] }>("/api/v2/questions").catch(() => null),
+    ]);
+    if (page) {
+      setResults(page.intakes);
+      setNextCursor(page.nextCursor);
+    }
+    if (q) setQuestions(q.questions.map((x) => ({ ...x, options: x.options ?? [] })));
+    return page?.intakes ?? [];
   }, []);
 
-  const refreshIntakes = useCallback((): Promise<IntakeView[]> => {
-    const ids = loadIds().slice(-5);
-    return Promise.all(ids.map((id) => api<IntakeView>(`/api/v2/intakes/${id}`).catch(() => null))).then((views) => {
-      const ok = views.filter((v): v is IntakeView => v !== null);
-      setIntakes(ok.reverse());
-      return ok;
-    });
-  }, []);
-
-  const refresh = useCallback(() => {
-    refreshQuestions();
-    void refreshIntakes();
-  }, [refreshQuestions, refreshIntakes]);
-  useEffect(refresh, [refresh]);
-
-  // 活动中的投递每 2 秒轮询一次，全部落定即停（§8 首版轮询策略）
   useEffect(() => {
-    if (!intakes.some((i) => ACTIVE.has(i.intake.status))) return;
+    void load();
+  }, [load]);
+  useDashRefresh(load);
+
+  // 还有处理中的投递就每 2 秒看一次，落定即停并通知各页刷新
+  const hasActive = results.some((r) => ACTIVE.has(r.state));
+  useEffect(() => {
+    if (!hasActive) return;
     const timer = setInterval(async () => {
-      const views = await refreshIntakes();
-      await refreshQuestions();
-      if (!views.some((i) => ACTIVE.has(i.intake.status))) clearInterval(timer);
+      const next = await load();
+      if (!next.some((r) => ACTIVE.has(r.state))) {
+        clearInterval(timer);
+        emitChanged();
+      }
     }, 2000);
     return () => clearInterval(timer);
-  }, [intakes, refreshIntakes, refreshQuestions]);
+  }, [hasActive, load]);
+
+  // 时间轴/行动卡把上下文交过来：带着对象或时段开口，不用重新描述
+  useEffect(() => {
+    const onCompose = (e: Event) => {
+      const detail = (e as CustomEvent<ComposeDetail>).detail;
+      setContext(detail);
+      if (detail.text !== undefined) setText(detail.text);
+      boxRef.current?.focus();
+      boxRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    };
+    window.addEventListener(DASH_COMPOSE, onCompose);
+    return () => window.removeEventListener(DASH_COMPOSE, onCompose);
+  }, []);
+
+  function addFiles(list: FileList | File[]) {
+    const incoming = Array.from(list).filter((f) => f.size > 0);
+    if (!incoming.length) return;
+    setFiles((cur) => {
+      const merged = [...cur, ...incoming].slice(0, MAX_FILES);
+      if (cur.length + incoming.length > MAX_FILES) setError(`一次最多 ${MAX_FILES} 个文件，多出的没有加入`);
+      return merged;
+    });
+  }
 
   async function submit() {
     const value = text.trim();
-    if (!value || busy) return;
+    if ((!value && !files.length) || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const r = await api<{ intakeId: string }>("/api/v2/intakes", {
-        method: "POST",
-        body: { text: value },
-        idempotencyKey: idemKey.current,
-      });
+      const urls = (value.match(/https?:\/\/[^\s，。；]+/g) ?? []).slice(0, 2);
+      let res: Response;
+      if (files.length) {
+        const form = new FormData();
+        form.append("text", value);
+        for (const u of urls) form.append("urls", u);
+        for (const f of files) form.append("files", f, f.name || "粘贴的图片.png");
+        if (context?.selectedEntityRef) form.append("selectedEntityRef", JSON.stringify(context.selectedEntityRef));
+        if (context?.slot) form.append("slot", JSON.stringify(context.slot));
+        res = await fetch("/api/v2/intakes", { method: "POST", headers: { "x-csrf-token": csrf(), "idempotency-key": idemKey.current }, body: form });
+      } else {
+        res = await fetch("/api/v2/intakes", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-csrf-token": csrf(), "idempotency-key": idemKey.current },
+          body: JSON.stringify({ text: value, urls, ...(context?.selectedEntityRef ? { selectedEntityRef: context.selectedEntityRef } : {}), ...(context?.slot ? { slot: context.slot } : {}) }),
+        });
+      }
+      const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
+      if (res.status === 401) throw new ApiError(401, "UNAUTHORIZED", "登录已过期。输入的内容还在，请在新标签页登录后再提交");
+      if (!res.ok) throw new ApiError(res.status, "FAILED", body?.error?.message ?? `提交失败（${res.status}），内容保留在输入框`);
       idemKey.current = newIdempotencyKey();
       setText("");
-      const ids = [...loadIds(), r.intakeId].slice(-20);
-      localStorage.setItem(INTAKE_IDS_KEY, JSON.stringify(ids));
-      await refreshIntakes();
-      await refreshQuestions();
+      setFiles([]);
+      setContext(null);
+      await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "提交失败，内容保留在输入框");
+      setError(e instanceof Error ? e.message : "网络异常，内容保留在输入框，可重试");
     } finally {
       setBusy(false);
     }
   }
 
-  async function answer(q: QuestionView) {
-    const value = (answers[q.id] ?? "").trim();
-    if (!value) return;
+  async function answer(q: Question, value: string, optionIndex?: number) {
+    if (!value.trim() && optionIndex === undefined) return;
     setError(null);
     try {
-      await api(`/api/v2/questions/${q.id}/answers`, {
-        method: "POST",
-        body: { text: value, expectedVersion: q.version },
-        idempotencyKey: newIdempotencyKey(),
-      });
+      await api(`/api/v2/questions/${q.id}/answers`, { method: "POST", body: optionIndex !== undefined ? { optionIndex, expectedVersion: q.version } : { text: value.trim(), expectedVersion: q.version }, idempotencyKey: newIdempotencyKey() });
       setAnswers((a) => ({ ...a, [q.id]: "" }));
-      await refreshQuestions();
-      await refreshIntakes();
+      setHints((h) => ({ ...h, [q.id]: "" }));
+      await load();
+      emitChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "回答提交失败");
-      await refreshQuestions();
+      // 答非所问：问题还在，给出更具体的提示
+      setHints((h) => ({ ...h, [q.id]: e instanceof Error ? e.message : "回答没有提交成功" }));
+      await load();
     }
   }
 
+  async function undo(r: Result) {
+    setError(null);
+    try {
+      for (const batchId of [...r.undo.batchIds].reverse()) {
+        await api(`/api/v2/actions/${batchId}/undo`, { method: "POST", body: { expectedVersion: 1 }, idempotencyKey: newIdempotencyKey() });
+      }
+      await load();
+      emitChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "撤销失败");
+      await load();
+    }
+  }
+
+  async function more() {
+    if (!nextCursor) return;
+    const page = await api<{ intakes: Result[]; nextCursor: string | null }>(`/api/v2/intakes?limit=10&cursor=${encodeURIComponent(nextCursor)}`).catch(() => null);
+    if (!page) return;
+    setResults((cur) => [...cur, ...page.intakes.filter((x) => !cur.some((c) => c.intakeId === x.intakeId))]);
+    setNextCursor(page.nextCursor);
+  }
+
+  const shown = showHistory ? results : results.slice(0, 1);
+  const canSend = (text.trim().length > 0 || files.length > 0) && !busy;
+
   return (
-    <section className={styles.intake} aria-label="统一输入">
-      <textarea
-        className={styles.box}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="课表、通知、项目想法，或者说说你今天做了什么。"
-        rows={text ? 4 : 1}
-        maxLength={100_000}
-      />
-      {text.trim() && (
-        <button type="button" className={styles.send} onClick={submit} disabled={busy}>
-          {busy ? "提交中…" : "投递"}
-        </button>
+    <section
+      className={`${styles.intake}${dragging ? ` ${styles.dragging}` : ""}`}
+      aria-label="统一输入"
+      id="intake"
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+      }}
+    >
+      {context && (
+        <div className={styles.context}>
+          <span>关于：{context.label}</span>
+          <button type="button" className={styles.chipClose} onClick={() => setContext(null)} aria-label="取消这个上下文">
+            ×
+          </button>
+        </div>
       )}
-      {error && <p className={styles.error}>{error}</p>}
+      <div className={styles.composer}>
+        <textarea
+          ref={boxRef}
+          className={styles.box}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            const pasted = Array.from(e.clipboardData.files);
+            if (pasted.length) {
+              e.preventDefault();
+              addFiles(pasted);
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit();
+          }}
+          placeholder="课表、通知、想法，或今天做了什么（可粘贴截图）"
+          rows={text || files.length ? 3 : 1}
+          maxLength={100_000}
+          aria-label="把材料或想法放进来"
+        />
+        <div className={styles.actions}>
+          <input ref={fileRef} type="file" multiple accept={ACCEPT} className={styles.fileInput} onChange={(e) => e.target.files && addFiles(e.target.files)} aria-label="添加文件" />
+          <button type="button" className={styles.attach} onClick={() => fileRef.current?.click()}>
+            添加图片/文件
+          </button>
+          <button type="button" className={styles.send} onClick={submit} disabled={!canSend}>
+            {busy ? "提交中…" : "发送"}
+          </button>
+        </div>
+      </div>
+      {files.length > 0 && (
+        <ul className={styles.files}>
+          {files.map((f, i) => (
+            <li key={`${f.name}-${i}`} className={styles.fileChip}>
+              <span>{f.name || "粘贴的图片"}</span>
+              <button type="button" className={styles.chipClose} onClick={() => setFiles((cur) => cur.filter((_, n) => n !== i))} aria-label={`移除 ${f.name}`}>
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && (
+        <p className={styles.error} role="alert">
+          {error}
+        </p>
+      )}
 
       {questions.length > 0 && (
         <div className={styles.questions}>
           {questions.map((q) => (
             <div key={q.id} className={styles.question}>
               <p className={styles.prompt}>{q.prompt}</p>
+              {q.reason && <p className={styles.reason}>为什么问：{q.reason}</p>}
+              {q.options.length > 0 && (
+                <div className={styles.options}>
+                  {q.options.map((o, i) => (
+                    <button key={o} type="button" className={styles.option} onClick={() => answer(q, o, i)}>
+                      {o}
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className={styles.answerRow}>
                 <input
                   value={answers[q.id] ?? ""}
                   onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: e.target.value }))}
-                  onKeyDown={(e) => e.key === "Enter" && answer(q)}
-                  placeholder="回答…"
+                  onKeyDown={(e) => e.key === "Enter" && answer(q, answers[q.id] ?? "")}
+                  placeholder="也可以直接说…"
+                  aria-label="回答这个问题"
                 />
-                <button type="button" className={styles.send} onClick={() => answer(q)}>
+                <button type="button" className={styles.send} onClick={() => answer(q, answers[q.id] ?? "")}>
                   回答
                 </button>
               </div>
+              {hints[q.id] && <p className={styles.hint}>{hints[q.id]}</p>}
             </div>
           ))}
         </div>
       )}
 
-      {intakes.length > 0 && (
+      {shown.length > 0 && (
         <ul className={styles.results}>
-          {intakes.map((v) => (
-            <li key={v.intake.id}>
-              <span className={styles.status} data-status={v.intake.status}>
-                {STATUS_LABEL[v.intake.status] ?? v.intake.status}
-              </span>
-              {v.items.map((i) => (
-                <span key={i.id} className={styles.item}>
-                  {KIND_LABEL[i.kind] ?? i.kind} · {ITEM_STATE_LABEL[i.state] ?? i.state}
-                  {i.summary ? `：${i.summary}` : ""}
-                  {i.error ? `（${i.error}）` : ""}
+          {shown.map((r) => (
+            <li key={r.intakeId} className={styles.result} data-state={r.state}>
+              <div className={styles.resultHead}>
+                <span className={styles.status} data-state={r.state}>
+                  {STATE_LABEL[r.state]}
                 </span>
+                <span className={styles.said}>{r.text || "（文件）"}</span>
+                <span className={styles.when}>{timeLabel(r.createdAt)}</span>
+              </div>
+              {!ACTIVE.has(r.state) && <p className={styles.summary}>{r.summary}</p>}
+              {r.followUps.map((f) => (
+                <p key={f.summary} className={styles.followUp} data-state={f.state}>
+                  {f.summary}
+                </p>
               ))}
+              {r.nextActions.length > 0 && (
+                <ul className={styles.next}>
+                  {r.nextActions.map((n) => (
+                    <li key={n}>{n}</li>
+                  ))}
+                </ul>
+              )}
+              <div className={styles.resultActions}>
+                {r.changes.length > 0 && (
+                  <button type="button" className={styles.linkBtn} onClick={() => setOpen((o) => ({ ...o, [r.intakeId]: !o[r.intakeId] }))} aria-expanded={Boolean(open[r.intakeId])}>
+                    {open[r.intakeId] ? "收起变化" : `看变化（${r.changes.length}）`}
+                  </button>
+                )}
+                {r.undo.available && (
+                  <button type="button" className={styles.linkBtn} onClick={() => undo(r)}>
+                    撤销
+                  </button>
+                )}
+                {r.undo.note && <span className={styles.when}>{r.undo.note}</span>}
+              </div>
+              {open[r.intakeId] && (
+                <ul className={styles.changes}>
+                  {r.changes.map((c, i) => (
+                    <li key={`${c.label}-${i}`}>
+                      {c.detail}：{c.label}
+                    </li>
+                  ))}
+                </ul>
+              )}
             </li>
           ))}
         </ul>
+      )}
+      {results.length > 1 && (
+        <div className={styles.historyBar}>
+          <button type="button" className={styles.linkBtn} onClick={() => setShowHistory((v) => !v)} aria-expanded={showHistory}>
+            {showHistory ? "收起历史" : `历史（${results.length}${nextCursor ? "+" : ""}）`}
+          </button>
+          {showHistory && nextCursor && (
+            <button type="button" className={styles.linkBtn} onClick={more}>
+              更早的
+            </button>
+          )}
+        </div>
       )}
     </section>
   );

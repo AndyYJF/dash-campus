@@ -8,13 +8,11 @@ import ShellExtras, { RestoreHoldBanner } from "./ShellExtras";
 import ThemeToggle from "./ThemeToggle";
 import UniversalIntake from "./UniversalIntake";
 
+/** 主导航只保留今天、本周、方向；收件箱/回顾/探索记录作为旧版入口放在方向页底部 */
 const NAV_ITEMS: Array<{ href: string; label: string; icon: IconName }> = [
   { href: "/today", label: "今天", icon: "today" },
   { href: "/week", label: "本周", icon: "calendar" },
   { href: "/direction", label: "方向", icon: "target" },
-  { href: "/explore", label: "探索", icon: "explore" },
-  { href: "/inbox", label: "收件箱", icon: "inbox" },
-  { href: "/reviews", label: "回顾", icon: "reviews" },
 ];
 
 /**
@@ -52,10 +50,10 @@ export default function AppShell({
             >
               <Icon name="settings" size={20} />
             </Link>
-            <Link href="/today#quick-log" className={styles.quickLog}>
+            <a href="#intake" className={styles.quickLog}>
               <Icon name="pencil" size={16} />
-              <span>写记录</span>
-            </Link>
+              <span>说一句</span>
+            </a>
           </div>
         </div>
         <nav className={styles.nav} aria-label="主导航">

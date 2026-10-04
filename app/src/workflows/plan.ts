@@ -150,6 +150,8 @@ export function dayLedger(date: string, asOf: Date, prefs: Prefs, tz: string, se
 
 type PlanTask = SchedTask & {
   effortMode: "deliverable" | "time_budget";
+  /** 截止只精确到日期（当天结束前都算）：解释里写成“X月X日截止”，不写成次日零点 */
+  dueDateOnly: boolean;
   /** 主人报告的剩余需求及报告时刻：之后的投入从这里扣，不再用“估时 − 已花”硬推 */
   remainingMinutes: number | null;
   remainingReportedAt: string | null;
@@ -348,7 +350,7 @@ function placementReason(task: PlanTask, p: { start: number; end: number; skippe
   const blocker = openBlocker(task.id);
   if (blocker) parts.push(`上次卡在“${blocker.slice(0, 40)}”，先安排 ${minutes} 分钟处理这个卡点`);
   else if (starter) parts.push(`这件事的工作量还不清楚，先安排 ${minutes} 分钟梳理出下一步`);
-  if (task.dueAtMs != null) parts.push(`${localLabel(task.dueAtMs, tz)} 截止`);
+  if (task.dueAtMs != null) parts.push(task.dueDateOnly && task.dueLocalDate ? `${Number(task.dueLocalDate.slice(5, 7))}/${Number(task.dueLocalDate.slice(8, 10))} 当天截止` : `${localLabel(task.dueAtMs, tz)} 截止`);
   const date = localDateInTz(new Date(p.start), tz);
   const ledger = base.get(date);
   if (ledger) {
@@ -468,6 +470,7 @@ function listSchedulableTasks(tz: string, today: string): PlanTask[] {
       priority: r.priority as SchedTask["priority"],
       createdAt: r.created_at as string,
       effortMode: r.effort_mode as PlanTask["effortMode"],
+      dueDateOnly: !instant && Boolean(dueDate),
       remainingMinutes: (r.remaining_minutes as number | null) ?? null,
       remainingReportedAt: (r.remaining_reported_at as string | null) ?? null,
     };

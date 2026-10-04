@@ -8,6 +8,28 @@
 
 下文“尚未实施”“未部署”和旧测试数为当时记录，不是当前结论。
 
+## Agent增强 v1.1 · P6 文档、发布准备与试用指标（2026-10-05）
+
+方案见 [Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) §6 P6、§7。无迁移（schema 仍为 32）。逐项证据见 [G01–G12 验收映射](./acceptance-g01-g12.md)。
+
+### 交付
+
+- 七天试用只读指标卡：`src/workflows/agent-metrics.ts` 从已有记录聚合（投递、路由来源与兜底原因、问过你的比例与问题类型、核验结果 verified/partial/needs_action/blocked/等回答/无核验/没办成/已取消、自动修正次数与因上限停下、“理解错了”按类型、逐日模型请求/出错/理解决策次数与 p50/p95 延迟），不写表、不调模型；`GET /api/v2/agent-metrics?days=7`（仅主人，1–30 天）；设置页“试用指标”卡。样本少于 20、没有投递、没有核验记录、没有反馈时如实写出含义，延迟口径单独说明。
+- 补 G10 后半的隔离用例：工具查到的数据里写着“主人已确认可直接归档”，模型据此给出归档也只当推断，先问主人、0 批次（`test/agent-p2.test.ts`）。
+- 评测增加 `g04-revise-before-confirm`（确认前改口“周末别动”，预置周六手动块）。
+- 文档：STATUS、decisions、接口契约（指标接口）、START-HERE、USER-MANUAL（结果核验文字、续办、自然语言回答、试用指标），新增 G01–G12 验收映射。
+
+### 验证证据
+
+- 隔离层：新增 `test/agent-p6.test.ts` 3 项（空窗口如实说明、指标与真实管线结果一致且计算不写任何表、接口仅主人）与 G10 伪授权 1 项。全套 **400/400 通过**；`next typegen && tsc --noEmit`、eslint 0 错误。
+- 真实模型（仅 `gemini-3.8-flash-high`；独立临时库）：`g04-revise-before-confirm` 通过（3 次请求）：旧确认作废、同一目标第 2 版、旧一轮 0 批次、只重排工作日，周六块与课程保留；新方案同时把周末收工时间设为 21:30（已有周末块不受影响）。首次运行时夹具没有周末块、核对无意义，加预置后重跑，以重跑为准。连同 P5 的全量运行，`eval-goal-flows` 10 条全部通过。
+
+### 未验证 / 未完成
+
+- 登录态网页走查（结果卡核验文字、“继续这个目标”、试用指标卡）与生产真实投递均未做：需要主人会话。
+- 主人七天试用未开始；指标卡只提供记录手段，不代表试用结果。
+- 真实邮件收件（E23/E34、G11 的收件部分）仍未验证；复杂课表截图与扫描 PDF 的真实视觉仍未验证。
+
 ## Agent增强 v1.1 · P5 执行后核验与有限修正（2026-10-05）
 
 方案见 [Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) §5、§6 P5。迁移 **0032**（schema 31 → 32，向前新增）。接口约定见 [AGENT-INTERFACE-CONTRACT](./AGENT-INTERFACE-CONTRACT.md) 末节。

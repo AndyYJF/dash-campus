@@ -49,8 +49,12 @@ const snapshot = () => {
     facts: JSON.stringify([db.prepare(`SELECT id, status, version, priority, paused_until, due_local_date FROM tasks ORDER BY id`).all(), db.prepare(`SELECT id, start_utc, status, version, locked FROM plan_sessions ORDER BY id`).all()]),
     courses: JSON.stringify(db.prepare(`SELECT * FROM courses ORDER BY id`).all()),
     budget: JSON.stringify([db.prepare(`SELECT * FROM planning_policy_rules ORDER BY id`).all(), db.prepare(`SELECT * FROM planning_preferences`).all()]),
+    weekend: weekend(),
   };
 };
+function weekend(): string {
+  return JSON.stringify(getDb().prepare(`SELECT id, start_utc, end_utc, status FROM plan_sessions WHERE status IN ('tentative','planned') AND start_utc >= '2026-10-16T16:00:00Z' AND start_utc < '2026-10-18T16:00:00Z' ORDER BY start_utc, id`).all());
+}
 const batchesOf = (intakeId: string) => (getDb().prepare(`SELECT COUNT(*) AS n FROM agent_action_batches WHERE intake_id = ?`).get(intakeId) as { n: number }).n;
 const taskOf = (title: string) => getDb().prepare(`SELECT * FROM tasks WHERE title = ? AND archived_at IS NULL`).get(title) as Record<string, unknown> | undefined;
 const verificationOf = (intakeId: string) => intakeResultById(intakeId)?.verification ?? null;
@@ -127,6 +131,26 @@ const FLOWS: Flow[] = [
       const q0 = c.question(0), q1 = c.question(1);
       if (!q1 || getQuestion(q1)?.status !== "answered") out.push(`周末问题没有被回答（${q1 ? getQuestion(q1)?.status : "无"}）`);
       if (!q0 || getQuestion(q0)?.status !== "open") out.push(`数学/英语问题被误答（${q0 ? getQuestion(q0)?.status : "无"}）`);
+      return out;
+    },
+  },
+  {
+    id: "g04-revise-before-confirm", what: "确认前改口“周末别动”= 旧确认作废、同一目标第 2 版，旧方案不执行，周末与课程保留",
+    setup: [{ text: "晚上安排太满了", decide: { kind: "act", rationale: "建议长期把每天学习结束时间提前到 22:00", intents: [{ op: "window_end", time: "22:00" }] } }],
+    live: "周末别动", confirm: true,
+    prepare: () => { executeOperation({ command: "schedule_session", title: "英语阅读", date: "2026-10-17", startLocalTime: "10:00", durationMinutes: 60 }, { intakeId: null, itemId: null, itemKey: "", instanceEpoch: 0, evidence: "", explicit: true, now: new Date(FIXTURE_NOW) }); },
+    check: (c) => {
+      if (c.before.weekend === "[]") return ["前置没有周末学习块，核对无意义"];
+      const out: string[] = [];
+      const old = c.question(0);
+      if (!old) out.push("前置没有产生待确认方案");
+      else if (getQuestion(old)?.status !== "superseded") out.push(`旧确认仍是 ${getQuestion(old)?.status}`);
+      if (goalOf(c.live) !== goalOf(c.setup[0]!)) out.push("没有续到同一目标");
+      if (revOf(c.live) !== 2) out.push(`修订号 ${revOf(c.live)}，期望 2`);
+      if (batchesOf(c.setup[0]!)) out.push(`旧一轮写入了 ${batchesOf(c.setup[0]!)} 个批次`);
+      if (weekend() !== c.before.weekend) out.push("周末的学习块被改了");
+      if (snapshot().courses !== c.before.courses) out.push("课程被改了");
+      if (stateOf(c.live) === "failed") out.push(`执行失败：${intakeResultById(c.live)?.summary}`);
       return out;
     },
   },

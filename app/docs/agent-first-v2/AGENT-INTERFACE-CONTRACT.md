@@ -214,3 +214,7 @@ HTTP 202 只表示 accepted，HTTP 200 不能代替领域成功判断。版本�
 - **有限修正**（`workflows/agent-run.ts`）：只做确定性动作——`replan`（在原范围内重跑排程）与 `rebind`（对象版本已变时按最新状态重新绑定并执行），不调模型、不扩大范围、不提高预算。每个投递至多 2 次修正、每次至多 4 步；不通过项的指纹与上一轮相同即停止；投递累计主动模型时间到 180 秒也停止。修正决定先写入核验行再执行。
 - **步骤幂等**：`executeCommand` 在写入事务内发现同一 `item_id` + 命令已有批次时直接返回原批次（`replayed: true`），不再写第二次；worker 崩溃恢复后不会重复记实践、建任务或发邮件。
 - **结果视图**新增 `verification: {status, label, checks[{kind, ok, subject, detail}], repairs[{reason, steps[]}]} | null`；`partial`/`blocked` 时 `state` 为 `partly_applied`，`needs_action` 且取舍问题未答时为 `needs_input`，核验涉及的问题并入 `questions`，摘要追加“核对未通过：…/需要你决定：…”。全部查看时 `label` 为“只查看，没有改动任何东西”。目标摘要新增 `verification: {status, failing[]}`。
+
+## 2026-10-05 试用指标（Agent增强 v1.1 P6）
+
+`GET /api/v2/agent-metrics?days=7`（仅主人，`days` 1–30，按实例时区的当地日期）返回 `metrics`：`window`、`intakes`（统一栏投递）、`routing {model, rules, fast, other, fallbackReasons}`、`asking {intakesAsked, rate, byPurpose}`、`feedback {total, byVerdict}`、`outcomes {verified, partial, needs_action, blocked, pending, unverified, failed, cancelled}`、`repairs {total, intakes, stoppedByLimit}`、`daily[{date, requests, errors, decisions, p50Ms, p95Ms}]`、`notes[]`。只读聚合已有表，不写库、不调模型；样本为 0 时比例为 `null`，`notes` 说明样本量与缺失数据的含义。

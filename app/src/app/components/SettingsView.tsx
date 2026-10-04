@@ -8,6 +8,7 @@ import Link from "next/link";
 import IntegrationStatus from "./IntegrationStatus";
 import AiBudgetCard from "./AiBudgetCard";
 import ModelCapabilitiesCard from "./ModelCapabilitiesCard";
+import AgentTrialMetricsCard from "./AgentTrialMetricsCard";
 import ThemeToggle from "./ThemeToggle";
 import DigestSettingsCard from "./DigestSettingsCard";
 import ProfileSourcesCard from "./ProfileSourcesCard";
@@ -154,6 +155,7 @@ export default function SettingsView() {
       <DigestSettingsCard />
       {integrations.model.state === "configured" && <ModelCapabilitiesCard />}
       <AiBudgetCard />
+      <AgentTrialMetricsCard />
       <DataExportCard />
       <LegacyImportCard />
 

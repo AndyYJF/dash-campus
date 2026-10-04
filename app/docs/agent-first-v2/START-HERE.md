@@ -1,10 +1,12 @@
 # 从这里接手：V2 易用性修复与自研 Agent
 
-更新：2026-10-04。R0–R5 与后续易用性修复已推送至 `agentbox/dashcampus`，已验证部署的业务版本为 `95c8cf1`（schema29）；后续文档提交与业务部署修订分开记录。先读 [当前状态](../STATUS.md)、[产品与工程决策](../decisions.md) 及 [模糊调整的实现与证据](../flexible-adjustments-2026-10-04.md)。修复前审计基线 `cbbaeeeaa328807ebc97389a7a824f7acdb6c356` 只作历史，拉取后仍核对代码与工作区。
+更新：2026-10-05。Agent增强 v1.1 的 P0–P6 已在 `main` 实现，P0–P5 逐包部署生产（当前 schema32），P6 发布见 STATUS；早先 R0–R5 与易用性修复的业务版本为 `95c8cf1`（schema29）。后续文档提交与业务部署修订分开记录。先读 [当前状态](../STATUS.md)、[产品与工程决策](../decisions.md) 及 [模糊调整的实现与证据](../flexible-adjustments-2026-10-04.md)。修复前审计基线 `cbbaeeeaa328807ebc97389a7a824f7acdb6c356` 只作历史，拉取后仍核对代码与工作区。
 
-## 本轮新增实施入口（待开发）
+## Agent增强 v1.1（已实施，2026-10-05）
 
-先读[Agent增强方案v1.1](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md)：模型优先路由、执行核验/修正、多轮追问/改口/跨设备恢复，按P0–P6推进、G01–G12验收。这是新增计划；现有业务95c8cf1/schema29及旧验证边界不变。下列历史R0–R5说明用于理解既有系统，不要求重新实现。
+[Agent增强方案v1.1](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md)的模型优先路由、有界只读工具、多轮追问/改口/跨设备续办、执行后核验与有限修正、试用指标已实现。逐包实现与证据见[实施记录](./implementation-progress.md)，G01–G12 证据层见[验收映射](./acceptance-g01-g12.md)，接口见[契约](./AGENT-INTERFACE-CONTRACT.md)末三节。接手后优先补：登录态网页走查、主人七天试用（设置页“试用指标”）、真实邮件收件与复杂视觉材料。下列历史R0–R5说明用于理解既有系统，不要求重新实现。
+
+代码入口：路由 `src/workflows/agent-route.ts`、只读工具 `agent-tools.ts`、决策 `agent-decide.ts`、投递管线 `intake.ts`、核验 `agent-verify.ts`、修正 `agent-run.ts`、指标 `agent-metrics.ts`、预算与 trace `ai-budget.ts`/`agent-trace.ts`、注册表 `src/contracts/commands.ts` 的 `OPERATIONS`。真实模型评测 `scripts/eval-agent.mts`（固定语料）与 `scripts/eval-goal-flows.mts`（多轮目标），凭证只经环境变量。
 
 ## 1. 要完成的用户体验
 
@@ -17,7 +19,7 @@
 | 文件 | 用途 |
 |---|---|
 | [当前状态](../STATUS.md) | 唯一当前交接入口；历史部署与本次规划分开 |
-| [Agent增强v1.1](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) | 本轮P0–P6、参数级授权、多轮与执行闭环，新增G01–G12验收；待开发 |
+| [Agent增强v1.1](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) | P0–P6、参数级授权、多轮与执行闭环，G01–G12验收；已实施，证据见[验收映射](./acceptance-g01-g12.md) |
 | [审计基线](./REPAIR-BASELINE-2026-10-04.md) | 九项实际失败路径、源码定位与复现规则 |
 | [总修复计划](./REPAIR-PLAN-2026-10-04.md) | 主工作包 R0–R5；E01–E29；开发启动指令 |
 | [Agent接口契约](./AGENT-INTERFACE-CONTRACT.md) | 操作矩阵、通用问答、领域命令/HTTP对齐；E30–E39 |
@@ -37,7 +39,7 @@
 
 1. 补复杂课表截图、扫描 PDF 的真实视觉验证，以及真实模型的模糊调整追问续答。官网校历图片和简单调整已验证，不能据此推断任意材料/问答都可靠。
 2. 配置邮件后做 E23/E34 的真实投递与收件核对。
-3. 当前已部署 schema29；后续改动按实际迁移版本、匹配备份/回退和公开行为验证发布，不重复执行旧迁移或重建生产。部署仍须相应用户授权。
+3. 当前已部署 schema32；后续改动按实际迁移版本、匹配备份/回退和公开行为验证发布，不重复执行旧迁移或重建生产。部署仍须相应用户授权。
 4. 主人连续七天试用，记录 REPAIR-PLAN §8 列的指标并修正。
 5. 把仍在使用的 v1 写接口（候选/资料/身份规则/可用时间块/设置表单）逐个并入统一操作或同一份变更记录；课表导入和任务/目标/项目/固定活动表单已并入。
 
@@ -66,4 +68,4 @@
 
 ## 5. 可复制开工指令
 
-> 接手dash-campus。先读根AGENTS、STATUS、START-HERE、Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md v1.1、decisions与接口契约，再读实际源码。业务95c8cf1/schema29是现有实现；本轮P0–P6模型优先路由、多轮对话和执行核验修正仍待开发。核对最新代码/dirty tree/迁移，用独立库，扩展唯一OPERATIONS，参数级授权、请求级持久预算、步骤依赖与核验同时落实。参考方案第9节完整开工指令；G01–G12与相关E01–E49分别验证。Todo绝对只读，不清生产、不提交秘密，不引入外部codingagent、不换框架。命令Git Bash先写脚本，未获适用指令不commit/push/上线。
+> 接手dash-campus。先读根AGENTS、STATUS、START-HERE、Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md v1.1、decisions、接口契约与G01–G12验收映射，再读实际源码。Agent增强v1.1 P0–P6已实现（schema32）；接手后补登录态网页走查、主人七天试用、真实邮件收件与复杂视觉材料。核对最新代码/dirty tree/迁移，用独立库，沿用唯一OPERATIONS、参数级授权、请求级持久预算、步骤依赖与核验；G01–G12与相关E01–E49分别按证据层报告。Todo绝对只读，不清生产、不提交秘密，不引入外部codingagent、不换框架。命令Git Bash先写脚本，未获适用指令不commit/push/上线。

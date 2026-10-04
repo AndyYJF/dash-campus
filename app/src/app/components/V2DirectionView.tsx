@@ -45,13 +45,15 @@ export default function V2DirectionView() {
         <h2 className={styles.title}>方向候选</h2>
         {data.candidates.length === 0 && <p className={styles.muted}>暂无候选。探索有新结果时会出现在这里（最多 3 个，均带来源）。</p>}
         {data.candidates.map((c) => (
-          <div key={c.title} className={styles.session}>
-            <span className={styles.sessionTitle}>{c.title}</span>
-            {c.canonicalUrl ? (
-              <a href={c.canonicalUrl} target="_blank" rel="noreferrer" className={styles.muted}>来源↗</a>
-            ) : (
-              <em className={styles.badge}>无链接</em>
-            )}
+          <div key={c.title} className={styles.cand}>
+            <div className={styles.candHead}>
+              <span className={styles.candTitle}>{c.title}</span>
+              {c.canonicalUrl ? (
+                <a href={c.canonicalUrl} target="_blank" rel="noreferrer" className={styles.link}>来源↗</a>
+              ) : (
+                <em className={styles.badge}>无链接</em>
+              )}
+            </div>
             <span className={styles.muted}>{c.deliverable && `交付：${c.deliverable} · `}证据：{c.evidenceStatus}</span>
           </div>
         ))}

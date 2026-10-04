@@ -1,43 +1,271 @@
-/* V2 三页面共用样式（墨色体系，复用全局 token） */
-.page { display: flex; flex-direction: column; gap: 12px; }
-.card {
-  background: var(--paper);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
+/* V2 三页面共用样式。设计体系：墨色 + 荧光笔，token 全部来自 globals.css（--color-*）。
+   只有黑白灰 + 唯一彩色荧光绿（主按钮、当前位置、划重点）。 */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 760px;
 }
-.title { font-size: 15px; margin: 0 0 8px; }
-.strip { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; font-size: 14px; }
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  box-shadow: var(--shadow-xs);
+}
+
+.title {
+  font-size: 15px;
+  font-weight: 650;
+  margin: 0 0 10px;
+  letter-spacing: 0.01em;
+}
+
+.muted {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  margin: 4px 0;
+}
+
+.error {
+  color: var(--color-danger);
+  font-size: 14px;
+}
+
+/* ===== 预算数字条 ===== */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+  margin: 2px 0 4px;
+}
+
+.stat {
+  background: var(--color-surface-muted);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
+.statNum {
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+}
+
+.statLabel {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+/* ===== 徽标 ===== */
 .badge {
   font-style: normal;
   font-size: 12px;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  padding: 0 4px;
-  margin-left: 4px;
+  color: var(--color-warning-text);
+  background: var(--color-warning-bg);
+  border-radius: var(--radius-xs);
+  padding: 1px 6px;
+  margin-left: 6px;
+  vertical-align: 1px;
 }
-.muted { color: var(--muted); font-size: 13px; margin: 4px 0; }
-.error { color: #b4453c; font-size: 14px; }
+
+/* ===== 按钮（对齐 dash 体系：荧光绿主按钮 / 幽灵次按钮） ===== */
+.btn {
+  appearance: none;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-radius: var(--radius-sm);
+  padding: 5px 14px;
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--shadow-xs);
+  transition: background var(--transition), border-color var(--transition), transform var(--transition);
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--color-surface-muted);
+}
+
+.btn:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.btnPrimary {
+  composes: btn;
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  border-color: transparent;
+  font-weight: 650;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+}
+
+.btnGhost {
+  composes: btn;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-text-muted);
+}
+
+.btnGhost:hover:not(:disabled) {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+/* ===== 行（学习块 / 记录） ===== */
+.session {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px dashed var(--color-border);
+}
+
+.session:first-of-type {
+  border-top: none;
+}
+
+.sessionTitle {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.time {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+/* ===== 计时活跃态：荧光绿脉冲点 ===== */
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.liveDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-ok);
+  animation: v2pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes v2pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ===== 待答问题 / 排不下的 ===== */
 .question {
-  border-left: 3px solid var(--accent);
-  padding: 4px 10px;
+  border-left: 3px solid var(--color-primary);
+  background: var(--color-accent-soft);
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+  padding: 8px 12px;
   margin: 6px 0;
   font-size: 14px;
+  overflow-wrap: anywhere;
 }
-.session { display: flex; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px dashed var(--border); }
-.session:first-of-type { border-top: none; }
-.sessionTitle { flex: 1; font-size: 14px; }
-.time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 13px; }
-.dayRow { display: flex; gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px dashed var(--border); flex-wrap: wrap; }
-.dayRow:first-of-type { border-top: none; }
-.dayLabel { font-size: 14px; min-width: 110px; }
-.daySessions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ===== 周视图 ===== */
+.dayRow {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 9px 0 9px 10px;
+  border-top: 1px dashed var(--color-border);
+  border-left: 3px solid transparent;
+  flex-wrap: wrap;
+}
+
+.dayRow:first-of-type {
+  border-top: none;
+}
+
+.todayRow {
+  border-left-color: var(--color-primary);
+  background: var(--color-surface-muted);
+  border-radius: 0 var(--radius-xs) var(--radius-xs) 0;
+}
+
+.dayLabel {
+  font-size: 14px;
+  font-weight: 600;
+  min-width: 108px;
+  font-variant-numeric: tabular-nums;
+}
+
+.daySessions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
 .chip {
   font-size: 12px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
   padding: 2px 10px;
-  background: transparent;
+  background: var(--color-surface);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
-.ghost { opacity: 0.7; }
+
+/* ===== 方向候选卡片 ===== */
+.cand {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin: 8px 0;
+  display: grid;
+  gap: 4px;
+}
+
+.candHead {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.candTitle {
+  font-size: 14px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.link {
+  color: var(--color-accent);
+  font-size: 13px;
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.link:hover {
+  color: var(--color-accent-hover);
+  text-decoration: underline;
+}
+
+/* 旧类名保留：ghost 按钮兼容 */
+.ghost {
+  composes: btnGhost;
+}

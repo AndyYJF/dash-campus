@@ -44,20 +44,22 @@ export default function V2WeekView() {
 
   if (error) return <p className={styles.error}>{error}</p>;
   if (!week) return <p className={styles.muted}>加载中…</p>;
+  const now = new Date();
+  const todayLocal = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 
   return (
     <div className={styles.page}>
       <section className={styles.card}>
         <h2 className={styles.title}>本周（{week.monday} 起）</h2>
         <div className={styles.strip}>
-          <span>本周学习预算 {week.weekBudget} 分钟{week.source === "tentative" && <em className={styles.badge}>暂定</em>}</span>
-          {week.source === "tentative" && <button onClick={confirm}>作息就这样，确认</button>}
+          <span>本周学习预算 <strong>{week.weekBudget}</strong> 分钟{week.source === "tentative" && <em className={styles.badge}>暂定</em>}</span>
+          {week.source === "tentative" && <button className={styles.btnPrimary} onClick={confirm}>作息就这样，确认</button>}
         </div>
       </section>
 
       <section className={styles.card}>
         {week.days.map((d, i) => (
-          <div key={d.date} className={styles.dayRow}>
+          <div key={d.date} className={`${styles.dayRow}${d.date === todayLocal ? ` ${styles.todayRow}` : ""}`}>
             <span className={styles.dayLabel}>周{WEEKDAY[i]} {d.date.slice(5)}</span>
             <span className={styles.muted}>课 {d.courseMinutes}′ · 容量 {d.cDay}′ · 已用 {d.bDay}′</span>
             <span className={styles.daySessions}>

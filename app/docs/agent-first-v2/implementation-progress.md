@@ -38,6 +38,13 @@
 
 - 最终验收集分项：act precision 95.2% / recall 88.9%，decide 100% / 83.3%，material 100% / 100%，意图正确率 97.5%，字段正确率 100%；**追问率 55.2%、确认率 32.8% 偏高**（允许追问的用例按通过计，追问多不算错，但试用中会显得啰嗦，需按反馈再看）。明细在本地 `.planning/eval-live-holdout3.json`（不入库）。仍失败 2 条：`u022`“上周的复盘写了啥”给了 `review`（期望 inspect），`u135`“嗯，就这样吧”在没有待答问题时执行了动作（期望追问）。开发集仍失败 8 条，集中在“截止+预计时长”应建任务却改了截止/剩余（u078、u178）、复合句漏一项（u179）、“按你推荐的来”追问而非确认（u052）。
 
+### 发布与生产冒烟（2026-10-05 04:47 +08）
+
+- 提交 `85d6143` 推送 `main`；按 [deploy.md](../deploy.md) §4 发布：停桥接 timer 与 web/worker → 备份 `backups/production-20261005-p3-85d6143`（schema30，sha256 `a83670b5…`）→ 覆盖源码 → 构建 → 迁移（已是 30）→ 启动 → 恢复 timer。回退材料：`/opt/dash-campus-src-896004e.tgz` 与镜像 `dash-campus:rollback-896004e`。
+- 生产源码散列与 `git -c core.autocrlf=false archive 85d6143` 一致（`9c69722a…`）。
+- 冒烟（只读，未往生产写测试数据）：health `schemaVersion 30`；80 端口 301 到 HTTPS；`/login` 200；owner 接口、`POST /api/v2/intakes` 与新 `POST /api/v2/feedback` 未登录均 401；web healthy、worker 恢复扫描 0 项、web 日志无错误。生产 ops 容器里用已部署代码跑纯函数核对：名称引用 `name` 别名被接受、反馈 schema 校验、工具循环 `tools ×3 → final` 且终结请求带轮次用完提示、真实 provider 类的终结请求 `response_format` 为 `json_object`（前三轮不发）。生产库只读：能力仍为 `gemini-3.8-flash-high` tools/jsonSchema supported，反馈 0 行、路由 trace 0 条（发布后无主人投递）。
+- 未做：登录态网页“理解错了”走查与生产真实投递端到端（需主人会话）。
+
 ### 未验证 / 未完成
 
 - live 只证明当前提示词在这 208 条合成样本上的效果，不是任意输入的保证；录制回放只证明协议/解析/绑定兼容。

@@ -37,9 +37,6 @@ function validDate(d: string): boolean {
 
 /** 国家年度节假日安排入库。同一修订不重复导入；撤销过的修订不被再次同步套用 */
 export function applyHolidayCalendar(cmd: Cmd<"sync_holiday_calendar">, ctx: CommandContext, changes: ChangeInput[]): string {
-  if (cmd.origin === "third_party") {
-    throw new HttpError(422, "NO_OFFICIAL_SOURCE", "这份日期没有官方出处，不能当作节假日事实；可以上传国务院办公厅通知原文或给出官方链接");
-  }
   for (const d of cmd.days) {
     if (!validDate(d.localDate) || Number(d.localDate.slice(0, 4)) !== cmd.year) throw new HttpError(422, "VALIDATION", `${d.localDate} 不属于 ${cmd.year} 年度`);
   }
@@ -49,6 +46,10 @@ export function applyHolidayCalendar(cmd: Cmd<"sync_holiday_calendar">, ctx: Com
   const current = activeHolidayDataset(cmd.year);
   if (current?.revisionHash === cmd.revisionHash) {
     return `${cmd.year} 年节假日安排没有变化`;
+  }
+  // 第三方日历只能当线索：内容和已入库的不一样时，没有官方出处就不改事实
+  if (cmd.origin === "third_party") {
+    throw new HttpError(422, "NO_OFFICIAL_SOURCE", "这份日期没有官方出处，不能当作节假日事实；可以上传国务院办公厅通知原文或给出官方链接");
   }
   if (current) {
     db.prepare(`UPDATE holiday_datasets SET status = 'superseded', version = version + 1, updated_at = ? WHERE id = ?`).run(now(), current.id);

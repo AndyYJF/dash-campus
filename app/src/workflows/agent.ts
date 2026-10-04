@@ -254,6 +254,9 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
       (getDb().prepare(`SELECT id FROM practice_entries WHERE created_at >= ? ORDER BY created_at DESC LIMIT 1`).get(new Date(env.now.getTime() - 7 * 86_400_000).toISOString()) as { id: string } | undefined);
     return row ? { kind: "run", command: { command: "correct_practice", practiceId: row.id, actualMinutes: intent.minutes } } : { kind: "fail", error: "最近没有可以纠正的实践记录" };
   }
+  if (intent.op === "calendar_sync") {
+    return { kind: "run", command: { command: "update_calendar_sync_policy", enabled: intent.enabled, ...(intent.intervalDays ? { intervalDays: intent.intervalDays } : {}) } };
+  }
   if (intent.op === "course_cancel") {
     return intent.courseName
       ? { kind: "run", command: { command: "apply_teaching_day_override", scope: "course", courseName: intent.courseName, mode: "cancel", sourceTeachingDate: intent.date, origin: "user" } }
@@ -323,6 +326,24 @@ function optionIndex(text: string, options: string[]): number {
   return m.kind === "one" ? Number(m.task.id) : -1;
 }
 
+/** “补10月8日的课”“补周四的课”：源教学日通常就在目标日前后，按目标日所在年份/那一周理解，不往后推一年 */
+function sourceDateFromText(text: string, target: string): string | null {
+  const full = /(\d{4})\s*[-/.年]\s*(\d{1,2})\s*[-/.月]\s*(\d{1,2})/.exec(text);
+  const md = /(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?/.exec(text);
+  const build = (y: number, m: number, d: number) => {
+    const t = new Date(Date.UTC(y, m - 1, d));
+    return t.getUTCMonth() === m - 1 && t.getUTCDate() === d ? t.toISOString().slice(0, 10) : null;
+  };
+  if (full) return build(Number(full[1]), Number(full[2]), Number(full[3]));
+  if (md) return build(Number(target.slice(0, 4)), Number(md[1]), Number(md[2]));
+  const wd = /(上)?\s*(?:周|星期|礼拜)\s*([一二三四五六日天])/.exec(text);
+  if (wd) {
+    const monday = addDays(target, -(isoWeekday(target) - 1));
+    return addDays(monday, "一二三四五六日天".indexOf(wd[2]!) % 7 - (wd[1] ? 7 : 0));
+  }
+  return null;
+}
+
 export function parseAnswerByPurpose(q: QuestionRow, text: string, env: { referenceDate: string; now: Date; tz: string }): AnswerParse {
   const options = q.options ?? [];
   if (q.purpose === "entity_ref") {
@@ -354,6 +375,17 @@ export function parseAnswerByPurpose(q: QuestionRow, text: string, env: { refere
     if (/不确定|不知道|不清楚|说不好|先.*梳理/.test(text)) return { ok: true, structured: { unknown: true } };
     return { ok: false, hint: "说一下大概还差多久（比如“还差一小时”），或者“不确定”“已经做完了”" };
   }
+  if (q.purpose === "teaching_source") {
+    if (/不清楚|不知道|不确定|没说|待定/.test(text)) return { ok: true, structured: { unknown: true } };
+    const target = (q.context.targetDate as string | undefined) ?? env.referenceDate;
+    const date = sourceDateFromText(text, target);
+    if (date && date !== target) return { ok: true, structured: { sourceTeachingDate: date } };
+    return { ok: false, hint: "说具体是补哪一天的课（如“补10月8日的课”），或者“不清楚”" };
+  }
+  if (q.purpose === "info") {
+    const url = /https?:\/\/\S+/.exec(text)?.[0];
+    return url ? { ok: true, structured: { url } } : { ok: false, hint: "贴一个链接；如果手上是通知原文或文件，直接放进上面的输入框就行" };
+  }
   if (q.purpose === "tradeoff" || q.purpose === "conflict") {
     const i = optionIndex(text, options);
     return i >= 0 ? { ok: true, structured: { choice: i } } : { ok: false, hint: `选一个：${options.map((o, n) => `${n + 1}. ${o}`).join("；")}` };
@@ -384,6 +416,9 @@ export function commandsForStandaloneAnswer(q: QuestionRow, structured: Record<s
       return { commands: [...others.map((id) => ({ command: "pause_task", taskId: id, until: addDays(until, 1) })), { command: "create_or_update_task", taskId, priority: "high" }], replanDates: [], note: "" };
     }
     return { commands: [], replanDates: [], note: "好，这项你自己处理，我不动" };
+  }
+  if (q.purpose === "info" && typeof structured.url === "string" && typeof q.context.year === "number") {
+    return { commands: [{ command: "update_calendar_sync_policy", holidayYear: q.context.year, holidayUrl: structured.url }], replanDates: [], note: "链接已记下，马上去核对" };
   }
   if (q.purpose === "conflict") {
     const sessionId = q.context.sessionId as string | undefined;

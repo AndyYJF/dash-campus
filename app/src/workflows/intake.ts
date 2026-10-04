@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { getDb } from "@/repositories/db";
 import {
   createExtractedDocument,
@@ -18,6 +19,7 @@ import {
   getQuestion,
   latestAnswerForKey,
   recordAnswer,
+  supersedeQuestion,
   type QuestionRow,
 } from "@/repositories/questions";
 import { createJob, getJob, leaseValid, renewLease, completeJob, failJob, completeCancellation, listJobs, requestCancel } from "@/repositories/jobs";
@@ -35,7 +37,25 @@ import { bindIntents, commandsForStandaloneAnswer, completionHasTarget, isPolicy
 import { appendTurn, conversationExists, currentConversationId, upsertAgentTurn, type EntityRef } from "@/repositories/conversations";
 import { listChanges } from "@/repositories/journal";
 import { followUpView, operationResultView, type OperationResultView } from "@/workflows/results";
-import { extractAttachment, extractPdfText, fetchUrlText, listAttachments, markExtractionDone, materializeAttachment, recordUrlDocument } from "@/workflows/intake-files";
+import { extractAttachment, extractPdfText, fetchImageDataUrl, fetchUrl, listAttachments, markExtractionDone, materializeAttachment, recordUrlDocument } from "@/workflows/intake-files";
+import { isOfficialHolidaySource, parseHolidayNotice } from "@/domain/holiday-notice";
+import {
+  ADJUSTMENT_EXTRACT_INSTRUCTIONS,
+  ADJUSTMENT_EXTRACT_WORKFLOW,
+  adjustmentExtractionSchema,
+  CALENDAR_EXTRACT_INSTRUCTIONS,
+  CALENDAR_EXTRACT_WORKFLOW,
+  calendarExtractionSchema,
+  TIMETABLE_EXTRACT_INSTRUCTIONS,
+  TIMETABLE_EXTRACT_WORKFLOW,
+  timetableExtractionSchema,
+  timetableToSdct,
+  type AdjustmentExtraction,
+  type CalendarExtraction,
+  type TimetableExtraction,
+} from "@/workflows/materials";
+import { getFactByField } from "@/repositories/profile";
+import type { z } from "zod";
 import {
   INTAKE_JOB_TYPE,
   SEMESTER_FIRST_MONDAY_KEY,
@@ -100,10 +120,11 @@ export function splitSdct1(text: string): { sdct: string | null; rest: string } 
   return { sdct, rest };
 }
 
-/** 收集 URL 与附件输入：URL 抓过一次就不重抓（证据复用）；附件按类型分发 */
-async function collectExtraInputs(intakeId: string, intake: IntakeRow): Promise<{ texts: string[]; images: string[] }> {
-  void intake;
-  const texts: string[] = [];
+type ExtraSource = { kind: "url" | "file"; ref: string; text: string };
+
+/** 收集 URL 与附件输入：URL 抓过一次就不重抓（证据复用）；附件按类型分发；网页正文里的内容图片交给视觉提取 */
+async function collectExtraInputs(intakeId: string): Promise<{ sources: ExtraSource[]; images: string[] }> {
+  const sources: ExtraSource[] = [];
   const images: string[] = [];
   const db = getDb();
   const urlListRow = db.prepare(`SELECT content_text FROM extracted_documents WHERE intake_id = ? AND source_kind = 'url-list'`).get(intakeId) as { content_text: string } | undefined;
@@ -111,15 +132,20 @@ async function collectExtraInputs(intakeId: string, intake: IntakeRow): Promise<
   const doneUrls = new Set(
     (db.prepare(`SELECT locator FROM extracted_documents WHERE intake_id = ? AND source_kind = 'url'`).all(intakeId) as Array<{ locator: string }>).map((r) => r.locator),
   );
-  for (const r of db.prepare(`SELECT content_text FROM extracted_documents WHERE intake_id = ? AND source_kind = 'url'`).all(intakeId) as Array<{ content_text: string }>) {
-    if (!r.content_text.startsWith("（抓取失败")) texts.push(r.content_text);
+  for (const r of db.prepare(`SELECT content_text, locator FROM extracted_documents WHERE intake_id = ? AND source_kind = 'url'`).all(intakeId) as Array<{ content_text: string; locator: string }>) {
+    if (!r.content_text.startsWith("（抓取失败")) sources.push({ kind: "url", ref: r.locator, text: r.content_text });
   }
   for (const url of urls) {
     if (doneUrls.has(url)) continue;
-    const r = await fetchUrlText(url);
+    const r = await fetchUrl(url);
     if (r.ok) {
       recordUrlDocument(intakeId, url, r.text);
-      texts.push(r.text);
+      sources.push({ kind: "url", ref: url, text: r.text });
+      for (const img of r.images) {
+        if (images.length >= MAX_MODEL_IMAGES) break;
+        const data = await fetchImageDataUrl(img);
+        if (data) images.push(data);
+      }
     } else {
       recordUrlDocument(intakeId, url, `（抓取失败：${r.error}）`);
     }
@@ -127,19 +153,63 @@ async function collectExtraInputs(intakeId: string, intake: IntakeRow): Promise<
   for (const att of listAttachments(intakeId)) {
     if (att.extractionState === "unsupported") continue;
     const outcome = extractAttachment(att);
-    if (outcome.kind === "text") texts.push(outcome.text);
-    else if (outcome.kind === "image") images.push(outcome.dataUrl);
-    else if (outcome.kind === "pdf") {
+    if (outcome.kind === "text") sources.push({ kind: "file", ref: att.originalName, text: outcome.text });
+    else if (outcome.kind === "image") {
+      if (images.length < MAX_MODEL_IMAGES) images.push(outcome.dataUrl);
+    } else if (outcome.kind === "pdf") {
       const text = await extractPdfText(outcome.bytes);
       if (text) {
         markExtractionDone(att.id);
-        texts.push(text);
+        sources.push({ kind: "file", ref: att.originalName, text });
       } else {
         materializeAttachment(intakeId, att, { kind: "unsupported", error: "PDF 没有可提取的文本层（可能是扫描件）：请截图投递，或复制其中的文字" });
       }
     } else materializeAttachment(intakeId, att, outcome);
   }
-  return { texts, images };
+  return { sources, images };
+}
+
+/** 模型每次最多看 5 张图（MASTER-PLAN §3.2） */
+const MAX_MODEL_IMAGES = 5;
+/** 单份投递的模型请求上限（§4.1）：1 次分类 + 结构化提取 */
+const MAX_MODEL_CALLS = 4;
+
+/**
+ * 国务院办公厅年度节假日通知：确定性解析，不经模型。
+ * 认出是这份通知但日期自洽校验没过 → 具体报错并保留原件；不是这份通知 → 原样交给分类。
+ */
+function holidayPass(intakeId: string, text: string, ref: { kind: "owner" | "url" | "file"; ref: string }): boolean {
+  if (!/国务院办公厅关于\s*\d{4}\s*年\s*部分节假日安排的通知/.test(text.replace(/\n/g, ""))) return false;
+  const parsed = parseHolidayNotice(text);
+  const year = /关于\s*(\d{4})\s*年/.exec(text.replace(/\n/g, ""))?.[1] ?? "x";
+  const key = `holiday-${year}`;
+  if (!parsed.ok) {
+    const { item, created } = createItem({ intakeId, stableItemKey: key, kind: "holiday", payload: { summary: `${year} 年节假日安排通知`, retryable: false } });
+    if (created) updateItem(item.id, { state: "failed", evidence: { error: `${parsed.error}；原件已保留，没有据此改任何日期` } });
+    return true;
+  }
+  const n = parsed.notice;
+  createItem({
+    intakeId,
+    stableItemKey: key,
+    kind: "holiday",
+    payload: {
+      summary: n.title,
+      holiday: {
+        year: n.year,
+        days: n.days,
+        revisionHash: n.revisionHash,
+        sourceUrl: ref.kind === "url" ? ref.ref : "",
+        sourceTitle: n.title,
+        publishedAt: n.publishedAt,
+        // 只有发布机关域名算官方来源；主人贴的原文/上传的原件按“主人提供”；其他网址是第三方线索
+        origin: ref.kind === "url" ? (isOfficialHolidaySource(ref.ref) ? "official" : "third_party") : "user_upload",
+      },
+      explicit: ref.kind === "owner",
+    },
+    evidence: { excerpt: n.title, source: ref.ref },
+  });
+  return true;
 }
 
 /** 学期首周锚点：「第N周」（以参照日期的本周推算）或显式日期（归一到所在周周一） */
@@ -228,68 +298,126 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
   // 只解析输入框原话——附件/网页里的命令式句子是资料，不是指令。结果落库一次，重跑/恢复不重复解析。
   const ownerRest = ownerInstructionPass(intake, textRest, items);
   items = listItems(intakeId);
-  const extra = await collectExtraInputs(intakeId, intake);
-  const rest = [ownerRest, ...extra.texts].filter(Boolean).join("\n\n");
-  if ((rest || extra.images.length) && !items.some((i) => !["timetable", "ics", "command"].includes(i.kind) && !i.stableItemKey.startsWith("file-")) && !items.some((i) => i.payload.fromModel)) {
-      const model = resolveModelProvider();
-      const budget = budgetCheck({ model: 1 });
-      const unavailable = !model ? "模型未配置，原文已保留" : !budget.ok ? `BUDGET_EXCEEDED：${budget.message}` : null;
-      if (unavailable) {
-        failNoteItem(intakeId, rest, unavailable);
+  const extra = await collectExtraInputs(intakeId);
+  // 节假日通知先确定性解析：认出来的不再交给模型分类
+  const ownerText = holidayPass(intakeId, ownerRest, { kind: "owner", ref: "" }) ? "" : ownerRest;
+  const extraTexts = extra.sources.filter((src) => !holidayPass(intakeId, src.text, src)).map((src) => src.text);
+  items = listItems(intakeId);
+  const rest = [ownerText, ...extraTexts].filter(Boolean).join("\n\n");
+
+  let modelCalls = 0;
+  /** 一次模型请求：预算与次数上限、租约续期、取消检查都在这里；模型调用不在事务内 */
+  async function callModel<T>(workflow: string, context: Record<string, unknown>, instructions: string, schema: z.ZodType<T>): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
+    const model = resolveModelProvider();
+    if (!model) return { ok: false, error: "模型未配置，原文已保留" };
+    const budget = budgetCheck({ model: 1 });
+    if (!budget.ok) return { ok: false, error: `BUDGET_EXCEEDED：${budget.message}` };
+    if (modelCalls >= MAX_MODEL_CALLS) return { ok: false, error: "这份材料已达到单次处理的模型请求上限，剩余部分请分开投递" };
+    modelCalls++;
+    db.prepare(`UPDATE intakes SET status = 'processing', updated_at = ? WHERE id = ?`).run(now(), intakeId);
+    const controller = new AbortController();
+    const interval = setInterval(() => {
+      if (!renewLease(job.id, token, job.generation, now())) controller.abort();
+    }, JOB_RENEW_INTERVAL_MS);
+    try {
+      const result = await meteredModel(model.provider, { type: "intake", id: intakeId }).call({ workflow, context, outputSchemaVersion: 1, timeoutMs: JOB_EXTERNAL_TIMEOUT_MS, instructions, schema, signal: controller.signal });
+      return result.ok ? { ok: true, value: result.validatedResult as T } : { ok: false, error: `${result.error.code}：${result.error.message}` };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : "模型请求失败，原文已保留" };
+    } finally {
+      clearInterval(interval);
+    }
+  }
+
+  const DETERMINISTIC_KINDS = ["timetable", "ics", "command", "holiday"];
+  if ((rest || extra.images.length) && !items.some((i) => !DETERMINISTIC_KINDS.includes(i.kind) && !i.stableItemKey.startsWith("file-")) && !items.some((i) => i.payload.fromModel)) {
+    const result = await callModel(INTAKE_JOB_TYPE, { text: rest, images: extra.images, referenceDate: intake.referenceDate, timezone: intake.timezone }, CLASSIFY_INSTRUCTIONS, intakeClassificationSchema);
+    if (getJob(job.id)?.cancelRequested) return cancel();
+    if (!result.ok) {
+      failNoteItem(intakeId, rest, result.error);
+    } else {
+      const out = result.value as { items: Array<{ itemKey: string; kind: IntakeItemRow["kind"]; summary: string; excerpt: string; intent?: unknown }> };
+      const used = new Set<string>(listItems(intakeId).map((i) => i.stableItemKey));
+      // 引用必须逐字来自文字材料；只有“从图片读出的材料类事项”可以没有文字引用（主人的任务/实践/指令不行）
+      const IMAGE_KINDS = ["timetable", "calendar", "adjustment", "holiday", "notice", "note"];
+      const invalid = rest ? out.items.find((i) => !excerptInText(i.excerpt, rest) && !(extra.images.length && IMAGE_KINDS.includes(i.kind))) : undefined;
+      if (invalid) {
+        failNoteItem(intakeId, rest, `分类结果引用不在原文中（${invalid.itemKey}），按原始资料保留`);
       } else {
-        db.prepare(`UPDATE intakes SET status = 'processing', updated_at = ? WHERE id = ?`).run(now(), intakeId);
-        const controller = new AbortController();
-        const interval = setInterval(() => {
-          if (!renewLease(job.id, token, job.generation, now())) controller.abort();
-        }, JOB_RENEW_INTERVAL_MS);
-        try {
-          const result = await meteredModel(model!.provider, { type: "intake", id: intakeId }).call({
-            workflow: INTAKE_JOB_TYPE,
-            context: { text: rest, images: extra.images, referenceDate: intake.referenceDate, timezone: intake.timezone },
-            outputSchemaVersion: 1,
-            timeoutMs: JOB_EXTERNAL_TIMEOUT_MS,
-            instructions: CLASSIFY_INSTRUCTIONS,
-            schema: intakeClassificationSchema,
-            signal: controller.signal,
-          });
-          if (getJob(job.id)?.cancelRequested) return cancel();
-          if (!result.ok) {
-            failNoteItem(intakeId, rest, `${result.error.code}：${result.error.message}`);
-          } else {
-            const out = result.validatedResult as { items: Array<{ itemKey: string; kind: IntakeItemRow["kind"]; summary: string; excerpt: string; intent?: unknown }> };
-            const used = new Set<string>(listItems(intakeId).map((i) => i.stableItemKey));
-            const invalid = rest ? out.items.find((i) => !excerptInText(i.excerpt, rest)) : undefined;
-            if (invalid) {
-              failNoteItem(intakeId, rest, `分类结果引用不在原文中（${invalid.itemKey}），按原始资料保留`);
+        for (const i of out.items) {
+          let key = i.itemKey;
+          let n = 2;
+          while (used.has(key)) key = `${i.itemKey}-${n++}`;
+          used.add(key);
+          // 是不是主人本人的话由服务端判断：引用出现在输入框原话里才算
+          const explicit = Boolean(ownerText) && excerptInText(i.excerpt, ownerText);
+          if (i.kind === "command") {
+            // 模型给的意图用同一个 schema 校验，走同一条绑定/执行通路
+            const intent = intentSchema.safeParse(i.intent);
+            if (!intent.success) {
+              const { item } = createItem({ intakeId, stableItemKey: key, kind: "command", payload: { summary: i.summary, fromModel: true }, evidence: { excerpt: i.excerpt } });
+              updateItem(item.id, { state: "failed", evidence: { excerpt: i.excerpt, error: "没看懂这条指令，原话已保留；换个说法或直接在卡片上操作" } });
             } else {
-              for (const i of out.items) {
-                let key = i.itemKey;
-                let n = 2;
-                while (used.has(key)) key = `${i.itemKey}-${n++}`;
-                used.add(key);
-                if (i.kind === "command") {
-                  // 模型给的意图用同一个 schema 校验，走同一条绑定/执行通路；是不是主人本人的话由服务端判断
-                  const intent = intentSchema.safeParse(i.intent);
-                  const explicit = excerptInText(i.excerpt, ownerRest);
-                  if (!intent.success) {
-                    const { item } = createItem({ intakeId, stableItemKey: key, kind: "command", payload: { summary: i.summary, fromModel: true }, evidence: { excerpt: i.excerpt } });
-                    updateItem(item.id, { state: "failed", evidence: { excerpt: i.excerpt, error: "没看懂这条指令，原话已保留；换个说法或直接在卡片上操作" } });
-                  } else {
-                    createItem({ intakeId, stableItemKey: key, kind: "command", payload: { summary: i.summary, intents: [intent.data], explicit, fromModel: true }, evidence: { excerpt: i.excerpt } });
-                  }
-                  continue;
-                }
-                createItem({ intakeId, stableItemKey: key, kind: i.kind, payload: { summary: i.summary, fromModel: true, explicit: excerptInText(i.excerpt, ownerRest) }, evidence: { excerpt: i.excerpt } });
-              }
+              createItem({ intakeId, stableItemKey: key, kind: "command", payload: { summary: i.summary, intents: [intent.data], explicit, fromModel: true }, evidence: { excerpt: i.excerpt } });
             }
+            continue;
           }
-        } catch (e) {
-          failNoteItem(intakeId, rest, e instanceof Error ? e.message : "分类失败，原文已保留");
-        } finally {
-          clearInterval(interval);
+          createItem({ intakeId, stableItemKey: key, kind: i.kind, payload: { summary: i.summary, fromModel: true, explicit }, evidence: { excerpt: i.excerpt } });
         }
       }
     }
+  }
+
+  // 结构化提取：分类只说“这是课表/校历/调课通知”，这里读出可核对的字段；读不出就具体说哪里不清
+  for (const item of listItems(intakeId)) {
+    if (item.state !== "extracted" || !item.payload.fromModel) continue;
+    const context = { text: rest, images: extra.images, referenceDate: intake.referenceDate, timezone: intake.timezone, about: item.payload.summary };
+    if (item.kind === "timetable" && !item.payload.sdctText) {
+      const r = await callModel<TimetableExtraction>(TIMETABLE_EXTRACT_WORKFLOW, context, TIMETABLE_EXTRACT_INSTRUCTIONS, timetableExtractionSchema);
+      if (getJob(job.id)?.cancelRequested) return cancel();
+      if (!r.ok) {
+        updateItem(item.id, { state: "failed", payload: { ...item.payload, retryable: true }, evidence: { ...item.evidence, error: `课表没有读出来：${r.error}` } });
+        continue;
+      }
+      const conv = timetableToSdct(r.value);
+      const unclear = conv.skipped.map((u) => `${u.where}：${u.what}`);
+      if (!conv.ok) {
+        updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: `课表读出来了但不完整：${conv.error}${unclear.length ? `。看不清的地方：${unclear.join("；")}` : ""}。可以补一张更清楚的图，或直接告诉我这些课的时间和周次` } });
+        continue;
+      }
+      updateItem(item.id, { payload: { ...item.payload, sdctText: conv.sdct, extraction: { courseCount: conv.courseCount, termLabel: r.value.termLabel, courses: r.value.courses.slice(0, 60) }, unclear }, evidence: { ...item.evidence, fields: r.value.courses.slice(0, 60).map((c) => ({ name: c.name, where: c.evidence })) } });
+    } else if (item.kind === "calendar" && !item.payload.calendar) {
+      const r = await callModel<CalendarExtraction>(CALENDAR_EXTRACT_WORKFLOW, context, CALENDAR_EXTRACT_INSTRUCTIONS, calendarExtractionSchema);
+      if (getJob(job.id)?.cancelRequested) return cancel();
+      if (!r.ok) {
+        updateItem(item.id, { state: "failed", payload: { ...item.payload, retryable: true }, evidence: { ...item.evidence, error: `校历没有读出来：${r.error}` } });
+        continue;
+      }
+      const source = extra.sources.find((x) => x.kind === "url")?.ref ?? `intake:${intakeId}`;
+      const unclear = r.value.unclear.map((u) => `${u.where}：${u.what}`);
+      r.value.terms.forEach((term, n) => {
+        const calendar = { school: r.value.school, academicYear: r.value.academicYear, audience: r.value.audience, ...term, overrides: term.overrides.filter((o) => o.sourceTeachingDate), source, sourceRevision: revisionOf({ ...term, school: r.value.school, academicYear: r.value.academicYear }) };
+        const pendingTargets = term.overrides.filter((o) => !o.sourceTeachingDate).map((o) => ({ targetDate: o.targetDate, mode: o.mode, evidence: o.evidence }));
+        const payload = { ...item.payload, summary: [r.value.school, r.value.academicYear, term.termLabel].filter(Boolean).join(" ") || "校历", calendar, pendingTargets, unclear };
+        if (n === 0) updateItem(item.id, { payload });
+        else createItem({ intakeId, stableItemKey: `${item.stableItemKey}-t${n + 1}`, kind: "calendar", payload, evidence: item.evidence });
+      });
+    } else if (item.kind === "adjustment" && !item.payload.adjustment) {
+      const r = await callModel<AdjustmentExtraction>(ADJUSTMENT_EXTRACT_WORKFLOW, context, ADJUSTMENT_EXTRACT_INSTRUCTIONS, adjustmentExtractionSchema);
+      if (getJob(job.id)?.cancelRequested) return cancel();
+      if (!r.ok || !r.value.items.length) {
+        updateItem(item.id, { state: "failed", payload: { ...item.payload, retryable: !r.ok }, evidence: { ...item.evidence, error: r.ok ? "通知里没有读出具体的停课/调课日期，原文已保留" : `调课通知没有读出来：${r.error}` } });
+        continue;
+      }
+      r.value.items.forEach((adj, n) => {
+        const payload = { ...item.payload, summary: adj.evidence || item.payload.summary, adjustment: adj, audience: r.value.audience };
+        if (n === 0) updateItem(item.id, { payload });
+        else createItem({ intakeId, stableItemKey: `${item.stableItemKey}-a${n + 1}`, kind: "adjustment", payload, evidence: item.evidence });
+      });
+    } else if (item.kind === "holiday" && !item.payload.holiday) {
+      updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: "节假日安排需要官方通知的文字或链接（国务院办公厅年度通知）；图片或转述里的日期我不直接采用，原件已保留" } });
+    }
+  }
   items = listItems(intakeId);
 
   // 第二阶段：Resolve。extracted/resolving 正常推进；awaiting_input 在别处已有答案时也推进（多份材料共享缺口）
@@ -310,6 +438,8 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
       resolveTimetableItem(intakeId, item, intake.timezone);
     } else if (item.kind === "command") {
       resolveCommandItem(intake, item, { ...env, itemId: item.id });
+    } else if (item.kind === "calendar" || item.kind === "adjustment") {
+      resolveCalendarItem(intake, item);
     } else if ((item.kind === "task" || item.kind === "practice") && isCompletionReport(itemText(item))) {
       resolveCompletionItem(intakeId, item);
     } else {
@@ -330,7 +460,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
     } else applyItem(intake, item);
   }
   // 本次落库的课程/任务/实践/日程都会改变预算或需求：触发差异重排（相同事实无变更，只动必要的块）
-  const PLAN_KINDS = ["timetable", "task", "practice", "ics"];
+  const PLAN_KINDS = ["timetable", "task", "practice", "ics", "calendar", "holiday", "adjustment"];
   const appliedNow = listItems(intakeId).filter((i) => readyIds.has(i.id) && i.state === "applied");
   const causing = appliedNow.filter((i) => PLAN_KINDS.includes(i.kind));
   if (causing.length) {
@@ -346,6 +476,87 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
   if (lastPlan) raisePlanQuestions(lastPlan, { conversationId: intake.conversationId, tz: intake.timezone });
   recordAgentTurn(intake);
   return finish("done", null);
+}
+
+function revisionOf(value: unknown): string {
+  return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 32);
+}
+
+const AUDIENCE_LABEL: Record<string, string> = { undergraduate: "本科生", graduate: "研究生", all: "全体" };
+
+function ownerAudience(): "undergraduate" | "graduate" | null {
+  const fact = getFactByField("education_level")?.value ?? "";
+  if (/本科/.test(fact)) return "undergraduate";
+  if (/研究生|硕士|博士/.test(fact)) return "graduate";
+  return null;
+}
+
+/**
+ * 校历/调课事项：先核对适用人群，再补“按哪天的课上”这类缺口——只问缺的那一项，不重复问已有身份。
+ * 缺一个映射不阻塞校历里其他日期。
+ */
+function resolveCalendarItem(intake: IntakeRow, item: IntakeItemRow): void {
+  const aud = ((item.payload.calendar as { audience?: string } | undefined)?.audience ?? (item.payload.audience as string | undefined) ?? "all") as string;
+  const mine = ownerAudience();
+  const ask = (key: string, purpose: string, prompt: string, reason: string, options: string[], context: Record<string, unknown> = {}) => {
+    const { question } = ensureOpenQuestion({ questionKey: key, intakeId: intake.id, itemId: item.id, fieldPath: purpose, prompt, options, purpose, reason, context, conversationId: intake.conversationId });
+    updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id });
+  };
+  if (aud !== "all") {
+    if (mine && mine !== aud) {
+      updateItem(item.id, { state: "ignored", waitingQuestionId: null, evidence: { ...item.evidence, note: `这是${AUDIENCE_LABEL[aud]}的安排，你是${AUDIENCE_LABEL[mine]}：已存为资料，不套用到你的课表` } });
+      return;
+    }
+    if (!mine) {
+      const key = `calendar.audience:${item.id}`;
+      const answered = latestAnswerForKey(key)?.structured;
+      if (!answered) return ask(key, "confirm", `这份材料写的是${AUDIENCE_LABEL[aud]}适用。你是${AUDIENCE_LABEL[aud]}吗？`, "不同人群的校历日期不同，不确认就套用可能排错课", ["是", "不是"]);
+      if (!answered.yes) {
+        updateItem(item.id, { state: "ignored", waitingQuestionId: null, evidence: { ...item.evidence, note: `不适用于你，已存为资料` } });
+        return;
+      }
+    }
+  }
+  // 只写了“某天上课”但没写按哪天的课表：问一次；说不清楚就保留待核对，不猜
+  const payload = { ...item.payload };
+  const sourceQuestion = (targetDate: string, key: string): string | null | undefined => {
+    const answered = latestAnswerForKey(key)?.structured;
+    if (answered) return answered.unknown ? null : (answered.sourceTeachingDate as string);
+    ask(key, "teaching_source", `材料写 ${targetDate} 要上课，但没写按哪一天的课表上。是补哪天的课？（例如“补10月8日的课”；不清楚就说“不清楚”，我先标成待核对）`, "国家调休只说明那天上班，补哪天的课要以学校通知为准", ["不清楚"], { targetDate });
+    return undefined;
+  };
+  if (item.kind === "calendar") {
+    const calendar = { ...(payload.calendar as Record<string, unknown>) };
+    const overrides = [...((calendar.overrides as Array<Record<string, unknown>>) ?? [])];
+    const pending = (payload.pendingTargets as Array<{ targetDate: string; mode: string; evidence: string }>) ?? [];
+    const unresolved: string[] = [];
+    for (const p of pending) {
+      const src = sourceQuestion(p.targetDate, `calendar.source:${item.id}:${p.targetDate}`);
+      if (src === undefined) return;
+      if (src === null) unresolved.push(p.targetDate);
+      else if (!overrides.some((o) => o.targetDate === p.targetDate)) overrides.push({ targetDate: p.targetDate, sourceTeachingDate: src, mode: p.mode, cancelSource: false, evidence: p.evidence });
+    }
+    calendar.overrides = overrides;
+    const anchor = latestAnswerForKey(`calendar.anchor:${item.id}`)?.structured;
+    if (anchor && !anchor.yes) {
+      updateItem(item.id, { state: "ignored", waitingQuestionId: null, evidence: { ...item.evidence, note: "你选择不按这份校历修正课表日期，校历已存为资料" } });
+      return;
+    }
+    if (anchor?.yes) calendar.confirmAnchorChange = true;
+    updateItem(item.id, { state: "ready", waitingQuestionId: null, payload: { ...payload, calendar, unresolvedTargets: unresolved } });
+    return;
+  }
+  const adj = { ...(payload.adjustment as Record<string, unknown>) };
+  if ((adj.mode === "replace" || adj.mode === "add") && !adj.sourceTeachingDate && adj.targetDate) {
+    const src = sourceQuestion(adj.targetDate as string, `calendar.source:${item.id}:${adj.targetDate}`);
+    if (src === undefined) return;
+    if (src === null) {
+      updateItem(item.id, { state: "ignored", waitingQuestionId: null, evidence: { ...item.evidence, note: `${adj.targetDate} 按哪天的课上还不清楚：已标为待核对，没有生成课程` } });
+      return;
+    }
+    adj.sourceTeachingDate = src;
+  }
+  updateItem(item.id, { state: "ready", waitingQuestionId: null, payload: { ...payload, adjustment: adj } });
 }
 
 /** 首次处理时把主人原话里的直接指令切成指令事项；返回留给分类的剩余文字（落库，重跑时复用） */
@@ -463,11 +674,23 @@ function applyItem(intake: IntakeRow, item: IntakeItemRow): void {
   const cmd = commandForItem(intake, item);
   if (!cmd) return; // notice/note：事实保留，不产生行动
   const result = executeCommand(cmd, ctx);
-  if (!result.ok) {
-    updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: result.error, retryable: true } });
+  if (!result.ok && result.code === "ANCHOR_CONFLICT") {
+    // 校历首周和现有课表对不上：会移动全部课程，先问主人，不暗改
+    const { question } = ensureOpenQuestion({ questionKey: `calendar.anchor:${item.id}`, intakeId: intake.id, itemId: item.id, fieldPath: "semester.first_monday", prompt: result.error, options: ["按校历修正", "先不改"], purpose: "confirm", reason: "修正首周会让整学期的课程日期一起移动", context: {}, conversationId: intake.conversationId });
+    updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id });
     return;
   }
-  updateItem(item.id, { state: "applied", payload: { ...item.payload, applied: { batchId: result.batchId, summary: result.summary } } });
+  if (!result.ok) {
+    updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: result.error, retryable: !["NO_OFFICIAL_SOURCE", "MAPPING_CONFLICT", "VALIDATION", "INVALID_REFERENCE", "NOT_AUTHORIZED", "AMBIGUOUS_REFERENCE"].includes(result.code) } });
+    return;
+  }
+  updateItem(item.id, { state: "applied", payload: { ...item.payload, applied: { batchId: result.batchId, summary: result.summary, noChange: result.noChange } } });
+  // 节假日来源补上了：之前“缺官方来源”的提问不再追问
+  if (item.kind === "holiday") {
+    const year = (item.payload.holiday as { year?: number } | undefined)?.year;
+    const open = getDb().prepare(`SELECT id FROM clarification_questions WHERE question_key = ? AND status = 'open'`).get(`calendar.holiday_source:${year}`) as { id: string } | undefined;
+    if (open) supersedeQuestion(open.id);
+  }
 }
 
 /** 事项 → 命令参数映射（服务端解析，模型不给任意 ID） */
@@ -498,6 +721,19 @@ function commandForItem(intake: IntakeRow, item: IntakeItemRow): unknown | null 
     }
     const due = dueFromText(text, intake.referenceDate);
     return { command: "create_or_update_task", title: summary, estimateMinutes: minutes, dueLocalDate: due?.localDate ?? null, dueLocalTime: due?.localTime ?? null };
+  }
+  if (item.kind === "holiday") {
+    const h = item.payload.holiday as Record<string, unknown> | undefined;
+    return h ? { command: "sync_holiday_calendar", ...h } : null;
+  }
+  if (item.kind === "calendar") {
+    const c = item.payload.calendar as Record<string, unknown> | undefined;
+    return c ? { command: "upsert_academic_calendar", ...c, origin: "source" } : null;
+  }
+  if (item.kind === "adjustment") {
+    const a = item.payload.adjustment as Record<string, unknown> | undefined;
+    if (!a) return null;
+    return { command: "apply_teaching_day_override", scope: a.scope, courseName: a.courseName ?? null, mode: a.mode, sourceTeachingDate: a.sourceTeachingDate ?? a.targetDate, targetDate: a.mode === "cancel" ? null : a.targetDate, targetStart: a.targetStart ?? null, targetEnd: a.targetEnd ?? null, cancelSource: a.cancelSource ?? false, origin: "source", evidence: a.evidence ?? "" };
   }
   if (item.kind === "ics") {
     const events = (item.payload.events as Array<{ title: string; date: string; localStart: string; localEnd: string }>) ?? [];
@@ -587,6 +823,7 @@ function resolveTimetableItem(intakeId: string, item: IntakeItemRow, timezone: s
       state: "ready",
       waitingQuestionId: null,
       payload: {
+        ...item.payload,
         sdctText,
         candidate: {
           firstMonday,
@@ -715,7 +952,9 @@ export function submitAnswer(input: { questionId: string; expectedVersion: numbe
   // 不挂在投递上的问题（作息/剩余需求/取舍/冲突）：回答即落实，结果直接返回
   const results: OperationResultView[] = [];
   let note = "";
-  if (!waiting.length && structured && ["routine", "remaining", "tradeoff", "conflict"].includes(question.purpose)) {
+  if (!waiting.length && structured && ["routine", "remaining", "tradeoff", "conflict", "info"].includes(question.purpose)) {
+    // 主人给了官方链接：立刻排一次核对（抓取在 worker 里做，这里不发外部请求）
+    if (question.purpose === "info") createJob({ type: "calendar_sync", dedupeKey: `calendar_sync:answer:${question.id}`, runAt: new Date().toISOString(), payload: {} });
     const env: BindEnv = { intakeId: null, itemId: null, conversationId: question.conversationId, referenceDate, now, tz, selected: null, answer: () => null };
     const plan = commandsForStandaloneAnswer(question, structured, env);
     note = plan.note;

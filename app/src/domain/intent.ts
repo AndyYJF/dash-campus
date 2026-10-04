@@ -43,6 +43,7 @@ export const intentSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("remaining"), ref: refSchema, minutes: z.number().int().min(0).max(100_000) }),
   z.object({ op: z.literal("complete"), ref: refSchema, actualMinutes: z.number().int().min(1).max(1440).nullable().default(null) }),
   z.object({ op: z.literal("correct_practice"), minutes: z.number().int().min(1).max(1440) }),
+  z.object({ op: z.literal("calendar_sync"), enabled: z.boolean(), intervalDays: z.number().int().min(1).max(30).nullable().default(null) }),
   z.object({ op: z.literal("course_cancel"), courseName: z.string().max(100).nullable().default(null), date: dateStr }),
   z.object({ op: z.literal("course_move"), courseName: z.string().max(100).nullable().default(null), sourceDate: dateStr, targetDate: dateStr, startLocalTime: timeStr.nullable().default(null) }),
 ]);
@@ -163,6 +164,15 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
   if (shorten) {
     const minutes = durationOf(shorten[2]!);
     if (minutes) return { op: "shorten_session", ref: refOf(shorten[1]!, referenceDate), durationMinutes: minutes };
+  }
+
+  // 校历/节假日自动核对的开关与频率
+  // 必须明说“自动/定期/每隔多久”：单说“校历更新了”是陈述，不是要开启自动核对
+  if (/(节假日|校历|调课|调休|假期安排)/.test(c) && /(获取|更新|同步|核对|检查|查)/.test(c) && /(自动|定期|每周|每天|每两周|每\d+\s*天)/.test(c)) {
+    const off = /(别|不要|不用|停止|关闭|取消).{0,6}(自动|再)/.test(c);
+    const days = /每\s*(\d+)\s*天/.exec(c);
+    const intervalDays = days ? Number(days[1]) : /每两周|每2周/.test(c) ? 14 : /每周/.test(c) ? 7 : /每天/.test(c) ? 1 : null;
+    return { op: "calendar_sync", enabled: !off, intervalDays };
   }
 
   // 假期策略（在“某天不学”之前判断，避免把“假期不安排”当成具体日期）

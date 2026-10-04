@@ -23,6 +23,7 @@ import { DIGEST_JOB_TYPE, PLAN_MAINTENANCE_JOB_TYPE } from "@/contracts/digests"
 import { rebuildPlan } from "@/workflows/plan";
 import { nowDate } from "@/domain/clock";
 import { runDigestJob, scheduleDigests } from "@/workflows/digests";
+import { CALENDAR_SYNC_JOB_TYPE, runCalendarSyncJob, scheduleCalendarSync } from "@/workflows/calendar-sync";
 
 /** 每天一次有限重排（P5）：重建未来学习块；dedupe 保证同日只跑一次 */
 async function runPlanMaintenanceJob(job: JobRow): Promise<{ kind: string }> {
@@ -44,6 +45,7 @@ const HANDLERS: Record<string, (job: JobRow) => Promise<{ kind: string }>> = {
   [NOTICE_EXTRACTION_JOB_TYPE]: runNoticeExtractionJob,
   [INTAKE_JOB_TYPE]: runIntakeProcessJob,
   [PLAN_MAINTENANCE_JOB_TYPE]: runPlanMaintenanceJob,
+  [CALENDAR_SYNC_JOB_TYPE]: runCalendarSyncJob,
   [EXPLORATION_JOB_TYPE]: runExplorationJob,
   [REVIEW_JOB_TYPE]: runReviewJob,
   [ASSISTANT_JOB_TYPE]: runAssistantJob,
@@ -68,6 +70,7 @@ export async function runDueJobsOnce(limit = 1): Promise<RunOnceStats & { held?:
   scheduleDueTopics();
   scheduleWeeklyReview();
   scheduleDigests();
+  scheduleCalendarSync();
   const nowIso = new Date().toISOString();
   const jobs = claimDueJobs(nowIso, limit);
   const stats: RunOnceStats = { claimed: jobs.length, done: 0, failed: 0, cancelled: 0 };

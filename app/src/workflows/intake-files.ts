@@ -13,7 +13,7 @@ import { createItem, updateItem } from "@/repositories/intakes";
 export const MAX_FILES = 10;
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const MAX_TOTAL_BYTES = 30 * 1024 * 1024;
-const MAX_URL_BYTES = 1024 * 1024;
+const MAX_URL_BYTES = 5 * 1024 * 1024;
 
 export type IncomingFile = { name: string; mediaType: string; bytes: Uint8Array };
 
@@ -121,26 +121,80 @@ export function recordUrlDocument(intakeId: string, url: string, text: string): 
 }
 
 const PRIVATE_HOSTNAMES = new Set(["localhost", "::1", "0.0.0.0", "[::1]"]);
+const MAX_REDIRECTS = 5;
+const FETCH_TIMEOUT_MS = 15_000;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** 公开网页常拒绝无 UA 的请求；只带通用浏览器 UA，不带任何 cookie 或主机环境凭证 */
+const FETCH_HEADERS = { "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36", accept: "text/html,application/xhtml+xml,*/*;q=0.8" };
 
-/** A16 SSRF 防护：IP 字面量的私网/环回/链路本地一律拒绝（域名→私网的 DNS 防护为已知限制） */
-function isPrivateHost(host: string): boolean {
-  const h = host.toLowerCase();
-  if (PRIVATE_HOSTNAMES.has(h)) return true;
+function isPrivateIpv4(h: string): boolean {
   const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h);
   if (!m) return false;
   const a = Number(m[1]), b = Number(m[2]);
-  return a === 0 || a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+  return a === 0 || a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
 }
 
-/** 抓 URL 正文：data: 直接解析；http(s) 10s 超时 + 1MiB 上限 + 去标签；重定向手动跟随且每跳校验私网（A16） */
-export async function fetchUrlText(url: string): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
-  if (url.startsWith("data:")) {
-    const comma = url.indexOf(",");
-    if (comma === -1) return { ok: false, error: "data URL 不合法" };
-    return { ok: true, text: decodeURIComponent(url.slice(comma + 1)).slice(0, 100_000) };
+function isPrivateIpv6(h: string): boolean {
+  const x = h.replace(/^\[|\]$/g, "").toLowerCase();
+  if (!x.includes(":")) return false;
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(x);
+  if (mapped) return isPrivateIpv4(mapped[1]!);
+  return x === "::" || x === "::1" || x.startsWith("fc") || x.startsWith("fd") || x.startsWith("fe8") || x.startsWith("fe9") || x.startsWith("fea") || x.startsWith("feb");
+}
+
+/** A16 SSRF 防护（字面量）：私网/环回/链路本地/云元数据地址一律拒绝 */
+function isPrivateHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return PRIVATE_HOSTNAMES.has(h) || isPrivateIpv4(h) || isPrivateIpv6(h);
+}
+
+/** 域名解析后的每个地址也要校验：公开域名指向私网（DNS 重绑定）同样拒绝 */
+async function resolvesToPrivate(host: string): Promise<boolean> {
+  if (/^[\d.]+$/.test(host) || host.includes(":")) return false; // 字面量已在 isPrivateHost 判过
+  try {
+    const { lookup } = await import("node:dns/promises");
+    const addrs = await lookup(host, { all: true });
+    return addrs.some((a) => isPrivateIpv4(a.address) || isPrivateIpv6(a.address));
+  } catch {
+    return false; // 解析失败交给后面的 fetch 报错
   }
+}
+
+/** 流式读取并在上限处截断：不先把整个响应读进内存再限额 */
+async function readCapped(res: Response, maxBytes: number): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  const reader = res.body?.getReader();
+  if (!reader) return { bytes: new Uint8Array(), truncated: false };
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (total + value.length > maxBytes) {
+      chunks.push(value.slice(0, maxBytes - total));
+      total = maxBytes;
+      truncated = true;
+      await reader.cancel();
+      break;
+    }
+    chunks.push(value);
+    total += value.length;
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    out.set(c, offset);
+    offset += c.length;
+  }
+  return { bytes: out, truncated };
+}
+
+type RawFetch = { ok: true; res: Response; finalUrl: string } | { ok: false; error: string; status?: number };
+
+/** 逐跳校验的受限抓取：最多 5 次重定向、15 秒，每一跳都重新校验目标地址 */
+async function guardedFetch(url: string): Promise<RawFetch> {
   let current = url;
-  for (let hop = 0; hop < 2; hop++) {
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     if (!/^https?:\/\//.test(current)) return { ok: false, error: "只支持 http(s) 链接" };
     let host: string;
     try {
@@ -148,23 +202,90 @@ export async function fetchUrlText(url: string): Promise<{ ok: true; text: strin
     } catch {
       return { ok: false, error: "URL 不合法" };
     }
-    if (isPrivateHost(host)) return { ok: false, error: `不允许抓取私网或本机地址：${host}` };
+    if (isPrivateHost(host) || (await resolvesToPrivate(host))) return { ok: false, error: `不允许抓取私网或本机地址：${host}` };
     try {
-      const res = await fetch(current, { signal: AbortSignal.timeout(10_000), redirect: "manual" });
+      const res = await fetch(current, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), redirect: "manual", headers: FETCH_HEADERS });
       if (res.status >= 300 && res.status < 400) {
         const loc = res.headers.get("location");
         if (!loc) return { ok: false, error: "重定向无目标" };
         current = new URL(loc, current).toString();
         continue;
       }
-      if (!res.ok) return { ok: false, error: `抓取失败 HTTP ${res.status}` };
-      const raw = (await res.text()).slice(0, MAX_URL_BYTES);
-      return { ok: true, text: raw.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/g, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 100_000) };
+      if (!res.ok) return { ok: false, error: `抓取失败 HTTP ${res.status}`, status: res.status };
+      return { ok: true, res, finalUrl: current };
     } catch (e) {
       return { ok: false, error: `抓取失败：${e instanceof Error ? e.message : String(e)}` };
     }
   }
   return { ok: false, error: "重定向次数过多" };
+}
+
+function htmlToPlain(raw: string): string {
+  return raw
+    .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>|<!--[\s\S]*?-->/gi, " ")
+    .replace(/<(br|\/p|\/div|\/li|\/h\d|\/tr)[^>]*>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;|&#160;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/[ \t\u3000]+/g, " ")
+    .replace(/ ?\n ?/g, "\n")
+    .replace(/\n{2,}/g, "\n")
+    .trim();
+}
+
+/** 正文里的内容图片（校历常常只有图片）：同站、非图标，最多 4 张 */
+function contentImages(html: string, baseUrl: string): string[] {
+  const out: string[] = [];
+  const host = new URL(baseUrl).hostname;
+  for (const m of html.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)) {
+    let abs: string;
+    try {
+      abs = new URL(m[1]!, baseUrl).toString();
+    } catch {
+      continue;
+    }
+    if (new URL(abs).hostname !== host) continue;
+    if (/icon|logo|search|menu|close|banner|qrcode|ewm|\.gif(\?|$)/i.test(abs)) continue;
+    if (!out.includes(abs)) out.push(abs);
+  }
+  // 站点装饰图通常在页头页尾重复出现在 /images/ 下；正文上传的图在 /__local/、/upload 等路径，优先取后者
+  const uploaded = out.filter((u) => /__local|upload|attach|ueditor|\/\d{4}\//i.test(u));
+  return (uploaded.length ? uploaded : out).slice(0, 4);
+}
+
+export type UrlFetch = { ok: true; text: string; images: string[]; finalUrl: string } | { ok: false; error: string; status?: number };
+
+/** 抓 URL：data: 直接解析；http(s) 受限抓取 + 5MiB 上限 + 去标签；同时返回正文内容图片地址 */
+export async function fetchUrl(url: string): Promise<UrlFetch> {
+  if (url.startsWith("data:")) {
+    const comma = url.indexOf(",");
+    if (comma === -1) return { ok: false, error: "data URL 不合法" };
+    return { ok: true, text: decodeURIComponent(url.slice(comma + 1)).slice(0, 100_000), images: [], finalUrl: url };
+  }
+  const r = await guardedFetch(url);
+  if (!r.ok) return r;
+  const { bytes } = await readCapped(r.res, MAX_URL_BYTES);
+  const html = new TextDecoder("utf-8").decode(bytes);
+  return { ok: true, text: htmlToPlain(html).slice(0, 100_000), images: contentImages(html, r.finalUrl), finalUrl: r.finalUrl };
+}
+
+/** 兼容旧调用：只要正文 */
+export async function fetchUrlText(url: string): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+  const r = await fetchUrl(url);
+  return r.ok ? { ok: true, text: r.text } : { ok: false, error: r.error };
+}
+
+/** 抓一张网页内容图片成 data URL（给视觉提取用）；超限或不是图片就放弃，不影响正文 */
+export async function fetchImageDataUrl(url: string): Promise<string | null> {
+  const r = await guardedFetch(url);
+  if (!r.ok) return null;
+  const type = (r.res.headers.get("content-type") ?? "").split(";")[0]!.trim();
+  if (!/^image\/(png|jpe?g|webp)$/.test(type)) return null;
+  const { bytes, truncated } = await readCapped(r.res, MAX_IMAGE_BYTES);
+  if (truncated || bytes.length < 8 * 1024) return null; // 太小的多半是装饰图
+  return `data:${type};base64,${Buffer.from(bytes).toString("base64")}`;
 }
 
 /** 附件处理成事项：ics → 确定性 ready 事项；text → 并入分类文本；image → vision 分类；unsupported → 失败事项 */

@@ -231,6 +231,15 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
     if (blocked) nextActions.push(`「${task.title}」${REASON_TEXT[blocked.reason] ?? blocked.reason}${blocked.missingMinutes ? `（缺 ${blocked.missingMinutes} 分钟）` : ""}`);
   }
 
+  // 没读清/待核对的具体位置：如实列出，不当成已完成
+  for (const i of items) {
+    const unclear = (i.payload.unclear as string[] | undefined) ?? [];
+    if (unclear.length && i.state !== "failed") nextActions.push(`有 ${unclear.length} 处没读清，没有据此生成内容：${unclear.slice(0, 3).join("；")}`);
+    for (const d of (i.payload.unresolvedTargets as string[] | undefined) ?? []) nextActions.push(`${d} 按哪天的课上还不清楚，已标为待核对`);
+    const note = i.evidence?.note as string | undefined;
+    if (note && i.state === "ignored") nextActions.push(note);
+  }
+
   const followUps: IntakeResultView["followUps"] = [];
   for (const i of items) for (const f of (i.payload.followUps as IntakeResultView["followUps"] | undefined) ?? []) if (!followUps.some((x) => x.summary === f.summary)) followUps.push(f);
 
@@ -279,7 +288,7 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
     items: itemViews,
     changes: changes.slice(0, 30),
     questions,
-    nextActions: nextActions.slice(0, 6),
+    nextActions: nextActions.slice(0, 8),
     affectedDates: [...dates].sort(),
     followUps,
     undo: { available: undoable.length > 0, batchIds: undoable, note: commandBatches.some((b) => b.status === "undone") ? "部分变更已撤销" : "" },

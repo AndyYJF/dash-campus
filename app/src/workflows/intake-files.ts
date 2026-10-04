@@ -67,6 +67,7 @@ export type AttachmentOutcome =
   | { kind: "ics"; events: IcsEvent[]; skippedRecurring: number }
   | { kind: "text"; text: string }
   | { kind: "image"; dataUrl: string }
+  | { kind: "pdf"; bytes: Uint8Array }
   | { kind: "unsupported"; error: string };
 
 /** 附件 → 处理产物（确定性部分；image 交给模型 vision） */
@@ -88,9 +89,28 @@ export function extractAttachment(att: AttachmentRow): AttachmentOutcome {
     setExtraction(att.id, "done");
     return { kind: "image", dataUrl: `data:${mt};base64,${blob.bytes.toString("base64")}` };
   }
+  if (mt === "application/pdf" || /\.pdf$/i.test(att.originalName)) {
+    return { kind: "pdf", bytes: new Uint8Array(blob.bytes) };
+  }
   setExtraction(att.id, "unsupported");
-  const label = mt === "application/pdf" || /\.pdf$/i.test(att.originalName) ? "PDF" : `类型 ${mt}`;
-  return { kind: "unsupported", error: `${label} 暂不支持：已保留原件，可先复制其中的文字投递` };
+  return { kind: "unsupported", error: `类型 ${mt} 暂不支持：已保留原件，可先复制其中的文字投递` };
+}
+
+/** PDF 文本层提取（unpdf，A14）。无文本层（扫描件）或解析失败返回 null——调用方提示改走图片投递 */
+export async function extractPdfText(bytes: Uint8Array): Promise<string | null> {
+  try {
+    const { extractText } = await import("unpdf");
+    const r = await extractText(bytes);
+    const text = r.text.join("\n").trim();
+    return text.length >= 4 ? text.slice(0, 100_000) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 标记附件提取完成（PDF 异步路径用） */
+export function markExtractionDone(id: string): void {
+  setExtraction(id, "done");
 }
 
 /** 保存 URL 抓取结果为提取证据 + 返回正文 */

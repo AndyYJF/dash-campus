@@ -144,7 +144,7 @@ test("P4：URL 提取正文进入分类（data: URL 确定性）", async () => {
   assert.equal(docs.n, 1);
 });
 
-test("P4：PDF 暂不支持，明确失败且原文保留（不静默丢）", async () => {
+test("P4：无文本层 PDF 明确失败且原文保留（扫描件提示走图片）", async () => {
   const form = new FormData();
   form.append("files", fileOf("doc.pdf", "application/pdf", "%PDF-1.4 fake"));
   const res = await createIntakeRoute(multipartReq("/api/v2/intakes", form, "idem-p4-pdf"));
@@ -152,6 +152,30 @@ test("P4：PDF 暂不支持，明确失败且原文保留（不静默丢）", as
   const { intakeId } = (await res.json()) as { intakeId: string };
   for (let i = 0; i < 4; i++) await runDueJobsOnce();
   const item = listItems(intakeId).find((i) => i.state === "failed");
-  assert.ok(item, "PDF 应产生明确的失败事项");
-  assert.match(item!.evidence?.error as string, /PDF|不支持/);
+  assert.ok(item, "无文本层 PDF 应产生明确的失败事项");
+  assert.match(item!.evidence?.error as string, /文本层|扫描件|截图/);
+});
+
+test("A14：带文本层 PDF 提取文本进入分类", async () => {
+  const bodyText = "BT /F1 24 Tf 100 700 Td (Hello Dash PDF) Tj ET";
+  const pdf = `%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj
+4 0 obj<</Length ${bodyText.length}>>stream
+${bodyText}
+endstream
+endobj
+5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+trailer<</Root 1 0 R>>
+%%EOF`;
+  const form = new FormData();
+  form.append("files", fileOf("notes.pdf", "application/pdf", pdf));
+  const res = await createIntakeRoute(multipartReq("/api/v2/intakes", form, "idem-p4-pdf-text"));
+  assert.equal(res.status, 202);
+  const { intakeId } = (await res.json()) as { intakeId: string };
+  for (let i = 0; i < 4; i++) await runDueJobsOnce();
+  const item = listItems(intakeId).find((i) => i.kind === "practice");
+  assert.ok(item, "文本层内容应进入分类");
+  assert.notEqual(item!.state, "failed");
 });

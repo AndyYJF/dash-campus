@@ -236,3 +236,9 @@ focus 计时器未实现、PDF/XLSX 待依赖批准、vision 无坐标、A20 需
 
 - commit `dc9a922`，CI 绿；备份 `dash-campus-backup-20261003-121822`；迁移 0023 应用后 schema 23。
 - 线上验证：生产无旧排程残留（tasks.scheduled_start 全 NULL，迁移无对象）；focus 冒烟 start 201 / 重复 start 409 / stop 200 落 1 分钟 timer 实践，smoke 数据已清理；健康检查 schemaVersion 23。
+
+## P4 补全：PDF 文本层提取（2026-10-03，依赖已获批准）
+
+- 新增依赖 `unpdf`（纯 JS，无原生依赖）：PDF 走文本层提取→进入分类；扫描件/解析失败明确提示「请截图投递或复制文字」，原文保留。
+- 测试：手写最小合法 PDF（无 xref，pdfjs recovery 解析）断言文本层内容落 practice 项；假 PDF 断言失败路径。坑：模板字符串里少一个 `>` 会让 Page 字典未闭合，报 "Page dictionary kid reference points to wrong type"。
+- 全套 197/197 + typecheck/lint/build 绿。

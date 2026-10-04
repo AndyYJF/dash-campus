@@ -28,7 +28,7 @@ import { instanceTimezone, localDateInTz, mondayOf, addDays } from "@/domain/tim
 import { parseTimetable, TimetableError } from "@/domain/timetable";
 import { executeCommand } from "@/workflows/commands";
 import { rebuildPlan } from "@/workflows/plan";
-import { extractAttachment, fetchUrlText, listAttachments, materializeAttachment, recordUrlDocument } from "@/workflows/intake-files";
+import { extractAttachment, extractPdfText, fetchUrlText, listAttachments, markExtractionDone, materializeAttachment, recordUrlDocument } from "@/workflows/intake-files";
 import {
   INTAKE_JOB_TYPE,
   SEMESTER_FIRST_MONDAY_KEY,
@@ -110,7 +110,15 @@ async function collectExtraInputs(intakeId: string, intake: IntakeRow): Promise<
     const outcome = extractAttachment(att);
     if (outcome.kind === "text") texts.push(outcome.text);
     else if (outcome.kind === "image") images.push(outcome.dataUrl);
-    else materializeAttachment(intakeId, att, outcome);
+    else if (outcome.kind === "pdf") {
+      const text = await extractPdfText(outcome.bytes);
+      if (text) {
+        markExtractionDone(att.id);
+        texts.push(text);
+      } else {
+        materializeAttachment(intakeId, att, { kind: "unsupported", error: "PDF 没有可提取的文本层（可能是扫描件）：请截图投递，或复制其中的文字" });
+      }
+    } else materializeAttachment(intakeId, att, outcome);
   }
   return { texts, images };
 }

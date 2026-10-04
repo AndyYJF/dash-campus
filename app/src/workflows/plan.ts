@@ -1,5 +1,7 @@
 import { markPlanSynced } from "@/repositories/proposals";
 import { getDb } from "@/repositories/db";
+import { admitsLearning } from "@/domain/task-admission";
+import { taskAdmitted } from "@/repositories/task-admission";
 import { addDays, instanceTimezone, localDateInTz, mondayOf, wallTimeToUtc } from "@/domain/time";
 import { baseWindows, dayBudget, futureCapacity, mergeIntervals, minutesOf, next7Days, subtractIntervals, type Interval, type Prefs } from "@/domain/budget";
 import { MAX_BLOCKS_PER_TASK, placeTasks, type SchedDay, type SchedTask, type Unscheduled } from "@/domain/scheduler";
@@ -223,7 +225,13 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
   // 主人亲自指定位置的块（origin=user）与锁定块一样不被自动挪动
   const isProtected = (s: PlanSessionRow) => started(s) || s.locked || s.origin === "user" || (Date.parse(s.startUtc) <= asOfMs + DAY_MS && !granted(sessionDate(s)) && !replan.has(sessionDate(s)));
 
-  for (const s of active.filter(isProtected)) {
+  // Admission overrides 24h protection for unstarted automatic blocks only.
+  // Owner-positioned, locked and already-started work is preserved.
+  const invalidAuto = new Set(active.filter((s) => s.origin !== "user" && !s.locked && !started(s) && !taskAdmitted(s.taskId)).map((s) => s.id));
+  dropped.push(...active.filter((s) => invalidAuto.has(s.id)));
+  const admissibleActive = active.filter((s) => !invalidAuto.has(s.id));
+
+  for (const s of admissibleActive.filter(isProtected)) {
     // 任务已完成/取消/归档：未开始的块不再有意义；进行中的保留，由用户结束
     if (closed.has(s.taskId) && s.status !== "in_progress") {
       dropped.push(s);
@@ -244,7 +252,7 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
       conflicts.push({ sessionId: s.id, taskId: s.taskId, reason: "over_budget" });
     }
   }
-  for (const s of active.filter((x) => !isProtected(x))) {
+  for (const s of admissibleActive.filter((x) => !isProtected(x))) {
     const task = taskById.get(s.taskId);
     if (!task || replan.has(sessionDate(s)) || !stillValid(s, task)) dropped.push(s);
     else keep(s);
@@ -460,11 +468,11 @@ function listSchedulableTasks(tz: string, today: string): PlanTask[] {
   // 暂停中的任务不排；到期自动恢复（一次暂停不是撤销）
   const rows = getDb()
     .prepare(
-      `SELECT id, title, estimate_minutes, due_kind, due_local_date, due_timezone, due_at, priority, created_at, effort_mode, remaining_minutes, remaining_reported_at
+      `SELECT id, title, task_kind, estimate_minutes, due_kind, due_local_date, due_timezone, due_at, priority, created_at, effort_mode, remaining_minutes, remaining_reported_at
        FROM tasks WHERE status IN ('todo','doing') AND archived_at IS NULL AND (paused_until IS NULL OR paused_until <= ?) ORDER BY created_at, id`,
     )
     .all(today) as Array<Record<string, unknown>>;
-  return rows.map((r) => {
+  return rows.filter((r) => admitsLearning({ title: r.title as string, taskKind: r.task_kind as string })).map((r) => {
     const dueAt = (r.due_at as string) ?? null;
     const dueDate = (r.due_local_date as string) ?? null;
     const dueTz = (r.due_timezone as string) ?? tz;
@@ -497,7 +505,7 @@ function latestPlanReason(): { unscheduled?: Unscheduled[]; conflicts?: PlanConf
 }
 
 export function latestPlanUnscheduled(): Unscheduled[] {
-  return latestPlanReason().unscheduled ?? [];
+  return (latestPlanReason().unscheduled ?? []).filter((u) => taskAdmitted(u.taskId));
 }
 
 export function latestPlanConflicts(): PlanConflict[] {

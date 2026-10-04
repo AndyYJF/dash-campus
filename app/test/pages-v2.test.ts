@@ -123,7 +123,7 @@ test("P3：start/complete 只完成学习块，不自动完成任务", async () 
 
 test("P3：超截止不可行任务出现在未排原因，不自动顺延截止", async () => {
   const ctx = { intakeId: null, itemId: null, itemKey: "", instanceEpoch: 0, evidence: "" };
-  executeCommand({ command: "create_or_update_task", title: "不可能完成的报告", estimateMinutes: 600, dueLocalDate: "2026-09-07" }, ctx);
+  executeCommand({ command: "create_or_update_task", title: "不可能完成的报告", taskKind: "study", estimateMinutes: 600, dueLocalDate: "2026-09-07" }, ctx);
   rebuildPlan(AS_OF);
   const week = (await (await weekRoute(authedReq(`/api/v2/week?monday=${MONDAY}`, "GET"))).json()) as {
     unscheduled: Array<{ title: string; reason: string }>;

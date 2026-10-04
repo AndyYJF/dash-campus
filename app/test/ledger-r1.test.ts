@@ -26,6 +26,7 @@ function addTask(title: string, estimate: number | null, extra: { dueAt?: string
        VALUES (?, ?, '', 'todo', 'normal', ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(id, title, estimate, extra.dueAt ? "instant" : extra.dueDate ? "date" : "none", extra.dueDate ?? null, extra.dueAt || extra.dueDate ? TZ : null, extra.dueAt ?? null, extra.effortMode ?? "deliverable", created, created);
+  getDb().prepare("UPDATE tasks SET task_kind = 'study' WHERE id = ?").run(id);
   return id;
 }
 

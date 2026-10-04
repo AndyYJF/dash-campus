@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { taskKindSchema } from "@/domain/task-admission";
 import { addDays } from "./time";
 import { dateFromText, estimateFromText, isCompletionReport, parseNumber, timeFromText } from "./task-text";
 import { normalizeProfileValue, profileFactsFromText } from "./identity";
@@ -39,6 +40,7 @@ export const intentSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("confirm_policy") }),
   z.object({ op: z.literal("pause_task"), ref: refSchema, until: dateStr.nullable().default(null) }),
   z.object({ op: z.literal("resume_task"), ref: refSchema }),
+  z.object({ op: z.literal("classify_task"), ref: refSchema, taskKind: taskKindSchema }),
   z.object({ op: z.literal("prioritize"), ref: refSchema }),
   z.object({ op: z.literal("set_due"), ref: refSchema, dueLocalDate: dateStr, dueLocalTime: timeStr.nullable().default(null) }),
   z.object({ op: z.literal("remaining"), ref: refSchema, minutes: z.number().int().min(0).max(100_000) }),
@@ -114,7 +116,8 @@ function isShortName(subject: string): boolean {
 }
 
 function refOf(subject: string, referenceDate: string): Ref {
-  if (/刚才|刚刚|上一个|上面那个|那个$|^那个|^它$|^这个$/.test(subject) && nameOf(subject.replace(/刚才|刚刚|上一个|上面/g, "")).length < 2) return { kind: "recent" };
+  if (/^(这条|那条|这项|那项)$/.test(subject.trim())) return { kind: "recent" };
+  if (/刚才|刚刚|上一个|上面那个|那个$|^那个|^它$|^这个$|^这条$|^那条$|^这项$|^那项$/.test(subject) && nameOf(subject.replace(/刚才|刚刚|上一个|上面/g, "")).length < 2) return { kind: "recent" };
   const text = nameOf(subject);
   if (!text) return { kind: "recent" };
   return { kind: "named", text, date: dateFromText(subject, referenceDate), part: partOf(subject) };
@@ -179,6 +182,15 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
   if (!c) return "ignore";
   // 只是限定语，不产生动作
   if (/^(其他|别的|其余|另外的)(的)?(都)?(不动|不变|不用动|不要动|保持|照旧)/.test(c)) return "ignore";
+
+  // Owner corrections select admission, not a guessed duration or a new task.
+  const classify = /^(?:把|将)?(.+?)(?:作为|当作|改为|改成|归为|设为)(学习任务|项目任务|日常待办|待办|待决策|决策事项|通知|活动|待确认)(?:安排|处理|记录|保存)?$/.exec(c);
+  if (classify) {
+    const labels: Record<string, "study" | "todo" | "decision" | "notice" | "event" | "unknown"> = { 学习任务: "study", 项目任务: "study", 日常待办: "todo", 待办: "todo", 待决策: "decision", 决策事项: "decision", 通知: "notice", 活动: "event", 待确认: "unknown" };
+    return { op: "classify_task", ref: refOf(classify[1]!, referenceDate), taskKind: labels[classify[2]!]! };
+  }
+  const remindOnly = /^(?:把|将)?(.+?)(?:只|仅)(?:提醒|记待办|保留提醒)(?:[，,]?)(?:不要|不|别)(?:再)?(?:安排|排)(?:学习)?(?:时间)?$/.exec(c);
+  if (remindOnly) return { op: "classify_task", ref: refOf(remindOnly[1]!, referenceDate), taskKind: "todo" };
 
   // 停止处理刚才那份材料（不是撤销已生效的变化）
   if (/(刚才|刚刚|上一份|上一条|那份|那条|上面)/.test(c) && /(别|不用|不要|停止|取消|先不)(再|用)?(处理|识别|解析|读|弄)/.test(c)) return { op: "cancel_intake" };
@@ -459,7 +471,9 @@ export function parseInstruction(text: string, referenceDate: string, now: Date,
       rest.push(line.trim());
       continue;
     }
-    const clauses = line.split(/[，,；;。！!]+/).map((c) => c.trim()).filter(Boolean);
+    // “这条只提醒，不安排学习时间” is one admission correction, not a global no-study policy.
+    const joinedReminder = line.replace(/((?:只|仅)提醒|只记待办|保留提醒)[，,]\s*((?:不要|不|别)(?:再)?(?:安排|排)(?:学习)?(?:时间)?)/g, "$1$2");
+    const clauses = joinedReminder.split(/[，,；;。！!]+/).map((c) => c.trim()).filter(Boolean);
     const kept: string[] = [];
     for (let i = 0; i < clauses.length; i++) {
       const clause = clauses[i]!;

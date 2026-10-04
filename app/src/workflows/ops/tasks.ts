@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { getDb } from "@/repositories/db";
+import { TASK_KIND_LABEL } from "@/domain/task-admission";
 import { bumpPlanningRevision } from "@/repositories/proposals";
 import { linkSource } from "@/repositories/courses";
 import { insertPracticeEntry } from "@/repositories/practice";
@@ -48,7 +49,8 @@ export function applyTask(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInpu
        VALUES (?, ?, '', 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(id, cmd.title, cmd.priority ?? "normal", cmd.estimateMinutes ?? null, due.kind, due.localDate, due.timezone, due.at, cmd.effortMode ?? "deliverable", cmd.remainingMinutes ?? null, cmd.remainingMinutes != null ? (ctx.now ?? nowDate()).toISOString() : null, now, now);
-  changes.push({ entityKind: "task", entityId: id, action: "create", after: { title: cmd.title }, afterVersion: 1 });
+  getDb().prepare("UPDATE tasks SET task_kind = ? WHERE id = ?").run(cmd.taskKind ?? "auto", id);
+  changes.push({ entityKind: "task", entityId: id, action: "create", after: { title: cmd.title, taskKind: cmd.taskKind ?? "auto" }, afterVersion: 1 });
   linkSource({ entityKind: "task", entityId: id, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
   // 提醒按当前策略建立（主人关掉提醒、截止在安静时段等都在里面处理）；聊天、卡片、兼容接口同一套
   if (due.kind !== "none") refreshReminders(getTask(id)!, now);
@@ -67,6 +69,7 @@ function applyTaskUpdate(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInput
     before[camel] = row[column] ?? null;
     after[camel] = value ?? null;
   };
+  if (cmd.taskKind !== undefined) set("taskKind", "task_kind", cmd.taskKind);
   if (cmd.title !== undefined) set("title", "title", cmd.title);
   if (cmd.estimateMinutes !== undefined) set("estimateMinutes", "estimate_minutes", cmd.estimateMinutes);
   if (cmd.effortMode !== undefined) set("effortMode", "effort_mode", cmd.effortMode);
@@ -96,7 +99,7 @@ function applyTaskUpdate(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInput
   // 截止变了：旧提醒失效，按新截止重建
   if (dueChanged) refreshReminders(getTask(cmd.taskId!)!, new Date().toISOString());
   bumpPlanningRevision();
-  return `任务已修改：${(after.title as string) ?? (row.title as string)}`;
+  return `任务已修改：${(after.title as string) ?? (row.title as string)}${cmd.taskKind && cmd.taskKind !== "auto" ? `；已归为${TASK_KIND_LABEL[cmd.taskKind]}${cmd.taskKind === "study" ? "，纳入学习安排" : "，不自动占用学习时间"}` : ""}`;
 }
 
 /** 完成原任务：走与按钮/兼容 API 相同的 updateTask（记完成时刻、取消提醒），并取消未执行的学习块 */

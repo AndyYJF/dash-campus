@@ -5,6 +5,7 @@ import { api, newIdempotencyKey } from "./api";
 import { compose, emitChanged, useDashRefresh } from "./dashBus";
 import DayTimeline, { dayExtent, minuteOfDay, type Picked, type TimelineEvent, type TimelineSession } from "./DayTimeline";
 import ItemDetail from "./ItemDetail";
+import PendingItems, { type PendingItem } from "./PendingItems";
 import styles from "./v2.module.css";
 
 /**
@@ -28,6 +29,7 @@ type Policy = {
   rules: Array<{ id: string; kind: string; scope: string; text: string }>;
 };
 type Week = {
+  pendingItems: PendingItem[];
   timezone: string;
   asOf: string;
   monday: string;
@@ -308,9 +310,11 @@ export default function V2WeekView() {
         </section>
       )}
 
+      <PendingItems items={week.pendingItems} timezone={week.timezone} />
+
       {week.unscheduled.length > 0 && (
         <section className={styles.card}>
-          <h2 className={styles.title}>排不下的</h2>
+          <h2 className={styles.title}>未安排的学习任务</h2>
           {week.unscheduled.map((u) => (
             <p key={u.taskId} className={styles.question}>
               {u.title} — {REASON_LABEL[u.reason] ?? u.reason}

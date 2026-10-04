@@ -5,6 +5,7 @@ import { api, ApiError, newIdempotencyKey } from "./api";
 import { emitChanged, useDashRefresh } from "./dashBus";
 import DayTimeline, { dayExtent, hm, minuteOfDay, type Picked, type TimelineEvent, type TimelineSession } from "./DayTimeline";
 import ItemDetail from "./ItemDetail";
+import PendingItems, { type PendingItem } from "./PendingItems";
 import styles from "./v2.module.css";
 
 /**
@@ -14,6 +15,7 @@ import styles from "./v2.module.css";
 
 type Action = TimelineSession & { date: string };
 type Snapshot = {
+  pendingItems: PendingItem[];
   timezone: string;
   asOf: string;
   date: string;
@@ -226,6 +228,8 @@ export default function V2TodayView() {
               </div>
             ))}
           </section>
+
+          <PendingItems items={snap.pendingItems} timezone={snap.timezone} />
 
           <section className={styles.card}>
             <h2 className={styles.title}>计时</h2>

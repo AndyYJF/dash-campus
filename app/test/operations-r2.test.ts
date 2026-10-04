@@ -30,6 +30,7 @@ function addTask(title: string, estimate: number | null, extra: { dueAt?: string
   getDb()
     .prepare(`INSERT INTO tasks (id, title, description, status, priority, estimate_minutes, due_kind, due_timezone, due_at, created_at, updated_at) VALUES (?, ?, '', 'todo', 'normal', ?, ?, ?, ?, ?, ?)`)
     .run(id, title, estimate, extra.dueAt ? "instant" : "none", extra.dueAt ? TZ : null, extra.dueAt ?? null, created, created);
+  getDb().prepare("UPDATE tasks SET task_kind = 'study' WHERE id = ?").run(id);
   return id;
 }
 function addFixed(title: string, date: string, start: string, end: string) {

@@ -69,7 +69,7 @@ test("A17：导入源含恶意指令只作原文保存，不执行 SQL/shell", a
 });
 
 test("A09：锁定的学习块在重排时不被移动", async () => {
-  executeCommand({ command: "create_or_update_task", title: "A09 锁定测试任务", estimateMinutes: 60, dueLocalDate: "2026-10-10" }, CTX);
+  executeCommand({ command: "create_or_update_task", title: "A09 锁定测试任务", taskKind: "study", estimateMinutes: 60, dueLocalDate: "2026-10-10" }, CTX);
   await rebuildPlan(new Date());
   const prefs = getPrefs()!;
   const before1 = listSessionsInRange("2026-10-03", "2026-10-10");

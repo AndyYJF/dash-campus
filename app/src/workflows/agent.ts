@@ -1,4 +1,6 @@
 import { getDb } from "@/repositories/db";
+import { pendingTasks, taskAdmitted } from "@/repositories/task-admission";
+import { supersedeQuestion } from "@/repositories/questions";
 import type { Intent, Ref } from "@/domain/intent";
 import { parseInstruction } from "@/domain/intent";
 import { estimateFromText, isCompletionReport, matchTask, parseNumber, type TaskRef } from "@/domain/task-text";
@@ -469,7 +471,7 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
     return { kind: "run", command: { command: "apply_teaching_day_override", scope: "course", courseName: intent.courseName, mode: "move", sourceTeachingDate: intent.sourceDate, targetDate: intent.targetDate, targetStart: intent.startLocalTime, targetEnd, origin: "user" } };
   }
   // 以下都针对任务
-  if (intent.op === "pause_task" || intent.op === "resume_task" || intent.op === "prioritize" || intent.op === "set_due" || intent.op === "remaining" || intent.op === "complete") {
+  if (intent.op === "classify_task" || intent.op === "pause_task" || intent.op === "resume_task" || intent.op === "prioritize" || intent.op === "set_due" || intent.op === "remaining" || intent.op === "complete") {
     const resolved = resolveTask(intent.ref, env);
     // “数学优先”但没有叫数学的任务：这是在说目标/方向的优先，而不是某个任务
     if (intent.op === "prioritize" && resolved.kind === "none" && intent.ref.kind === "named") {
@@ -479,6 +481,7 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
     const t = chooseOrAsk(resolved, env, "task", (v) => v.title, "任务");
     if (t.kind !== "one") return t;
     const taskId = t.value.id;
+    if (intent.op === "classify_task") return { kind: "run", command: { command: "create_or_update_task", taskId, taskKind: intent.taskKind } };
     if (intent.op === "pause_task") return { kind: "run", command: { command: "pause_task", taskId, until: intent.until } };
     if (intent.op === "resume_task") return { kind: "run", command: { command: "pause_task", taskId, resume: true } };
     if (intent.op === "prioritize") return { kind: "run", command: { command: "create_or_update_task", taskId, priority: "high" } };
@@ -606,6 +609,14 @@ export function parseAnswerByPurpose(q: QuestionRow, text: string, env: { refere
     if (YES.test(text.trim()) || /推荐|建议|你(帮我|来)?(定|决定|安排)/.test(text)) return { ok: true, structured: { intents: [{ op: "confirm_policy" }] } };
     return { ok: false, hint: "可以说“按你推荐的来”，或者告诉我晚上几点后不排、每天最多学多久、更适合晚上还是周末" };
   }
+  if (q.purpose === "task_kind") {
+    const i = optionIndex(text, options);
+    // Negative phrases may contain “学习”: test them before the positive branch.
+    if (/待办|只提醒|不排|不要排|不安排/.test(text) || i === 1) return { ok: true, structured: { taskKind: "todo" } };
+    if (/学习|科研|项目|要排|安排学习/.test(text) || i === 0) return { ok: true, structured: { taskKind: "study" } };
+    if (/决策|先决定|考虑/.test(text) || i === 2) return { ok: true, structured: { taskKind: "decision" } };
+    return { ok: false, hint: "说“作为学习任务安排”“只记待办不排时间”或“先作为待决策”" };
+  }
   if (q.purpose === "remaining") {
     if (isCompletionReport(text) || /^(已经?)?(做完|完成|搞定)/.test(text.trim())) return { ok: true, structured: { done: true } };
     const minutes = estimateFromText(text);
@@ -639,6 +650,7 @@ export function commandsForStandaloneAnswer(q: QuestionRow, structured: Record<s
     if (bound.kind !== "run") return { commands: [], replanDates: [], note: "" };
     return { commands: [{ ...bound.command, confirm: true }], replanDates: bound.replanDates ?? [], note: "" };
   }
+  if (q.purpose === "task_kind" && taskId && typeof structured.taskKind === "string") return { commands: [{ command: "create_or_update_task", taskId, taskKind: structured.taskKind }], replanDates: [], note: structured.taskKind === "study" ? "已作为学习任务纳入安排" : "已保留在待处理中，不占用学习时间" };
   if (q.purpose === "remaining" && taskId) {
     if (structured.done) return { commands: [{ command: "complete_task", taskId }], replanDates: [], note: "" };
     if (typeof structured.minutes === "number") return { commands: [{ command: "create_or_update_task", taskId, remainingMinutes: structured.minutes }], replanDates: [], note: "" };
@@ -716,6 +728,12 @@ export function maybeAskRoutine(env: { intakeId: string | null; conversationId: 
 export function raisePlanQuestions(plan: Pick<RebuildResult, "unscheduled" | "conflicts">, env: { conversationId: string | null; tz: string }): QuestionRow[] {
   const db = getDb();
   const asked: QuestionRow[] = [];
+  const pendingUnknown = new Set(pendingTasks().filter((t) => t.kind === "unknown").map((t) => t.taskId));
+  for (const q of listOpenQuestions()) {
+    const taskId = q.context.taskId as string | undefined;
+    if (!taskId) continue;
+    if ((q.purpose === "task_kind" && !pendingUnknown.has(taskId)) || (["remaining", "tradeoff"].includes(q.purpose) && !taskAdmitted(taskId))) supersedeQuestion(q.id);
+  }
   const label = (ms: number) => {
     const d = localDateInTz(new Date(ms), env.tz);
     const t = new Intl.DateTimeFormat("en-GB", { timeZone: env.tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(ms));
@@ -785,6 +803,18 @@ export function raisePlanQuestions(plan: Pick<RebuildResult, "unscheduled" | "co
       context: { taskId: u.taskId },
       conversationId: env.conversationId,
     });
+    asked.push(question);
+  }
+  // Ask only ambiguous admission; notices/errands/decisions need no duration question.
+  for (const item of pendingTasks().filter((t) => t.kind === "unknown")) {
+    if (!canAsk()) break;
+    const key = `task.admission:${item.taskId}`;
+    if (questionEverAsked(key)) continue;
+    const { question } = ensureOpenQuestion({ questionKey: key, intakeId: null, itemId: null,
+      fieldPath: "task.taskKind", purpose: "task_kind", conversationId: env.conversationId,
+      prompt: `「${item.title}」是要投入学习 / 项目时间，还是只记待办、先做决策？确认前我不会给它排学习块。`,
+      options: ["作为学习任务安排", "只记待办，不排时间", "先作为待决策"],
+      reason: "需要确认投入意图，截止或工作量本身不代表要安排学习", context: { taskId: item.taskId } });
     asked.push(question);
   }
   return asked;

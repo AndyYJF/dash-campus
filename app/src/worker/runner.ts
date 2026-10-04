@@ -23,6 +23,8 @@ import { DIGEST_JOB_TYPE, PLAN_MAINTENANCE_JOB_TYPE } from "@/contracts/digests"
 import { rebuildPlan } from "@/workflows/plan";
 import { planIsStale } from "@/repositories/proposals";
 import { nowDate } from "@/domain/clock";
+import { instanceTimezone } from "@/domain/time";
+import { raisePlanQuestions } from "@/workflows/agent";
 import { runDigestJob, scheduleDigests } from "@/workflows/digests";
 import { CALENDAR_SYNC_JOB_TYPE, runCalendarSyncJob, scheduleCalendarSync } from "@/workflows/calendar-sync";
 
@@ -31,7 +33,7 @@ async function runPlanMaintenanceJob(job: JobRow): Promise<{ kind: string }> {
   const token = job.leaseToken!;
   const nowIso = new Date().toISOString();
   try {
-    rebuildPlan(nowDate());
+    raisePlanQuestions(rebuildPlan(nowDate()), { conversationId: null, tz: instanceTimezone() });
     if (leaseValid(job.id, token, job.generation, nowIso)) completeJob(job.id, token, job.generation, { kind: "skipped", reason: "plan:rebuilt" }, nowIso);
     return { kind: "done" };
   } catch (e) {
@@ -73,7 +75,7 @@ export async function runDueJobsOnce(limit = 1): Promise<RunOnceStats & { held?:
   scheduleDigests();
   scheduleCalendarSync();
   // 旧兼容接口改了任务/日程（只递增了规划修订号）：补一次确定性重排，和统一操作之后的那次是同一个算法；没有变化不写批次
-  if (planIsStale()) rebuildPlan(nowDate());
+  if (planIsStale()) raisePlanQuestions(rebuildPlan(nowDate()), { conversationId: null, tz: instanceTimezone() });
   const nowIso = new Date().toISOString();
   const jobs = claimDueJobs(nowIso, limit);
   const stats: RunOnceStats = { claimed: jobs.length, done: 0, failed: 0, cancelled: 0 };

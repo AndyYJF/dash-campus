@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { taskKindSchema } from "@/domain/task-admission";
 
 /** 目标 / 项目 / 任务的 Zod 契约，前后端共用（计划 v1.2 第 4.1 节） */
 
@@ -61,6 +62,7 @@ export const dueSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const taskSchema = z.object({
+  taskKind: taskKindSchema.optional(),
   title: z.string().trim().min(1).max(200),
   description: z.string().max(5000).default(""),
   projectId: z.string().uuid().nullable().default(null),

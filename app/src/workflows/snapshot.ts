@@ -1,4 +1,5 @@
 import { getDb } from "@/repositories/db";
+import { pendingTasks } from "@/repositories/task-admission";
 import { instanceTimezone, localDateInTz, mondayOf, wallTimeToUtc, addDays } from "@/domain/time";
 import { nowDate } from "@/domain/clock";
 import { getPrefs, listSessionsInRange, sessionFromRow } from "@/repositories/plan";
@@ -171,6 +172,7 @@ export function dashboardSnapshot(dateLocal: string, asOf: Date) {
       nextClass,
     },
     nextActions: nextActions(asOf, tz),
+    pendingItems: pendingTasks(),
     mainGoal: mainGoalTitle(),
     policy: policyView(),
     questions: listOpenQuestions(3).map((q) => ({ id: q.id, prompt: q.prompt, reason: q.reason, options: q.options ?? [], purpose: q.purpose, version: q.version })),
@@ -215,6 +217,7 @@ export function weekSnapshot(mondayLocal: string, asOf: Date) {
     policy: policyView(),
     weekBudget: days.reduce((a, d) => a + d.cDay, 0),
     unscheduled: latestPlanUnscheduled(),
+    pendingItems: pendingTasks(),
     conflicts: latestPlanConflicts(),
     source: prefs.status,
   };

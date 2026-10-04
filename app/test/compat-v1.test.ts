@@ -80,7 +80,7 @@ test("E02：设置页导入课表（v1 接口）直接进入课程语义层—�
 });
 
 test("E35：v1 接口建的任务就是 V2 排的那个任务——worker 自动补一次重排；改估时后安排跟着变；从卡片完成后实际投入记在同一任务上", async () => {
-  const created = await createTaskRoute(req("/api/v1/tasks", "POST", { title: "旧表单建的任务", estimateMinutes: 60 }));
+  const created = await createTaskRoute(req("/api/v1/tasks", "POST", { title: "旧表单建的任务", taskKind: "study", estimateMinutes: 60 }));
   assert.equal(created.status, 201, await created.clone().text());
   const task = { id: ((await created.json()) as { id: string }).id, version: 1 };
   assert.equal(blocksOf(task.id).length, 0, "旧接口本身不排");
@@ -121,7 +121,7 @@ test("E35：旧表单对任务的新建/修改/归档写进同一份变更记录
     getDb().prepare(`SELECT b.id, b.command, b.reason, b.status FROM agent_action_batches b JOIN agent_action_changes c ON c.batch_id = b.id WHERE c.entity_kind = 'task' AND c.entity_id = ? ORDER BY b.created_at, b.rowid`).all(taskId) as Array<{ id: string; command: string; reason: string; status: string }>;
   const task = (id: string) => getDb().prepare(`SELECT title, estimate_minutes, due_kind, due_local_date, status, archived_at, version FROM tasks WHERE id = ?`).get(id) as { title: string; estimate_minutes: number | null; due_kind: string; due_local_date: string | null; status: string; archived_at: string | null; version: number } | undefined;
 
-  const created = await createTaskRoute(req("/api/v1/tasks", "POST", { title: "表单任务", estimateMinutes: 45, due: { kind: "date", localDate: "2026-10-20", timezone: TZ } }));
+  const created = await createTaskRoute(req("/api/v1/tasks", "POST", { title: "表单任务", taskKind: "study", estimateMinutes: 45, due: { kind: "date", localDate: "2026-10-20", timezone: TZ } }));
   assert.equal(created.status, 201, await created.clone().text());
   const id = ((await created.json()) as { id: string }).id;
   assert.deepEqual(batchOf(id).map((b) => [b.command, b.reason]), [["create_or_update_task", "任务创建：表单任务（编辑表单）"]]);
@@ -161,7 +161,7 @@ test("E35：旧表单对任务的新建/修改/归档写进同一份变更记录
   assert.equal(task(id)!.estimate_minutes, 75);
 
   // 撤销“新建”：带截止提醒的任务也能整体撤掉
-  const made = await createTaskRoute(req("/api/v1/tasks", "POST", { title: "建了又不要的任务", estimateMinutes: 30, due: { kind: "date", localDate: "2026-10-25", timezone: TZ } }));
+  const made = await createTaskRoute(req("/api/v1/tasks", "POST", { title: "建了又不要的任务", taskKind: "study", estimateMinutes: 30, due: { kind: "date", localDate: "2026-10-25", timezone: TZ } }));
   const madeId = ((await made.json()) as { id: string }).id;
   await runDueJobsOnce();
   assert.ok(blocksOf(madeId).length >= 1);

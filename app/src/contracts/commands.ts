@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { taskKindSchema } from "@/domain/task-admission";
 
 /**
  * 操作注册表契约（MASTER-PLAN §4.2/§7，AGENT-INTERFACE-CONTRACT §4）：
@@ -37,6 +38,7 @@ export const recordPracticeSchema = z.object({
  */
 export const createOrUpdateTaskSchema = z.object({
   command: z.literal("create_or_update_task"),
+  taskKind: taskKindSchema.optional(),
   taskId: z.string().uuid().nullable().default(null),
   title: z.string().min(1).max(200).optional(),
   estimateMinutes: z.number().int().min(1).max(100_000).nullable().optional(),
@@ -472,7 +474,7 @@ export type OperationMeta = {
 export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   upsert_course_set: { title: "课表更新", description: "用确定性课表文本（SDCT1）和学期首周一建立/替换本学期课程。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
   record_practice: { title: "实践记录", description: "记录一次已发生的学习/实践投入；可关联任务，非学习活动标 other。", group: "practice", authorization: "auto", undo: "journal", affects: ["plan", "direction"] },
-  create_or_update_task: { title: "任务", description: "新建任务，或带 taskId 修改原任务（只改给出的字段）。", group: "task", authorization: "auto", undo: "journal", affects: ["plan", "reminders"] },
+  create_or_update_task: { title: "任务", description: "新建事项，或带 taskId 修改原事项（只改给出的字段）；taskKind 区分学习、日常待办、决策、活动、通知和待确认。只有学习事项自动排学习时间。", group: "task", authorization: "auto", undo: "journal", affects: ["plan", "reminders"] },
   import_fixed_events: { title: "日程导入", description: "导入有具体日期和起止时间的一次性固定活动。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
   apply_event_exception: { title: "停课例外", description: "某门课某一天停课。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
   archive_entity: { title: "归档", description: "归档任务、目标或整套课表（可撤销）。", group: "recovery", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },

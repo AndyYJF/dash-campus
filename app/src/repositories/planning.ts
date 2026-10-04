@@ -46,6 +46,7 @@ export type ProjectRow = {
 };
 
 export type TaskRow = {
+  taskKind?: import("@/domain/task-admission").TaskKind;
   id: string;
   title: string;
   description: string;
@@ -368,7 +369,7 @@ export function createTask(input: TaskInput, options: { validateSchedule?: boole
       t,
       t,
     );
-    db.prepare('UPDATE tasks SET planning_override_reason=?, reminder_lead_minutes=? WHERE id=?').run(input.planningOverrideReason ?? null, input.reminderLeadMinutes ?? null, id);
+    db.prepare('UPDATE tasks SET planning_override_reason=?, reminder_lead_minutes=?, task_kind=? WHERE id=?').run(input.planningOverrideReason ?? null, input.reminderLeadMinutes ?? null, input.taskKind ?? 'auto', id);
     if (input.scheduledStart || input.plannedWeek) db.prepare('UPDATE planning_state SET planning_revision=planning_revision+1 WHERE id=1').run();
     // 同一事务内建提醒：只建触发点在未来的 job；due=none 不建
     if (options.scheduleReminders !== false) refreshReminders(getTask(id)!, t);
@@ -395,6 +396,7 @@ export function updateTask(
     sets.push(`${col} = ?`);
     vals.push(v);
   };
+  if (patch.taskKind !== undefined) add("task_kind", patch.taskKind);
   if (patch.title !== undefined) add("title", patch.title);
   if (patch.description !== undefined) add("description", patch.description);
   if (patch.projectId !== undefined) add("project_id", patch.projectId);
@@ -521,6 +523,7 @@ function mapTask(r: Record<string, unknown>): TaskRow {
     description: r.description as string,
     projectId: (r.project_id as string | null) ?? null,
     goalId: (r.goal_id as string | null) ?? null,
+    taskKind: (r.task_kind as TaskRow["taskKind"]) ?? "auto",
     status: r.status as TaskRow["status"],
     priority: r.priority as TaskRow["priority"],
     estimateMinutes: (r.estimate_minutes as number | null) ?? null,

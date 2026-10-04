@@ -310,6 +310,7 @@ test("E29：重新安排的授权有范围、可撤回；不含锁定块；撤�
   const mk = (title: string, minutes: number) => {
     const id = crypto.randomUUID();
     db.prepare(`INSERT INTO tasks (id, title, description, status, priority, estimate_minutes, due_kind, created_at, updated_at) VALUES (?, ?, '', 'todo', 'normal', ?, 'none', ?, ?)`).run(id, title, minutes, "2026-11-01T00:00:00.000Z", "2026-11-01T00:00:00.000Z");
+    db.prepare("UPDATE tasks SET task_kind = 'study' WHERE id = ?").run(id);
     return id;
   };
   const a = mk("任务甲", 50);

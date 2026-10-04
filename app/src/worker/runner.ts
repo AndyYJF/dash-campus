@@ -21,6 +21,7 @@ import { runIntakeProcessJob } from "@/workflows/intake";
 
 import { DIGEST_JOB_TYPE, PLAN_MAINTENANCE_JOB_TYPE } from "@/contracts/digests";
 import { rebuildPlan } from "@/workflows/plan";
+import { planIsStale } from "@/repositories/proposals";
 import { nowDate } from "@/domain/clock";
 import { runDigestJob, scheduleDigests } from "@/workflows/digests";
 import { CALENDAR_SYNC_JOB_TYPE, runCalendarSyncJob, scheduleCalendarSync } from "@/workflows/calendar-sync";
@@ -71,6 +72,8 @@ export async function runDueJobsOnce(limit = 1): Promise<RunOnceStats & { held?:
   scheduleWeeklyReview();
   scheduleDigests();
   scheduleCalendarSync();
+  // 旧兼容接口改了任务/日程（只递增了规划修订号）：补一次确定性重排，和统一操作之后的那次是同一个算法；没有变化不写批次
+  if (planIsStale()) rebuildPlan(nowDate());
   const nowIso = new Date().toISOString();
   const jobs = claimDueJobs(nowIso, limit);
   const stats: RunOnceStats = { claimed: jobs.length, done: 0, failed: 0, cancelled: 0 };

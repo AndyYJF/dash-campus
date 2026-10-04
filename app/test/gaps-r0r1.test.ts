@@ -46,12 +46,13 @@ test("E02：旧版课表导入的固定活动先按“无课程资料的占用�
   assert.ok(calendarDay("2026-10-12", TZ).courses.every((c) => c.courseName !== "形势与政策"), "仅 6/10 周的课在第 7 周不出现");
 
   const again = executeCommand({ command: "upsert_course_set", sdctText: SDCT, firstMonday: "2026-08-31", timezone: TZ }, CTX);
-  assert.ok(again.ok);
+  assert.equal(again.ok && again.noChange, true, "同一份课表再投一次：没有变化，不换一套新对象、不写批次");
   assert.equal(eventsForDay(monday, TZ).length, 2, "重复来源不新增副本");
+  assert.deepEqual((db.prepare(`SELECT id FROM fixed_events ORDER BY id`).all() as Array<{ id: string }>).map((x) => x.id), fixedIds);
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM course_sets WHERE status = 'active'`).get() as { n: number }).n, 1);
-  // 撤销最近一次导入：回到上一套课程，占用仍在
-  assert.equal(undoWithFollowUps(again.ok ? again.batchId! : "").kind, "undone");
-  assert.equal(eventsForDay(monday, TZ).filter((e) => e.kind === "course").length, 2);
+  // 撤销认领：回到“没有课程资料的占用”，忙碌区间仍在
+  assert.equal(undoWithFollowUps(up.ok ? up.batchId! : "").kind, "undone");
+  assert.deepEqual(eventsForDay(monday, TZ).map((e) => e.kind), ["fixed", "fixed"]);
 });
 
 test("E06：C=100、B=30、未来窗口 90、缓冲 20%、未来承诺 40 → futureBudget=70、futureCapacity=30；缓冲不二次扣", () => {

@@ -4,6 +4,7 @@ import { refreshReminders } from "@/workflows/reminders";
 import { instanceTimezone, localDateInTz, mondayOf } from "@/domain/time";
 import { scheduleIssues } from '@/domain/schedule';
 import { HttpError } from '@/workflows/http';
+import { markPlanStale } from "@/repositories/proposals";
 import type {
   Due,
   GoalInput,
@@ -371,6 +372,7 @@ export function createTask(input: TaskInput, options: { validateSchedule?: boole
     if (input.scheduledStart || input.plannedWeek) db.prepare('UPDATE planning_state SET planning_revision=planning_revision+1 WHERE id=1').run();
     // 同一事务内建提醒：只建触发点在未来的 job；due=none 不建
     if (options.scheduleReminders !== false) refreshReminders(getTask(id)!, t);
+    markPlanStale();
     return getTask(id)!;
   });
   return tx();
@@ -469,6 +471,7 @@ export function updateTask(
     const updated = getTask(id)!;
     // 同一事务内：取消旧未准入提醒，重建未来的新版本提醒
     if (reminderAffected) refreshReminders(updated, now());
+    markPlanStale();
     return updated;
   });
   return tx();
@@ -493,6 +496,7 @@ export function archiveTask(
     }
     const task = getTask(id)!;
     refreshReminders(task, t);
+    markPlanStale();
     return task;
   });
   return tx();

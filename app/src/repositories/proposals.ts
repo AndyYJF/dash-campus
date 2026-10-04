@@ -220,6 +220,25 @@ export function bumpPlanningRevision(): void {
   ).run();
 }
 
+/** 学习安排是否落后于最新的规划事实（旧兼容接口改过任务/日程但还没重排） */
+export function planIsStale(): boolean {
+  const row = getDb().prepare(`SELECT planning_revision, planned_revision FROM planning_state WHERE id = 1`).get() as { planning_revision: number; planned_revision: number };
+  return row.planning_revision !== row.planned_revision;
+}
+
+/**
+ * 任务/实践记录变了但规划修订号不动（旧接口只在手动排期时才递增它）：单独标记“学习安排需要对账”。
+ * 统一操作随后自己重排并清掉标记；旧接口的改动由 worker 下一趟补上。
+ */
+export function markPlanStale(): void {
+  getDb().prepare(`UPDATE planning_state SET planned_revision = -1 WHERE id = 1`).run();
+}
+
+/** 重排完成：记下这次对的是哪个修订号 */
+export function markPlanSynced(): void {
+  getDb().prepare(`UPDATE planning_state SET planned_revision = planning_revision WHERE id = 1`).run();
+}
+
 function now(): string {
   return new Date().toISOString();
 }

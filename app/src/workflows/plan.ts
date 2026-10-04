@@ -1,3 +1,4 @@
+import { markPlanSynced } from "@/repositories/proposals";
 import { getDb } from "@/repositories/db";
 import { addDays, instanceTimezone, localDateInTz, mondayOf, wallTimeToUtc } from "@/domain/time";
 import { baseWindows, dayBudget, futureCapacity, mergeIntervals, minutesOf, next7Days, subtractIntervals, type Interval, type Prefs } from "@/domain/budget";
@@ -163,7 +164,13 @@ const PART_WINDOWS: Record<string, [string, string]> = { morning: ["08:00", "12:
 
 /** 重排：保留有效旧块 → 只为缺口新增 → journal，单事务原子。 */
 export function rebuildPlan(asOf: Date, opts: RebuildOptions = {}): RebuildResult {
-  return getDb().transaction((): RebuildResult => rebuildInTx(asOf, opts)).immediate();
+  return getDb()
+    .transaction((): RebuildResult => {
+      const result = rebuildInTx(asOf, opts);
+      markPlanSynced();
+      return result;
+    })
+    .immediate();
 }
 
 function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {

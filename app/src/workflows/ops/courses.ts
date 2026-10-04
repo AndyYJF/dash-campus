@@ -107,6 +107,10 @@ export function applyFixedEvents(cmd: Cmd<"import_fixed_events">, ctx: CommandCo
 export function applyCourseSet(cmd: Cmd<"upsert_course_set">, ctx: CommandContext, changes: ChangeInput[]): string {
   const parsed = parseTimetable({ text: cmd.sdctText, firstMonday: cmd.firstMonday, timezone: cmd.timezone });
   const source = ctx.intakeId ? `intake:${ctx.intakeId}` : "manual";
+  // 同一学期、内容完全相同的课表再投一次：没有变化，不换一套新 ID、不写批次、不引起重排
+  const sameSemester = findSemester(parsed.firstMonday, parsed.totalWeeks, parsed.timezone);
+  const current = sameSemester ? activeCourseSet(sameSemester.id) : null;
+  if (current && courseSetSignature(current.id) === parsedSignature(parsed)) return `课表没有变化：${parsed.courses.length} 门课已经是这一版`;
   const semesterId = ensureSemester(parsed.firstMonday, parsed.totalWeeks, parsed.timezone, source, changes);
   replaceActiveSet(semesterId, changes);
   const setId = insertCourseSet(semesterId, source);
@@ -118,6 +122,26 @@ export function applyCourseSet(cmd: Cmd<"upsert_course_set">, ctx: CommandContex
   if (skipped.length) reprojectActiveSet(semesterId, parsed.firstMonday, skipped, changes);
   bumpPlanningRevision();
   return `课表入库：${parsed.courses.length} 门课 / ${parsed.occurrenceCount} 次课（学期首日 ${parsed.firstMonday}）`;
+}
+
+/** 课表内容的规范形式：课程名/教师/地点 + 每个时段的星期、钟点、周次 */
+function parsedSignature(parsed: ReturnType<typeof parseTimetable>): string {
+  return JSON.stringify(
+    parsed.courses
+      .flatMap((c) => c.rules.map((r) => [c.name, c.teacher ?? "", c.location ?? "", r.weekday, r.localStart, r.localEnd, [...c.weeks].sort((a, b) => a - b).join(",")].join("|")))
+      .sort(),
+  );
+}
+
+function courseSetSignature(setId: string): string {
+  const rows = getDb()
+    .prepare(`SELECT c.name, c.teacher, c.location, m.weekday, m.local_start, m.local_end, m.weeks_json FROM course_meetings m JOIN courses c ON c.id = m.course_id WHERE c.course_set_id = ?`)
+    .all(setId) as Array<{ name: string; teacher: string | null; location: string | null; weekday: number; local_start: string; local_end: string; weeks_json: string }>;
+  return JSON.stringify(
+    rows
+      .map((r) => [r.name, r.teacher ?? "", r.location ?? "", r.weekday, r.local_start, r.local_end, (JSON.parse(r.weeks_json) as number[]).sort((a, b) => a - b).join(",")].join("|"))
+      .sort(),
+  );
 }
 
 function ensureSemester(firstMonday: string, totalWeeks: number, timezone: string, source: string, changes: ChangeInput[]): string {

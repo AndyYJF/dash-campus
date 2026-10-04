@@ -16,10 +16,19 @@ const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const timeStr = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 const part = z.enum(["morning", "afternoon", "evening", "any"]);
 
-/** 对象的文字引用：recent = “刚才那个”；named = 名称 + 可选的日期/时段限定 */
+/** 可以按 ID 引用的对象种类 */
+export const REF_ENTITY_KINDS = ["task", "plan_session", "project", "goal", "practice_entry", "resource", "candidate", "fixed_event", "inbox_message", "course_set", "exploration_topic"] as const;
+
+/**
+ * 对象引用：recent = “刚才那个”；named = 名称 + 可选的日期/时段限定；
+ * id = 已经见过的对象（选中卡片、对话里出现过、只读工具返回过），没见过的 ID 一律拒绝；
+ * step = 同一句话里第 N 个意图（从 1 起）产生的对象，前一步完成后才绑定。
+ */
 export const refSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("recent") }),
   z.object({ kind: z.literal("named"), text: z.string().min(1).max(100), date: dateStr.nullable().default(null), part: part.default("any") }),
+  z.object({ kind: z.literal("id"), entityKind: z.enum(REF_ENTITY_KINDS), id: z.string().min(1).max(64) }),
+  z.object({ kind: z.literal("step"), step: z.number().int().min(1).max(8) }),
 ]);
 export type Ref = z.infer<typeof refSchema>;
 
@@ -76,6 +85,30 @@ export const intentSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("calendar_sync"), enabled: z.boolean(), intervalDays: z.number().int().min(1).max(30).nullable().default(null) }),
   z.object({ op: z.literal("course_cancel"), courseName: z.string().max(100).nullable().default(null), date: dateStr }),
   z.object({ op: z.literal("course_move"), courseName: z.string().max(100).nullable().default(null), sourceDate: dateStr, targetDate: dateStr, startLocalTime: timeStr.nullable().default(null) }),
+  z.object({
+    op: z.literal("create_task"),
+    title: z.string().trim().min(1).max(200),
+    taskKind: taskKindSchema.optional(),
+    estimateMinutes: z.number().int().min(1).max(100_000).nullable().default(null),
+    dueLocalDate: dateStr.nullable().default(null),
+    dueLocalTime: timeStr.nullable().default(null),
+    priority: z.enum(["normal", "high"]).default("normal"),
+    projectRef: refSchema.nullable().default(null),
+  }),
+  z.object({
+    op: z.literal("practice"),
+    occurredOn: dateStr,
+    actualMinutes: z.number().int().min(1).max(1440).nullable().default(null),
+    note: z.string().max(500).default(""),
+    category: z.enum(["study", "other"]).default("study"),
+    taskRef: refSchema.nullable().default(null),
+    projectRef: refSchema.nullable().default(null),
+    blocker: z.string().max(500).default(""),
+  }),
+  z.object({ op: z.literal("schedule_at"), taskRef: refSchema.nullable().default(null), title: z.string().trim().min(1).max(200).nullable().default(null), date: dateStr, startLocalTime: timeStr, durationMinutes: z.number().int().min(5).max(240) }),
+  z.object({ op: z.literal("session_state"), ref: refSchema, action: z.enum(["start", "complete", "skip", "lock", "unlock"]), actualMinutes: z.number().int().min(1).max(1440).nullable().default(null) }),
+  z.object({ op: z.literal("resolve_notice"), ref: refSchema, partition: z.enum(["action", "info", "opportunity", "review", "folded"]) }),
+  z.object({ op: z.literal("archive"), entityKind: z.enum(["task", "goal", "course_set", "project", "resource", "fixed_event", "practice_entry", "plan_session"]), ref: refSchema }),
 ]);
 export type Intent = z.infer<typeof intentSchema>;
 

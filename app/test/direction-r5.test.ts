@@ -25,6 +25,8 @@ import { POST as focusActionRoute } from "@/app/api/v2/focus/[id]/[action]/route
  */
 
 const NOW = new Date("2026-10-12T09:00:00+08:00");
+/** 计时测试单独一天的中午：回拨几小时不跨日，也不和前面用例的记录同一天 */
+const FOCUS_NOW = new Date("2026-10-14T12:00:00+08:00");
 const CTX = { intakeId: null, itemId: null, itemKey: "", instanceEpoch: 0, evidence: "" };
 let sessionToken = "";
 let csrfToken = "";
@@ -147,7 +149,7 @@ test("E21/E13：做一次尝试并反馈卡点 → 记录关联到项目，建�
   const dash = (await (await dashboardRoute(req("/api/v2/dashboard", "GET"))).json()) as { today: { sessions: Array<{ id: string; reason: string }> } };
   assert.match(dash.today.sessions.find((x) => x.id === now1[0]!.id)!.reason, /上次卡在“环境一直报错”，这一段先处理卡点/, "但说明这一段该先处理卡点，不伪装成照常推进");
 
-  getDb().prepare(`UPDATE plan_sessions SET status = 'completed', updated_at = ? WHERE id = ?`).run(new Date(Date.now() + 1000).toISOString(), now1[0]!.id);
+  getDb().prepare(`UPDATE plan_sessions SET status = 'completed', updated_at = ? WHERE id = ?`).run(new Date(NOW.getTime() + 1000).toISOString(), now1[0]!.id);
   const plan = rebuildPlan(new Date("2026-10-13T09:00:00+08:00"));
   assert.equal(blocks().length, 0, "排障块做完没有新反馈：不无限续排");
   assert.deepEqual(plan.unscheduled.filter((u) => u.taskId === taskId).map((u) => u.reason), ["needs_remaining_estimate"]);
@@ -193,9 +195,11 @@ test("E32：给项目贴资料 → 存为参考资料；纠正“这是老师的
   assert.deepEqual(p.achievements, [], "老师的要求不算个人成果");
 });
 
-test("E20：数学 40 分钟与羽毛球计时 38 分钟不合并，运动不占学习预算；长计时先核对，可修正或放弃；从行动卡计时与学习块关联", async () => {
+test("E20：数学 40 分钟与羽毛球计时 38 分钟不合并，运动不占学习预算；长计时先核对，可修正或放弃；从行动卡计时与学习块关联", async (t) => {
+  setNowForTests(FOCUS_NOW);
+  t.after(() => setNowForTests(NOW));
   const db = getDb();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = "2026-10-14";
   executeCommand({ command: "record_practice", occurredOn: today, actualMinutes: 40, note: "学数学" }, CTX);
   const start = async (body: unknown) => focusStartRoute(req("/api/v2/focus", "POST", body));
   const stop = async (id: string, body: unknown) => focusActionRoute(req(`/api/v2/focus/${id}/stop`, "POST", body), params(id, "stop"));
@@ -203,17 +207,17 @@ test("E20：数学 40 分钟与羽毛球计时 38 分钟不合并，运动不占
 
   assert.equal((await start({ note: "打羽毛球" })).status, 201);
   let f = current();
-  db.prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(Date.now() - 38 * 60000).toISOString(), f.id);
+  db.prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(FOCUS_NOW.getTime() - 38 * 60000).toISOString(), f.id);
   const r1 = (await (await stop(f.id, { expectedVersion: f.version })).json()) as { merged: boolean; minutes: number };
   assert.equal(r1.merged, false, "分钟接近但不是同一件事：不合并");
   const rows = db.prepare(`SELECT note, actual_minutes, category FROM practice_entries WHERE occurred_on = ? ORDER BY created_at`).all(today);
   assert.deepEqual(rows, [{ note: "学数学", actual_minutes: 40, category: "study" }, { note: "打羽毛球", actual_minutes: 38, category: "other" }]);
-  assert.equal(dayLedger(today, new Date(), getPrefs(), "Asia/Shanghai").actualMinutes, 40, "运动不冒充学习消耗");
+  assert.equal(dayLedger(today, FOCUS_NOW, getPrefs(), "Asia/Shanghai").actualMinutes, 40, "运动不冒充学习消耗");
 
   // 长计时：先给具体时段和候选分钟；修正为实际分钟
   await start({ note: "写论文" });
   f = current();
-  db.prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(Date.now() - 5 * 3600_000).toISOString(), f.id);
+  db.prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(FOCUS_NOW.getTime() - 5 * 3600_000).toISOString(), f.id);
   const need = await stop(f.id, { expectedVersion: f.version });
   assert.equal(need.status, 409);
   const detail = ((await need.json()) as { error: { code: string; details: { minutes: number; reason: string } } }).error;
@@ -226,7 +230,7 @@ test("E20：数学 40 分钟与羽毛球计时 38 分钟不合并，运动不占
   // 放弃：不计入、不丢其他活动
   await start({ note: "误开的计时" });
   f = current();
-  db.prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(Date.now() - 6 * 3600_000).toISOString(), f.id);
+  db.prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(FOCUS_NOW.getTime() - 6 * 3600_000).toISOString(), f.id);
   assert.equal(((await (await stop(f.id, { expectedVersion: f.version, discard: true })).json()) as { discarded: boolean }).discarded, true);
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM practice_entries WHERE note = '误开的计时'`).get() as { n: number }).n, 0);
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM practice_entries WHERE occurred_on = ?`).get(today) as { n: number }).n, 3, "已有记录都还在");
@@ -235,24 +239,26 @@ test("E20：数学 40 分钟与羽毛球计时 38 分钟不合并，运动不占
   const taskId = crypto.randomUUID();
   db.prepare(`INSERT INTO tasks (id, title, description, status, priority, estimate_minutes, due_kind, created_at, updated_at) VALUES (?, '线代作业', '', 'todo', 'normal', 60, 'none', 'x', 'x')`).run(taskId);
   const sessionId = crypto.randomUUID();
-  db.prepare(`INSERT INTO plan_sessions (id, task_id, start_utc, end_utc, timezone, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'Asia/Shanghai', 'planned', 'x', 'x')`).run(sessionId, taskId, new Date(Date.now() - 600_000).toISOString(), new Date(Date.now() + 3000_000).toISOString());
+  db.prepare(`INSERT INTO plan_sessions (id, task_id, start_utc, end_utc, timezone, status, created_at, updated_at) VALUES (?, ?, ?, ?, 'Asia/Shanghai', 'planned', 'x', 'x')`).run(sessionId, taskId, new Date(FOCUS_NOW.getTime() - 600_000).toISOString(), new Date(FOCUS_NOW.getTime() + 3000_000).toISOString());
   assert.equal((await start({ sessionId })).status, 201);
   assert.equal((db.prepare(`SELECT status FROM plan_sessions WHERE id = ?`).get(sessionId) as { status: string }).status, "in_progress");
   f = current();
-  db.prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(Date.now() - 30 * 60000).toISOString(), f.id);
+  db.prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(FOCUS_NOW.getTime() - 30 * 60000).toISOString(), f.id);
   await stop(f.id, { expectedVersion: f.version });
   assert.equal((db.prepare(`SELECT status FROM plan_sessions WHERE id = ?`).get(sessionId) as { status: string }).status, "completed");
   assert.deepEqual(db.prepare(`SELECT task_id, plan_session_id, actual_minutes FROM practice_entries WHERE note = '线代作业'`).get(), { task_id: taskId, plan_session_id: sessionId, actual_minutes: 30 });
   assert.equal((db.prepare(`SELECT status FROM tasks WHERE id = ?`).get(taskId) as { status: string }).status, "todo", "停止计时不等于完成任务");
 });
 
-test("A08/E07：同一活动的手动记录与计时合并只算一次；说“不是同一次”可以再分开", async () => {
+test("A08/E07：同一活动的手动记录与计时合并只算一次；说“不是同一次”可以再分开", async (t) => {
+  setNowForTests(FOCUS_NOW);
+  t.after(() => setNowForTests(NOW));
   const db = getDb();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = "2026-10-14";
   executeCommand({ command: "record_practice", occurredOn: today, actualMinutes: 50, note: "背单词" }, CTX);
   assert.equal((await focusStartRoute(req("/api/v2/focus", "POST", { note: "背单词" }))).status, 201);
   const f = db.prepare(`SELECT id, version FROM focus_sessions WHERE status = 'in_progress'`).get() as { id: string; version: number };
-  db.prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(Date.now() - 47 * 60000).toISOString(), f.id);
+  db.prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(FOCUS_NOW.getTime() - 47 * 60000).toISOString(), f.id);
   const r = (await (await focusActionRoute(req(`/api/v2/focus/${f.id}/stop`, "POST", { expectedVersion: f.version }), params(f.id, "stop"))).json()) as { merged: boolean; mergedNote: string };
   assert.deepEqual([r.merged, r.mergedNote], [true, "背单词"], "同样的活动说明 + 分钟接近：视为同一次，并告诉主人合并到了哪条");
   assert.equal((db.prepare(`SELECT COUNT(*) AS n FROM practice_entries WHERE note LIKE '背单词%'`).get() as { n: number }).n, 1);

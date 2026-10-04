@@ -75,6 +75,8 @@ export const intakeClassificationSchema = z.object({
         excerpt: z.string().min(1).max(2000),
         /** kind=command 时的结构化意图；由服务端用 intentSchema 单独校验，不合法不影响其他事项 */
         intent: z.unknown().optional(),
+        /** 一句话里有先后依赖的多个修改：按顺序给出，后面的用 {kind:"step",step:N} 引用第 N 个意图产生的对象 */
+        intents: z.array(z.unknown()).max(8).optional(),
       }),
     )
     .min(1)

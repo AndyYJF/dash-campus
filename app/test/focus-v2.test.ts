@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { before, test } from "node:test";
+import { after, before, test } from "node:test";
+import { setNowForTests } from "@/domain/clock";
 import { NextRequest } from "next/server";
 import { migrateAll, getDb } from "./helpers";
 import { createOwner, createSession, SESSION_COOKIE } from "@/domain/session";
@@ -11,6 +12,8 @@ import { POST as focusActionRoute } from "@/app/api/v2/focus/[id]/[action]/route
 /** P6 focus 计时（MASTER-PLAN §5.1/§6.3、A08）：最多 1 个进行中；停止落 timer 实践；同日手动+计时合并不双计；>4h 需确认。 */
 
 const CTX = { intakeId: null, itemId: null, itemKey: "", instanceEpoch: 0, evidence: "test" };
+/** 固定在当地中午：计时回拨几十分钟不会跨过午夜，测试结果不随运行时刻变化 */
+const NOW = new Date("2026-10-07T12:00:00+08:00");
 let sessionToken = "";
 let csrfToken = "";
 
@@ -26,7 +29,10 @@ function params(id: string, action: string) {
   return { params: Promise.resolve({ id, action }) };
 }
 
+after(() => setNowForTests(null));
+
 before(() => {
+  setNowForTests(NOW);
   migrateAll();
   createOwner(hashPassword("focus-test-pass"));
   const { token, session } = createSession(1);
@@ -45,7 +51,7 @@ test("focus：最多 1 个进行中；重复 start 幂等不新增", async () =>
 
 test("focus：stop 落 timer 实践记录，分钟数来自计时", async () => {
   const f = getDb().prepare(`SELECT id, version FROM focus_sessions WHERE status = 'in_progress'`).get() as { id: string; version: number };
-  getDb().prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(Date.now() - 40 * 60000).toISOString(), f.id);
+  getDb().prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(NOW.getTime() - 40 * 60000).toISOString(), f.id);
   const res = await focusActionRoute(authedReq(`/api/v2/focus/${f.id}/stop`, { expectedVersion: f.version }, "idem-fstop"), params(f.id, "stop"));
   assert.equal(res.status, 200);
   const p = getDb().prepare(`SELECT * FROM practice_entries WHERE minutes_origin = 'timer' ORDER BY created_at DESC LIMIT 1`).get() as { actual_minutes: number } | undefined;
@@ -54,11 +60,11 @@ test("focus：stop 落 timer 实践记录，分钟数来自计时", async () => 
 });
 
 test("A08：同日手动 40min + 计时 38min 合并不双计", async () => {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = "2026-10-07";
   executeCommand({ command: "record_practice", occurredOn: today, actualMinutes: 40, note: "学数学" }, CTX);
   await focusStartRoute(authedReq("/api/v2/focus", { note: "学数学" }, "idem-f3"));
   const f = getDb().prepare(`SELECT id, version FROM focus_sessions WHERE status = 'in_progress'`).get() as { id: string; version: number };
-  getDb().prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(Date.now() - 38 * 60000).toISOString(), f.id);
+  getDb().prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(NOW.getTime() - 38 * 60000).toISOString(), f.id);
   const res = await focusActionRoute(authedReq(`/api/v2/focus/${f.id}/stop`, { expectedVersion: f.version }, "idem-fstop2"), params(f.id, "stop"));
   assert.equal(res.status, 200);
   const body = (await res.json()) as { merged: boolean };
@@ -72,7 +78,7 @@ test("A08：同日手动 40min + 计时 38min 合并不双计", async () => {
 test("focus：>4h 计时需确认才计入", async () => {
   await focusStartRoute(authedReq("/api/v2/focus", { note: "马拉松" }, "idem-f4"));
   const f = getDb().prepare(`SELECT id, version FROM focus_sessions WHERE status = 'in_progress'`).get() as { id: string; version: number };
-  getDb().prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(Date.now() - 5 * 3600_000).toISOString(), f.id);
+  getDb().prepare(`UPDATE focus_sessions SET started_at = ? WHERE id = ?`).run(new Date(NOW.getTime() - 5 * 3600_000).toISOString(), f.id);
   const res = await focusActionRoute(authedReq(`/api/v2/focus/${f.id}/stop`, { expectedVersion: f.version }, "idem-fstop3"), params(f.id, "stop"));
   assert.equal(res.status, 409, "超过 4 小时需要显式确认");
   const still = getDb().prepare(`SELECT status FROM focus_sessions WHERE id = ?`).get(f.id) as { status: string };

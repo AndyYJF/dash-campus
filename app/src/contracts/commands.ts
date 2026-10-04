@@ -48,6 +48,8 @@ export const createOrUpdateTaskSchema = z.object({
   /** 主人报告的剩余需求（“还差一个小时”）；之后的投入从这里扣 */
   remainingMinutes: z.number().int().min(0).max(100_000).nullable().optional(),
   priority: z.enum(["normal", "high"]).optional(),
+  /** 归入的项目；null 表示移出项目 */
+  projectId: z.string().uuid().nullable().optional(),
 });
 
 /** 完成原任务：取消其未执行的学习块与提醒；可顺带记下这次的实际投入 */
@@ -457,57 +459,81 @@ export type Command = z.infer<typeof commandSchema>;
 
 export type OperationAffect = "plan" | "reminders" | "calendar" | "notices" | "direction";
 
+/**
+ * 授权级别（Agent 增强 v1.1 §5.3）：
+ * - auto：信息明确且可逆，来自资料正文也可以执行；
+ * - explicit：必须来自主人本人的明确表达或按钮；Agent 推断时需确认（个别参数组合例外，见 domain/authorization）；
+ * - confirm：即使主人提出也要先确认一次；
+ * - never：不开放给 Agent。
+ */
+export type OperationAuthorization = "auto" | "explicit" | "confirm" | "never";
+
+/** 提交后会引起的后续动作 */
+export type OperationSideEffect = "replan" | "reminders" | "mail" | "job";
+
+/** 有界只读工具（P2 实现）；元数据里声明执行这个操作之前通常要读什么 */
+export const READ_TOOL_NAMES = ["get_context", "find_entities", "get_entity_detail", "get_calendar_budget", "get_open_questions", "get_conversation", "get_operation_status", "get_evidence"] as const;
+export type ReadToolName = (typeof READ_TOOL_NAMES)[number];
+
+/** 执行后的确定性核验（P5 Verify 阶段使用） */
+export const VERIFICATION_KINDS = ["policy_saved", "entity_state_matches", "session_in_scope", "plan_consistent", "practice_not_duplicated", "dependent_steps_completed", "side_effect_status"] as const;
+export type VerificationKind = (typeof VERIFICATION_KINDS)[number];
+
 export type OperationMeta = {
   /** 用户可见的名称 */
   title: string;
   /** 给 Agent 的工具说明：何时用、关键参数 */
   description: string;
   group: "course" | "calendar" | "task" | "plan" | "practice" | "goal" | "profile" | "reminder" | "agent" | "recovery";
-  /** auto：信息明确且可逆，Agent 可直接执行；owner_explicit：必须来自主人本人的明确指令或按钮 */
-  authorization: "auto" | "owner_explicit";
+  authorization: OperationAuthorization;
   /** journal：可按批次撤销；none：外部副作用或不可逆，结果里如实说明 */
   undo: "journal" | "none";
   /** 提交后需要更新的派生状态 */
   affects: OperationAffect[];
+  sideEffects: OperationSideEffect[];
+  /** 绑定参数前通常需要读取的事实 */
+  reads: ReadToolName[];
+  /** 执行后用哪些确定性检查确认结果 */
+  verify: VerificationKind[];
 };
 
 export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
-  upsert_course_set: { title: "课表更新", description: "用确定性课表文本（SDCT1）和学期首周一建立/替换本学期课程。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
-  record_practice: { title: "实践记录", description: "记录一次已发生的学习/实践投入；可关联任务，非学习活动标 other。", group: "practice", authorization: "auto", undo: "journal", affects: ["plan", "direction"] },
-  create_or_update_task: { title: "任务", description: "新建事项，或带 taskId 修改原事项（只改给出的字段）；taskKind 区分学习、日常待办、决策、活动、通知和待确认。只有学习事项自动排学习时间。", group: "task", authorization: "auto", undo: "journal", affects: ["plan", "reminders"] },
-  import_fixed_events: { title: "日程导入", description: "导入有具体日期和起止时间的一次性固定活动。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
-  apply_event_exception: { title: "停课例外", description: "某门课某一天停课。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
-  archive_entity: { title: "归档", description: "归档任务、目标或整套课表（可撤销）。", group: "recovery", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
-  sync_holiday_calendar: { title: "节假日安排", description: "把官方年度节假日/调休日期入库（只标注公历日，不决定学校补课）。", group: "calendar", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
-  upsert_academic_calendar: { title: "校历", description: "一个学期的校历：首周、周数、停课区间、学校明确的补课映射。", group: "calendar", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
-  apply_teaching_day_override: { title: "调课/停课", description: "单次例外：某门课取消或移到别的时间；或整天停课、按另一天的课表上课。周次条件按原教学日期判断。", group: "calendar", authorization: "auto", undo: "journal", affects: ["plan", "calendar"] },
-  update_calendar_sync_policy: { title: "日历自动更新设置", description: "开启/关闭校历与节假日的有限自动核对，设置学校、人群、间隔与官方入口。", group: "calendar", authorization: "owner_explicit", undo: "journal", affects: [] },
-  update_planning_policy: { title: "时间安排规则", description: "修改作息模板字段、按星期/工作日的上限、某段时间不学、假期策略、集中时段偏好，或授权重新安排某天。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
-  pause_task: { title: "暂停任务", description: "把任务先放一放（到某天或先不定），让出未执行的学习块；resume 恢复。", group: "task", authorization: "owner_explicit", undo: "journal", affects: ["plan", "reminders"] },
-  correct_practice: { title: "纠正实践记录", description: "修改一条已有实践记录的分钟、日期、说明或关联任务。", group: "practice", authorization: "owner_explicit", undo: "journal", affects: ["plan", "direction"] },
-  reschedule_session: { title: "调整学习安排", description: "把一个具体学习块挪到别的日期/时段/钟点，或只改这一段的长度。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
-  schedule_session: { title: "安排学习", description: "在指定日期和钟点给某个任务安排一段学习（可新建任务）。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
-  set_session_state: { title: "学习块状态", description: "开始、完成、跳过、锁定或解锁一个学习块。", group: "plan", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
-  undo_batch: { title: "撤销", description: "撤销最近一次（或指定的）变更。", group: "recovery", authorization: "owner_explicit", undo: "none", affects: ["plan", "calendar"] },
-  update_reminder_policy: { title: "提醒设置", description: "开关截止提醒、默认提前量、安静时段；或设置某个任务提前多久提醒。", group: "reminder", authorization: "owner_explicit", undo: "journal", affects: ["reminders"] },
-  update_digest_policy: { title: "摘要邮件设置", description: "每日/每周摘要的开关、时间、是否只在工作日。", group: "reminder", authorization: "owner_explicit", undo: "journal", affects: ["reminders"] },
-  update_profile_fact: { title: "身份信息", description: "记录主人陈述的学历层次、专业、校区、入学年份、年级。", group: "profile", authorization: "owner_explicit", undo: "journal", affects: ["notices"] },
-  upsert_notice_rule: { title: "通知筛选规则", description: "某类人群专属的通知不进行动（原文保留）；remove 撤回。", group: "profile", authorization: "owner_explicit", undo: "journal", affects: ["notices"] },
-  apply_notice: { title: "通知", description: "按身份与规则判断一条通知：明确适用的义务建任务，其余只保留事实。", group: "profile", authorization: "auto", undo: "journal", affects: ["plan", "reminders", "notices"] },
-  resolve_notice: { title: "通知归类", description: "主人纠正某条通知是否与自己有关、要不要做。", group: "profile", authorization: "owner_explicit", undo: "journal", affects: ["plan", "notices"] },
-  request_export: { title: "导出数据", description: "生成一份业务数据导出文件供下载。", group: "recovery", authorization: "owner_explicit", undo: "none", affects: [] },
-  upsert_goal: { title: "目标", description: "新建或修改目标；primary=true 设为当前唯一的主要方向。", group: "goal", authorization: "owner_explicit", undo: "journal", affects: ["direction"] },
-  select_candidate: { title: "开始项目", description: "选一个候选开始试做（默认两周、只建第一步）或正式投入。不代表对外报名。", group: "goal", authorization: "owner_explicit", undo: "journal", affects: ["plan", "direction"] },
-  update_project_state: { title: "项目状态", description: "暂停/恢复/结束项目，或把试做转为正式投入。", group: "goal", authorization: "owner_explicit", undo: "journal", affects: ["plan", "direction"] },
-  request_exploration: { title: "找候选项目", description: "按主人给的问题检索有来源的资料并生成最多 3 个候选。", group: "goal", authorization: "owner_explicit", undo: "none", affects: ["direction"] },
-  link_resource: { title: "资料", description: "把资料存下来、关联到项目，或纠正它是参考资料/别人的要求/自己的成果。", group: "goal", authorization: "auto", undo: "journal", affects: ["direction"] },
-  update_agent_policy: { title: "主动程度与预算", description: "每日模型/搜索调用上限；是否运行定期探索和定期复盘。", group: "agent", authorization: "owner_explicit", undo: "journal", affects: [] },
-  request_review: { title: "复盘", description: "按一周已记录的事实生成复盘与建议；建议不自动执行。", group: "agent", authorization: "owner_explicit", undo: "none", affects: [] },
-  configure_exploration: { title: "定期探索", description: "新建、调整或停用一个关注方向及其每周探索时间。", group: "agent", authorization: "owner_explicit", undo: "journal", affects: ["direction"] },
-  request_owner_digest: { title: "发送摘要", description: "现在给主人本人发一份今日或本周摘要；已发出的邮件不能撤回。", group: "reminder", authorization: "owner_explicit", undo: "none", affects: [] },
-  cancel_operation: { title: "停止处理", description: "停止一份还没处理完的投递；已生效的变化保留，用撤销回退。", group: "agent", authorization: "owner_explicit", undo: "none", affects: [] },
-  update_fixed_event: { title: "固定活动", description: "修改或移除一个非课程的固定活动（名称、星期/日期、钟点）。", group: "course", authorization: "owner_explicit", undo: "journal", affects: ["plan"] },
-  complete_task: { title: "完成任务", description: "把指定任务标记完成，取消其未执行学习块与提醒。", group: "task", authorization: "owner_explicit", undo: "journal", affects: ["plan", "reminders"] },
+  upsert_course_set: { title: "课表更新", description: "用确定性课表文本（SDCT1）和学期首周一建立/替换本学期课程。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"], sideEffects: ["replan"], reads: ["get_context"], verify: ["entity_state_matches", "plan_consistent"] },
+  record_practice: { title: "实践记录", description: "记录一次已发生的学习/实践投入（日期可以是过去）；可关联任务或项目，非学习活动标 other。", group: "practice", authorization: "auto", undo: "journal", affects: ["plan", "direction"], sideEffects: ["replan"], reads: ["find_entities"], verify: ["practice_not_duplicated", "plan_consistent"] },
+  create_or_update_task: { title: "任务", description: "新建事项，或带 taskId 修改原事项（只改给出的字段）；taskKind 区分学习、日常待办、决策、活动、通知和待确认；projectId 归入项目。只有学习事项自动排学习时间。", group: "task", authorization: "auto", undo: "journal", affects: ["plan", "reminders"], sideEffects: ["replan", "reminders"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "plan_consistent"] },
+  import_fixed_events: { title: "日程导入", description: "导入有具体日期和起止时间的一次性固定活动。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"], sideEffects: ["replan"], reads: ["get_calendar_budget"], verify: ["entity_state_matches", "plan_consistent"] },
+  apply_event_exception: { title: "停课例外", description: "某门课某一天停课。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"], sideEffects: ["replan"], reads: ["get_calendar_budget"], verify: ["entity_state_matches", "plan_consistent"] },
+  archive_entity: { title: "归档", description: "归档任务、目标或整套课表（可撤销）。", group: "recovery", authorization: "explicit", undo: "journal", affects: ["plan"], sideEffects: ["replan", "reminders"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "plan_consistent"] },
+  sync_holiday_calendar: { title: "节假日安排", description: "把官方年度节假日/调休日期入库（只标注公历日，不决定学校补课）。", group: "calendar", authorization: "auto", undo: "journal", affects: ["plan", "calendar"], sideEffects: ["replan"], reads: ["get_calendar_budget"], verify: ["entity_state_matches", "plan_consistent"] },
+  upsert_academic_calendar: { title: "校历", description: "一个学期的校历：首周、周数、停课区间、学校明确的补课映射。", group: "calendar", authorization: "auto", undo: "journal", affects: ["plan", "calendar"], sideEffects: ["replan"], reads: ["get_calendar_budget"], verify: ["entity_state_matches", "plan_consistent"] },
+  apply_teaching_day_override: { title: "调课/停课", description: "单次例外：某门课取消或移到别的时间；或整天停课、按另一天的课表上课。周次条件按原教学日期判断。", group: "calendar", authorization: "auto", undo: "journal", affects: ["plan", "calendar"], sideEffects: ["replan"], reads: ["get_calendar_budget"], verify: ["entity_state_matches", "plan_consistent"] },
+  update_calendar_sync_policy: { title: "日历自动更新设置", description: "开启/关闭校历与节假日的有限自动核对，设置学校、人群、间隔与官方入口。", group: "calendar", authorization: "explicit", undo: "journal", affects: [], sideEffects: ["job"], reads: ["get_context"], verify: ["policy_saved"] },
+  update_planning_policy: { title: "时间安排规则", description: "修改作息模板字段、按星期/工作日的上限、某段时间不学、假期策略、集中时段偏好，或授权重新安排某天。", group: "plan", authorization: "explicit", undo: "journal", affects: ["plan"], sideEffects: ["replan"], reads: ["get_context", "get_calendar_budget"], verify: ["policy_saved", "plan_consistent"] },
+  pause_task: { title: "暂停任务", description: "把任务先放一放（到某天或先不定），让出未执行的学习块；resume 恢复。", group: "task", authorization: "explicit", undo: "journal", affects: ["plan", "reminders"], sideEffects: ["replan", "reminders"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "plan_consistent"] },
+  correct_practice: { title: "纠正实践记录", description: "修改一条已有实践记录的分钟、日期、说明或关联任务。", group: "practice", authorization: "explicit", undo: "journal", affects: ["plan", "direction"], sideEffects: ["replan"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "practice_not_duplicated"] },
+  reschedule_session: { title: "调整学习安排", description: "把一个具体学习块挪到别的日期/时段/钟点，或只改这一段的长度。", group: "plan", authorization: "explicit", undo: "journal", affects: ["plan"], sideEffects: ["replan"], reads: ["find_entities", "get_calendar_budget"], verify: ["session_in_scope", "plan_consistent"] },
+  schedule_session: { title: "安排学习", description: "在指定日期和钟点给某个任务安排一段学习（可新建任务）。", group: "plan", authorization: "explicit", undo: "journal", affects: ["plan"], sideEffects: ["replan"], reads: ["find_entities", "get_calendar_budget"], verify: ["session_in_scope", "plan_consistent"] },
+  set_session_state: { title: "学习块状态", description: "开始、完成、跳过、锁定或解锁一个学习块。", group: "plan", authorization: "explicit", undo: "journal", affects: ["plan"], sideEffects: ["replan"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches"] },
+  undo_batch: { title: "撤销", description: "撤销最近一次（或指定的）变更。", group: "recovery", authorization: "explicit", undo: "none", affects: ["plan", "calendar"], sideEffects: ["replan", "reminders"], reads: ["get_conversation", "get_operation_status"], verify: ["entity_state_matches"] },
+  update_reminder_policy: { title: "提醒设置", description: "开关截止提醒、默认提前量、安静时段；或设置某个任务提前多久提醒。", group: "reminder", authorization: "explicit", undo: "journal", affects: ["reminders"], sideEffects: ["reminders"], reads: ["get_context"], verify: ["policy_saved", "side_effect_status"] },
+  update_digest_policy: { title: "摘要邮件设置", description: "每日/每周摘要的开关、时间、是否只在工作日。", group: "reminder", authorization: "explicit", undo: "journal", affects: ["reminders"], sideEffects: ["job"], reads: ["get_context"], verify: ["policy_saved"] },
+  update_profile_fact: { title: "身份信息", description: "记录主人陈述的学历层次、专业、校区、入学年份、年级。", group: "profile", authorization: "explicit", undo: "journal", affects: ["notices"], sideEffects: [], reads: ["get_context"], verify: ["entity_state_matches"] },
+  upsert_notice_rule: { title: "通知筛选规则", description: "某类人群专属的通知不进行动（原文保留）；remove 撤回。", group: "profile", authorization: "explicit", undo: "journal", affects: ["notices"], sideEffects: [], reads: ["get_context"], verify: ["policy_saved"] },
+  apply_notice: { title: "通知", description: "按身份与规则判断一条通知：明确适用的义务建任务，其余只保留事实。", group: "profile", authorization: "auto", undo: "journal", affects: ["plan", "reminders", "notices"], sideEffects: ["replan", "reminders"], reads: ["get_evidence"], verify: ["entity_state_matches"] },
+  resolve_notice: { title: "通知归类", description: "主人纠正某条通知是否与自己有关、要不要做。", group: "profile", authorization: "explicit", undo: "journal", affects: ["plan", "notices"], sideEffects: ["replan"], reads: ["find_entities", "get_evidence"], verify: ["entity_state_matches"] },
+  request_export: { title: "导出数据", description: "生成一份业务数据导出文件供下载。", group: "recovery", authorization: "explicit", undo: "none", affects: [], sideEffects: ["job"], reads: [], verify: ["side_effect_status"] },
+  upsert_goal: { title: "目标", description: "新建或修改目标；primary=true 设为当前唯一的主要方向。", group: "goal", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["find_entities"], verify: ["entity_state_matches"] },
+  select_candidate: { title: "开始项目", description: "选一个候选开始试做（默认两周、只建第一步）或正式投入。不代表对外报名。", group: "goal", authorization: "explicit", undo: "journal", affects: ["plan", "direction"], sideEffects: ["replan"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "plan_consistent"] },
+  update_project_state: { title: "项目状态", description: "暂停/恢复/结束项目，或把试做转为正式投入。", group: "goal", authorization: "explicit", undo: "journal", affects: ["plan", "direction"], sideEffects: ["replan"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "plan_consistent"] },
+  request_exploration: { title: "找候选项目", description: "按主人给的问题检索有来源的资料并生成最多 3 个候选。", group: "goal", authorization: "explicit", undo: "none", affects: ["direction"], sideEffects: ["job"], reads: ["get_context"], verify: ["side_effect_status"] },
+  link_resource: { title: "资料", description: "把资料存下来、关联到项目，或纠正它是参考资料/别人的要求/自己的成果。", group: "goal", authorization: "auto", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["find_entities"], verify: ["entity_state_matches"] },
+  update_agent_policy: { title: "主动程度与预算", description: "每日模型/搜索调用上限；是否运行定期探索和定期复盘。", group: "agent", authorization: "explicit", undo: "journal", affects: [], sideEffects: [], reads: ["get_context"], verify: ["policy_saved"] },
+  request_review: { title: "复盘", description: "按一周已记录的事实生成复盘与建议；建议不自动执行。", group: "agent", authorization: "explicit", undo: "none", affects: [], sideEffects: ["job"], reads: ["get_context"], verify: ["side_effect_status"] },
+  configure_exploration: { title: "定期探索", description: "新建、调整或停用一个关注方向及其每周探索时间。", group: "agent", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: ["job"], reads: ["find_entities"], verify: ["policy_saved"] },
+  request_owner_digest: { title: "发送摘要", description: "现在给主人本人发一份今日或本周摘要；已发出的邮件不能撤回。", group: "reminder", authorization: "explicit", undo: "none", affects: [], sideEffects: ["mail", "job"], reads: ["get_context"], verify: ["side_effect_status"] },
+  cancel_operation: { title: "停止处理", description: "停止一份还没处理完的投递；已生效的变化保留，用撤销回退。", group: "agent", authorization: "explicit", undo: "none", affects: [], sideEffects: [], reads: ["get_operation_status"], verify: ["side_effect_status"] },
+  update_fixed_event: { title: "固定活动", description: "修改或移除一个非课程的固定活动（名称、星期/日期、钟点）。", group: "course", authorization: "explicit", undo: "journal", affects: ["plan"], sideEffects: ["replan"], reads: ["find_entities", "get_calendar_budget"], verify: ["entity_state_matches", "plan_consistent"] },
+  complete_task: { title: "完成任务", description: "把指定任务标记完成，取消其未执行学习块与提醒。", group: "task", authorization: "explicit", undo: "journal", affects: ["plan", "reminders"], sideEffects: ["replan", "reminders"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "plan_consistent"] },
 };
 
 export const COMMAND_WHITELIST = Object.keys(OPERATIONS) as Array<Command["command"]>;
@@ -521,6 +547,10 @@ export type CommandContext = {
   evidence: string;
   /** 是否来自主人本人的明确指令（输入框原话/卡片按钮）。false = 来自资料正文或模型建议；缺省按 true（服务端内部调用） */
   explicit?: boolean;
+  /** Agent 推断出的修改（决策/目标运行），不是主人逐字说出的；按参数级授权判断是否要确认 */
+  inferred?: boolean;
+  /** 主人已经确认过这份绑定后的方案（确认与方案指纹一致） */
+  confirmed?: boolean;
   /** 规划时刻；缺省取当前时间（测试用固定时钟） */
   now?: Date;
   conversationId?: string | null;

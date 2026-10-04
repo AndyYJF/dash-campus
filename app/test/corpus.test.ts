@@ -10,11 +10,9 @@ import { loadCorpus } from "./corpus/schema";
  */
 
 const corpus = loadCorpus();
-/** P1 计划补齐的意图（§6 P1）；落地前语料可以引用，P1 起由 intentSchema 覆盖 */
-const PLANNED_OPS = ["create_task", "practice", "schedule_at", "session_state", "resolve_notice", "archive"];
-const KNOWN_OPS = new Set([...intentSchema.options.map((o) => o.shape.op.value as string), ...PLANNED_OPS]);
+const KNOWN_OPS = new Set(intentSchema.options.map((o) => o.shape.op.value as string));
 
-test("语料规模与格式：≥200 条（开发≥150、验收≥50）、ID 唯一、op 都是已知或计划中的意图", () => {
+test("语料规模与格式：≥200 条（开发≥150、验收≥50）、ID 唯一、op 都是 intentSchema 里的意图", () => {
   assert.ok(corpus.length >= 200, `当前 ${corpus.length} 条`);
   const dev = corpus.filter((e) => e.split === "dev").length;
   assert.ok(dev >= 150, `开发集 ${dev} 条`);

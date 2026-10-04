@@ -8,7 +8,34 @@
 
 下文“尚未实施”“未部署”和旧测试数为当时记录，不是当前结论。
 
-## Agent增强 v1.1 · P0 能力探测、请求预算、trace（2026-10-04，本地实现，未提交/未部署）
+## Agent增强 v1.1 · P1 注册表、意图、授权与步骤绑定（2026-10-05）
+
+方案见 [Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) §5.1、§6 P1。无迁移（schema 仍 30）。
+
+### 交付
+
+- 注册表（`contracts/commands.ts`）：授权分四级 `auto / explicit / confirm / never`（原 `owner_explicit` 更名为 `explicit`）；每个操作新增 `sideEffects`（replan/reminders/mail/job）、`reads`（P2 八种只读工具名）、`verify`（policy_saved、entity_state_matches、session_in_scope、plan_consistent、practice_not_duplicated、dependent_steps_completed、side_effect_status）。`create_or_update_task` 新增 `projectId`（新建与修改都校验项目存在，撤销按通用字段回滚）；`record_practice` 的 `projectId` 同样校验。
+- 参数级授权（`domain/authorization.ts`，纯函数）：按来源 owner / inferred / material 与具体参数判断 allow / confirm / deny。资料文字只能触发 auto 操作；Agent 推断的修改中，只含临时 date_limit / auto_reschedule 的时间规则与纯新建（新任务、实践记录）可直接执行，长期规则、改截止、具体块等需确认；预算/主动程度、日历同步端点、停止处理永不由推断修改。执行器（`executeCommand`）统一按此把关，需确认返回 `NEEDS_CONFIRMATION`；绑定阶段也先做同一检查（预检查），拒绝的不进入执行。
+- 意图（`domain/intent.ts`）：新增 `create_task / practice / schedule_at / session_state / resolve_notice / archive`；引用新增 `{kind:"id"}`（只认选中卡片、对话 refs、工具结果里出现过的对象，否则明确拒绝）和 `{kind:"step"}`（引用同一句里前面某一步产生的对象）。绑定（`workflows/agent.ts`）分别落到 create_or_update_task（projectRef 解析为 projectId）、record_practice（日期不能晚于今天）、schedule_session、set_session_state、resolve_notice、archive_entity；archive 只支持任务/目标/课表，其余种类给出该用的操作。
+- 意图目录（`domain/intent-catalog.ts`）：每个意图 → 一个或多个注册操作，附说明与输入 JSON Schema；never 与无映射不进目录；`catalogProblems()` 校验意图、schema、元数据一致。
+- 多步执行（`workflows/agent-steps.ts` + `intake.ts`）：`bindIntents` 遇到多个非政策意图直接失败，不再静默只做第一个。一个事项里的多个意图拆成步骤事项（连续政策合并为一步，其余各一步，第一步沿用原事项，其余 `${key}-sN`），每步独立执行、独立 journal 批次、可分别撤销；后一步引用前一步结果时等前一步落库后再绑定，前一步失败则不执行；引用自己或后面步骤的那一步直接失败；互不依赖的步骤照常执行。分类模型可在一个 command 事项给出 `intents` 数组。
+- 确认绑定方案指纹：模糊调整的推断方案先绑定成命令，再按参数级授权决定是否确认；确认问题键带“命令 + 涉及对象版本”的指纹。确认前对象被改过（版本变化）时，旧确认作废并按现状重新问；执行时再核对一次指纹。原 `adjustmentNeedsConfirmation` 只在方案无法预先绑定（需先问选哪一个）时作后备。
+- 语料测试改为只接受 `intentSchema` 里的意图（P0 时的“计划中意图”白名单删除）。
+
+### 验证证据（隔离层）
+
+- 新增 `test/agent-p1.test.ts` 6 项，走真实管线（POST 投递 → worker → 绑定 → 执行器，模型固定回放）：注册表四级授权/读取工具/核验字段齐全且目录与注册表一致；同一 `update_planning_policy` 临时规则推断可直接执行、长期规则需确认、确认后放行、资料来源拒绝，预算推断即使确认也拒绝，执行器对未确认的推断长期规则返回 NEEDS_CONFIRMATION 且不落库；“新建任务 + 引用第 1 步排时间”两步都执行、两个独立批次、只撤销第 2 步时任务保留；前一步失败时依赖步骤不执行且不建任务，引用后面步骤的那一步失败、独立步骤照常；未见过的 ID 拒绝、选中卡片后同一 ID 可用，归档项目明确拒绝；等待确认期间主人改了那一块，旧“可以”不执行并生成新确认问题，再确认后才移动。
+- 原模糊调整测试 7 项与语料测试 2 项保持通过（临时重排无需确认、推断长期规则需确认、混合多对象决策仍拒绝）。
+- 回归中发现既有的时刻相关测试：计时停止用真实时钟、测试用 UTC 日期当“今天”，在当地 00:00–08:00 运行会失败（与本阶段改动无关，未改代码时同样失败）。修正：`focus-timer` 改用可注入时钟 `nowDate()`（生产仍是真实时间），计时测试固定在当地中午、单独一天；复盘测试“今天”按 Asia/Shanghai 取日期。
+- 全套 **361/361 通过**（P0 后 355 + 新 6）；`tsc --noEmit` 无错；eslint 0 错（2 个既有警告）；`next build` 通过。
+
+### 未验证 / 未完成
+
+- 分类模型给出 `intents` 数组只在固定回放中验证；真实模型是否稳定给出多意图要到 P2 路由与 P3 评测才有数据。
+- `seen` 目前只来自选中卡片与对话 refs；只读工具结果入 SeenSet 在 P2 实现。
+- 步骤状态仍存放在投递事项上；带 revision 的目标运行与步骤表（`agent_goal_runs/steps`）在 P5。
+
+## Agent增强 v1.1 · P0 能力探测、请求预算、trace（2026-10-04，已部署 `d1efca0`）
 
 方案见 [Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) §3.3、§6 P0。基于 `main @ 256d13b`，迁移最大号 29 → 新增 0030。
 

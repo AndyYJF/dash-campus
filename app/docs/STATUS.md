@@ -15,7 +15,8 @@ R0–R5 与上线阻碍修复已推送至 `agentbox/dashcampus`，当前业务�
 | 工作包 | 状态 |
 |---|---|
 | P0 能力探测、请求预算、trace | **`d1efca0` 已部署生产（schema30，2026-10-05），冒烟通过**；隔离测试 355/355。生产探测四项 supported 并已写入设置；登录态网页走查与真实投递端到端未做。真实端点探测（仅 `gemini-3.8-flash-high`，临时库）：text/jsonSchema/tools/vision 均 supported，计 5 次请求，trace 无凭证。见 [实施记录](agent-first-v2/implementation-progress.md) |
-| P1–P6 | 未开始 |
+| P1 注册表、意图、授权与步骤绑定 | 已实现，全套 361/361（新增 6 项）；发布与生产冒烟见 [实施记录](agent-first-v2/implementation-progress.md)。真实模型多意图输出待 P2/P3 验证 |
+| P2–P6 | 未开始 |
 
 ## 2. 证据边界（哪些能说、哪些不能说）
 

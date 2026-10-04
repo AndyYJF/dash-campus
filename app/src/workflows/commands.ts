@@ -3,6 +3,7 @@ import { getDb } from "@/repositories/db";
 import { addChange, createBatch, type ChangeInput } from "@/repositories/journal";
 import { commandSchema, COMMAND_POLICY_VERSION, OPERATIONS, type Command, type CommandContext, type OperationAffect } from "@/contracts/commands";
 import { getInstanceState } from "@/repositories/instance";
+import { authorizeCommand } from "@/domain/authorization";
 import { applyArchive, applyCourseSet, applyException, applyFixedEvents } from "@/workflows/ops/courses";
 import { applyCompleteTask, applyCorrectPractice, applyPauseTask, applyPractice, applyTask } from "@/workflows/ops/tasks";
 import { applyRescheduleSession, applyScheduleSession, applySessionState } from "@/workflows/ops/sessions";
@@ -140,10 +141,10 @@ export function executeCommand(raw: unknown, ctx: CommandContext): CommandResult
   if (!parsed.success) {
     return { ok: false, code: "VALIDATION", error: `命令不合法：${parsed.error.issues.map((i) => `${i.path.join(".")} ${i.message}`.trim()).join("; ")}` };
   }
-  // 资料里的文字不是授权：需要主人明确指令的操作，只有主人本人的输入/按钮可以触发
-  if (meta.authorization === "owner_explicit" && ctx.explicit === false) {
-    return { ok: false, code: "NOT_AUTHORIZED", error: `「${meta.title}」需要你本人明确提出，资料里的文字不能触发` };
-  }
+  // 资料里的文字不是授权；Agent 推断的修改按参数级授权，需确认的不直接执行
+  const auth = authorizeCommand(parsed.data, { origin: ctx.explicit === false ? "material" : ctx.inferred ? "inferred" : "owner", confirmed: ctx.confirmed });
+  if (auth.kind === "deny") return { ok: false, code: "NOT_AUTHORIZED", error: auth.reason };
+  if (auth.kind === "confirm") return { ok: false, code: "NEEDS_CONFIRMATION", error: auth.reason };
   // 旧部署周期的请求不得写入新周期（§9.1）
   if (ctx.instanceEpoch !== 0 && ctx.instanceEpoch !== getInstanceState().deploymentEpoch) {
     return { ok: false, code: "STALE_EPOCH", error: "这条请求来自恢复/重建之前，已不再执行" };

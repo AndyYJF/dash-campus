@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { getDb } from "./db";
+import { nowDate } from "@/domain/clock";
 
 /** focus 计时仓储（§5.1：最多 1 个进行中，由部分唯一索引兜底）。须在调用方事务内使用。 */
 
@@ -39,7 +40,7 @@ export function getFocusSession(id: string): FocusRow | null {
 export function startFocus(input: { taskId?: string | null; note: string; planSessionId?: string | null }): FocusRow | null {
   if (getInProgressFocus()) return null;
   const id = crypto.randomUUID();
-  const now = new Date().toISOString();
+  const now = nowDate().toISOString();
   getDb()
     .prepare(`INSERT INTO focus_sessions (id, task_id, note, started_at, accumulated_minutes, status, version, plan_session_id, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 'in_progress', 1, ?, ?, ?)`)
     .run(id, input.taskId ?? null, input.note, now, input.planSessionId ?? null, now, now);
@@ -53,7 +54,7 @@ export function stopFocus(
 ): { kind: "ok"; minutes: number; startedAt: string; taskId: string | null; note: string } | { kind: "stale" | "not_open" } {
   const row = getFocusSession(id);
   if (!row || row.status === "completed") return { kind: "not_open" };
-  const now = new Date();
+  const now = nowDate();
   const elapsed = row.status === "in_progress" ? Math.max(0, Math.round((now.getTime() - new Date(row.startedAt).getTime()) / 60000)) : 0;
   const minutes = row.accumulatedMinutes + elapsed;
   const r = getDb()

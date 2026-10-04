@@ -15,7 +15,7 @@ import { applyProposal } from "@/workflows/apply-proposal";
 import { runAssistantJob, runReviewJob, startAssistant, startReview, lastWeekMonday, proposalsFrom } from "@/workflows/review";
 import { saveAiBudget, getAiBudget, usageToday } from "@/workflows/ai-budget";
 import { startExploration } from "@/workflows/exploration";
-import { addDays } from "@/domain/time";
+import { addDays, localDateInTz } from "@/domain/time";
 
 before(migrateAll);
 beforeEach(() => setProvidersForTests({ model: { provider: fixtureModelProvider(), mode: "fixture" }, search: undefined }));
@@ -72,7 +72,7 @@ test("卡点→带依据建议→确认→更新计划（主闭环）；读取�
   const p = project("检索实践");
   const other = project("别的项目");
   const t = task("实现 BM25", p.id);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDateInTz(new Date(), "Asia/Shanghai");
   const l = log(today, "不知道怎么切分中文", t.id, p.id);
   const old = log(addDays(today, -30), "很久以前的卡点", t.id, p.id);
   const foreign = log(today, "别的项目卡点", null, other.id);
@@ -101,7 +101,7 @@ test("模型编造 ID：引用不存在的记录或范围外任务 → 整份提
   const p = project();
   const t = task("任务", p.id);
   const outside = task("范围外任务");
-  const l = log(new Date().toISOString().slice(0, 10), "卡住了", t.id, p.id);
+  const l = log(localDateInTz(new Date(), "Asia/Shanghai"), "卡住了", t.id, p.id);
   const lying: ModelProvider = {
     protocol: "fake",
     async call(r) {
@@ -130,7 +130,7 @@ test("模型编造 ID：引用不存在的记录或范围外任务 → 整份提
 test("拒绝冷却：同项目同操作类型同证据 14 天内不自动重复；主人主动重跑不受限", async () => {
   const p = project();
   const t = task("写报告", p.id);
-  const l = log(new Date().toISOString().slice(0, 10), "写不下去", t.id, p.id);
+  const l = log(localDateInTz(new Date(), "Asia/Shanghai"), "写不下去", t.id, p.id);
   const ask = (rerun: boolean) => startAssistant({ scopeType: "project", scopeId: p.id, question: "q", logId: l.id, rerun });
 
   const s1 = ask(false);

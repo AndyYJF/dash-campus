@@ -18,6 +18,7 @@ type Cmd<N extends Command["command"]> = Extract<Command, { command: N }>;
 
 export function applyPractice(cmd: Cmd<"record_practice">, ctx: CommandContext, changes: ChangeInput[]): string {
   if (cmd.taskId && !getTask(cmd.taskId)) throw new HttpError(422, "INVALID_REFERENCE", "关联的任务不存在");
+  assertProject(cmd.projectId);
   // 关联了任务的记录自动带上任务所属项目：项目页的证据来自真实投入
   const projectId = cmd.projectId ?? (cmd.taskId ? ((getDb().prepare(`SELECT project_id FROM tasks WHERE id = ?`).get(cmd.taskId) as { project_id: string | null } | undefined)?.project_id ?? null) : null);
   const id = insertPracticeEntry({ occurredOn: cmd.occurredOn, actualMinutes: cmd.actualMinutes, note: cmd.note, taskId: cmd.taskId, category: cmd.category, blocker: cmd.blocker, projectId });
@@ -28,6 +29,10 @@ export function applyPractice(cmd: Cmd<"record_practice">, ctx: CommandContext, 
 }
 
 type TaskCmd = Cmd<"create_or_update_task">;
+
+function assertProject(projectId: string | null | undefined): void {
+  if (projectId && !getDb().prepare(`SELECT 1 FROM projects WHERE id = ? AND archived_at IS NULL`).get(projectId)) throw new HttpError(422, "INVALID_REFERENCE", "要归入的项目不存在");
+}
 
 /** 截止字段 → 存储列；给了钟点就是具体时刻 */
 function dueColumns(cmd: TaskCmd): { kind: "none" | "date" | "instant"; localDate: string | null; timezone: string | null; at: string | null } {
@@ -40,6 +45,7 @@ function dueColumns(cmd: TaskCmd): { kind: "none" | "date" | "instant"; localDat
 export function applyTask(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInput[]): string {
   if (cmd.taskId) return applyTaskUpdate(cmd, ctx, changes);
   if (!cmd.title) throw new HttpError(422, "VALIDATION", "新建任务需要标题");
+  assertProject(cmd.projectId);
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const due = dueColumns(cmd);
@@ -49,8 +55,8 @@ export function applyTask(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInpu
        VALUES (?, ?, '', 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(id, cmd.title, cmd.priority ?? "normal", cmd.estimateMinutes ?? null, due.kind, due.localDate, due.timezone, due.at, cmd.effortMode ?? "deliverable", cmd.remainingMinutes ?? null, cmd.remainingMinutes != null ? (ctx.now ?? nowDate()).toISOString() : null, now, now);
-  getDb().prepare("UPDATE tasks SET task_kind = ? WHERE id = ?").run(cmd.taskKind ?? "auto", id);
-  changes.push({ entityKind: "task", entityId: id, action: "create", after: { title: cmd.title, taskKind: cmd.taskKind ?? "auto" }, afterVersion: 1 });
+  getDb().prepare("UPDATE tasks SET task_kind = ?, project_id = ? WHERE id = ?").run(cmd.taskKind ?? "auto", cmd.projectId ?? null, id);
+  changes.push({ entityKind: "task", entityId: id, action: "create", after: { title: cmd.title, taskKind: cmd.taskKind ?? "auto", ...(cmd.projectId ? { projectId: cmd.projectId } : {}) }, afterVersion: 1 });
   linkSource({ entityKind: "task", entityId: id, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
   // 提醒按当前策略建立（主人关掉提醒、截止在安静时段等都在里面处理）；聊天、卡片、兼容接口同一套
   if (due.kind !== "none") refreshReminders(getTask(id)!, now);
@@ -74,6 +80,10 @@ function applyTaskUpdate(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInput
   if (cmd.estimateMinutes !== undefined) set("estimateMinutes", "estimate_minutes", cmd.estimateMinutes);
   if (cmd.effortMode !== undefined) set("effortMode", "effort_mode", cmd.effortMode);
   if (cmd.priority !== undefined) set("priority", "priority", cmd.priority);
+  if (cmd.projectId !== undefined) {
+    assertProject(cmd.projectId);
+    set("projectId", "project_id", cmd.projectId);
+  }
   if (cmd.remainingMinutes !== undefined) {
     // 报告剩余需求：记下报告时刻，之后的投入从这个数扣
     before.remainingMinutes = row.remaining_minutes ?? null;

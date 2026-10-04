@@ -37,6 +37,10 @@ export type BindEnv = {
   selected: EntityRef | null;
   /** 已有回答（按问题键取结构化结果） */
   answer: (key: string) => Record<string, unknown> | null;
+  /** 只读工具在这次处理里返回过的对象；按 ID 引用只认见过的 */
+  seen?: EntityRef[];
+  /** 同一句话里第 N 步产生的对象；null = 那一步还没完成 */
+  stepRefs?: (step: number) => EntityRef[] | null;
 };
 
 export type QuestionSpec = { key: string; purpose: string; fieldPath: string; prompt: string; reason: string; options: string[]; context: Record<string, unknown> };
@@ -111,6 +115,18 @@ function projectRefs(): TaskRef[] {
   return getDb().prepare(`SELECT id, title FROM projects WHERE archived_at IS NULL AND status != 'completed' ORDER BY created_at`).all() as TaskRef[];
 }
 
+/** 通知：标题取正文第一行（上游桥接的取上游标题） */
+function noticeRefs(): TaskRef[] {
+  const rows = getDb()
+    .prepare(`SELECT m.id, r.text FROM inbox_messages m JOIN inbox_revisions r ON r.id = m.current_revision_id ORDER BY m.updated_at DESC, m.id DESC LIMIT 300`)
+    .all() as Array<{ id: string; text: string }>;
+  return rows.map((r) => ({ id: r.id, title: (/^上游标题：(.*)$/m.exec(r.text)?.[1] ?? r.text.split("\n").find((l) => l.trim()) ?? "").trim().slice(0, 80) || "通知" }));
+}
+
+function courseSetRefs(): TaskRef[] {
+  return (getDb().prepare(`SELECT id, created_at FROM course_sets WHERE status = 'active' ORDER BY created_at`).all() as Array<{ id: string; created_at: string }>).map((r) => ({ id: r.id, title: `${r.created_at.slice(0, 10)} 导入的课表` }));
+}
+
 /** 方向页展示的候选（与页面同序）：还没开始、没被否掉的 */
 export function candidateRefs(): TaskRef[] {
   return getDb().prepare(`SELECT id, title FROM candidates WHERE status IN ('proposed','idea') AND project_id IS NULL ORDER BY updated_at DESC, id LIMIT 3`).all() as TaskRef[];
@@ -141,8 +157,47 @@ function recentRefs(env: BindEnv): EntityRef[] {
 
 type Resolved<T> = { kind: "one"; value: T } | { kind: "many"; values: T[] } | { kind: "none"; why: string };
 
+/** 按 ID / 步骤引用时可用的对象：ID 必须出现在选中、对话或只读工具结果里，步骤必须已经完成 */
+function refTargets(ref: Extract<Ref, { kind: "id" | "step" }>, env: BindEnv): { ok: true; refs: EntityRef[] } | { ok: false; why: string } {
+  if (ref.kind === "id") {
+    const seen = [...recentRefs(env), ...(env.seen ?? [])];
+    return seen.some((r) => r.kind === ref.entityKind && r.id === ref.id) ? { ok: true, refs: [{ kind: ref.entityKind, id: ref.id }] } : { ok: false, why: "引用的对象没有在这次对话或查询结果里出现过，不按猜测的 ID 执行" };
+  }
+  const refs = env.stepRefs?.(ref.step);
+  if (refs === undefined) return { ok: false, why: `引用了第 ${ref.step} 步的结果，但这里不是多步执行` };
+  if (refs === null) return { ok: false, why: `第 ${ref.step} 步还没有完成，不能引用它的结果` };
+  return { ok: true, refs };
+}
+
+const sessionTask = (id: string) => (getDb().prepare(`SELECT task_id FROM plan_sessions WHERE id = ?`).get(id) as { task_id: string } | undefined)?.task_id;
+
+/** 项目、目标、通知等列表型对象的统一解析 */
+function resolvePooled(ref: Ref, env: BindEnv, kind: string, pool: TaskRef[], whyNone: string): Resolved<TaskRef> {
+  if (ref.kind === "named") return asResolved(matchTask(ref.text, pool), whyNone);
+  if (ref.kind === "recent") {
+    for (const r of recentRefs(env)) {
+      const hit = r.kind === kind ? pool.find((p) => p.id === r.id) : undefined;
+      if (hit) return { kind: "one", value: hit };
+    }
+    return { kind: "none", why: whyNone };
+  }
+  const t = refTargets(ref, env);
+  if (!t.ok) return { kind: "none", why: t.why };
+  const hit = t.refs.map((r) => (r.kind === kind ? pool.find((p) => p.id === r.id) : undefined)).find(Boolean);
+  return hit ? { kind: "one", value: hit } : { kind: "none", why: whyNone };
+}
+
 function resolveSession(ref: Ref, env: BindEnv): Resolved<SessionCand> {
   const active = activeSessions(env);
+  if (ref.kind === "id" || ref.kind === "step") {
+    const t = refTargets(ref, env);
+    if (!t.ok) return { kind: "none", why: t.why };
+    for (const r of t.refs) {
+      const hit = r.kind === "plan_session" ? active.find((s) => s.id === r.id) : r.kind === "task" ? active.find((s) => s.taskId === r.id) : undefined;
+      if (hit) return { kind: "one", value: hit };
+    }
+    return { kind: "none", why: "引用的学习安排已经结束、取消或不存在" };
+  }
   if (ref.kind === "recent") {
     for (const r of recentRefs(env)) {
       const hit = r.kind === "plan_session" ? active.find((s) => s.id === r.id) : r.kind === "task" ? active.find((s) => s.taskId === r.id) : undefined;
@@ -174,13 +229,23 @@ function resolveSession(ref: Ref, env: BindEnv): Resolved<SessionCand> {
 
 function resolveTask(ref: Ref, env: BindEnv): Resolved<TaskRef> {
   const tasks = openTasks();
-  if (ref.kind === "recent") {
-    for (const r of recentRefs(env)) {
-      const id = r.kind === "task" ? r.id : r.kind === "plan_session" ? (getDb().prepare(`SELECT task_id FROM plan_sessions WHERE id = ?`).get(r.id) as { task_id: string } | undefined)?.task_id : undefined;
+  const fromRefs = (refs: EntityRef[]) => {
+    for (const r of refs) {
+      const id = r.kind === "task" ? r.id : r.kind === "plan_session" ? sessionTask(r.id) : undefined;
       const hit = tasks.find((t) => t.id === id);
-      if (hit) return { kind: "one", value: hit };
+      if (hit) return hit;
     }
-    return { kind: "none", why: "不确定你说的是哪个任务，说一下名称" };
+    return null;
+  };
+  if (ref.kind === "id" || ref.kind === "step") {
+    const t = refTargets(ref, env);
+    if (!t.ok) return { kind: "none", why: t.why };
+    const hit = fromRefs(t.refs);
+    return hit ? { kind: "one", value: hit } : { kind: "none", why: "引用的任务已经完成、归档或不存在" };
+  }
+  if (ref.kind === "recent") {
+    const hit = fromRefs(recentRefs(env));
+    return hit ? { kind: "one", value: hit } : { kind: "none", why: "不确定你说的是哪个任务，说一下名称" };
   }
   const m = matchTask(ref.text, tasks);
   if (m.kind === "one") return { kind: "one", value: m.task };
@@ -325,7 +390,8 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
     if (intent.ordinal) picked = list[intent.ordinal - 1];
     else if (intent.ref.kind === "recent") picked = recentRefs(env).map((r) => (r.kind === "candidate" ? list.find((c) => c.id === r.id) : undefined)).find(Boolean) ?? (list.length === 1 ? list[0] : undefined);
     else {
-      const c = chooseOrAsk(asResolved(matchTask(intent.ref.text, list), `还没有和「${intent.ref.text}」对应的候选项目。可以说“帮我找一个……的小项目”，候选出来后再选`), env, "candidate", (v) => v.title, "候选项目");
+      const why = intent.ref.kind === "named" ? `还没有和「${intent.ref.text}」对应的候选项目。可以说“帮我找一个……的小项目”，候选出来后再选` : "引用的候选项目已经不在候选里";
+      const c = chooseOrAsk(resolvePooled(intent.ref, env, "candidate", list, why), env, "candidate", (v) => v.title, "候选项目");
       if (c.kind !== "one") return c;
       picked = c.value;
     }
@@ -333,7 +399,7 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
     return { kind: "run", command: { command: "select_candidate", candidateId: picked.id, mode: "trial", trialWeeks: intent.weeks, goalId: primaryGoalId() } };
   }
   if (intent.op === "project_state") {
-    const p = chooseOrAsk(asResolved(intent.ref.kind === "named" ? matchTask(intent.ref.text, projectRefs()) : { kind: "none" }, "没有找到这个项目"), env, "project", (v) => v.title, "项目");
+    const p = chooseOrAsk(resolvePooled(intent.ref, env, "project", projectRefs(), "没有找到这个项目"), env, "project", (v) => v.title, "项目");
     if (p.kind !== "one") return p;
     return { kind: "run", command: { command: "update_project_state", projectId: p.value.id, ...(intent.status ? { status: intent.status } : {}), ...(intent.commit ? { engagement: "committed" } : {}) } };
   }
@@ -476,6 +542,75 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
     }
     return { kind: "run", command: { command: "apply_teaching_day_override", scope: "course", courseName: intent.courseName, mode: "move", sourceTeachingDate: intent.sourceDate, targetDate: intent.targetDate, targetStart: intent.startLocalTime, targetEnd, origin: "user" } };
   }
+  if (intent.op === "create_task") {
+    let projectId: string | null = null;
+    if (intent.projectRef) {
+      const why = intent.projectRef.kind === "named" ? `没有找到叫「${intent.projectRef.text}」的项目，任务没有创建` : "引用的项目不存在或已结束，任务没有创建";
+      const p = chooseOrAsk(resolvePooled(intent.projectRef, env, "project", projectRefs(), why), env, "project", (v) => v.title, "项目");
+      if (p.kind !== "one") return p;
+      projectId = p.value.id;
+    }
+    return {
+      kind: "run",
+      command: { command: "create_or_update_task", title: intent.title, ...(intent.taskKind ? { taskKind: intent.taskKind } : {}), estimateMinutes: intent.estimateMinutes, dueLocalDate: intent.dueLocalDate, dueLocalTime: intent.dueLocalTime, priority: intent.priority, ...(projectId ? { projectId } : {}) },
+    };
+  }
+  if (intent.op === "practice") {
+    if (intent.occurredOn > env.referenceDate) return { kind: "fail", error: "实践记录只能记已经发生的投入，日期不能在今天之后" };
+    let taskId: string | null = null;
+    let projectId: string | null = null;
+    if (intent.taskRef) {
+      const t = chooseOrAsk(resolveTask(intent.taskRef, env), env, "task", (v) => v.title, "任务");
+      if (t.kind !== "one") return t;
+      taskId = t.value.id;
+    }
+    if (intent.projectRef) {
+      const p = chooseOrAsk(resolvePooled(intent.projectRef, env, "project", projectRefs(), "没有找到这个项目，记录没有保存"), env, "project", (v) => v.title, "项目");
+      if (p.kind !== "one") return p;
+      projectId = p.value.id;
+    }
+    return { kind: "run", command: { command: "record_practice", occurredOn: intent.occurredOn, actualMinutes: intent.actualMinutes, note: intent.note, category: intent.category, taskId, projectId, blocker: intent.blocker } };
+  }
+  if (intent.op === "schedule_at") {
+    if (intent.taskRef) {
+      const t = chooseOrAsk(resolveTask(intent.taskRef, env), env, "task", (v) => v.title, "任务");
+      if (t.kind !== "one") return t;
+      return { kind: "run", command: { command: "schedule_session", taskId: t.value.id, date: intent.date, startLocalTime: intent.startLocalTime, durationMinutes: intent.durationMinutes } };
+    }
+    if (!intent.title) return { kind: "fail", error: "要安排哪件事？说一下任务名称" };
+    return { kind: "run", command: { command: "schedule_session", title: intent.title, date: intent.date, startLocalTime: intent.startLocalTime, durationMinutes: intent.durationMinutes } };
+  }
+  if (intent.op === "session_state") {
+    const s = chooseOrAsk(resolveSession(intent.ref, env), env, "plan_session", (v) => sessionLabel(v, env), "安排");
+    if (s.kind !== "one") return s;
+    return { kind: "run", command: { command: "set_session_state", sessionId: s.value.id, action: intent.action, actualMinutes: intent.actualMinutes } };
+  }
+  if (intent.op === "resolve_notice") {
+    const n = chooseOrAsk(resolvePooled(intent.ref, env, "inbox_message", noticeRefs(), "没有找到这条通知"), env, "inbox_message", (v) => v.title, "通知");
+    if (n.kind !== "one") return n;
+    return { kind: "run", command: { command: "resolve_notice", messageId: n.value.id, partition: intent.partition } };
+  }
+  if (intent.op === "archive") {
+    if (intent.entityKind === "task") {
+      const t = chooseOrAsk(resolveTask(intent.ref, env), env, "task", (v) => v.title, "任务");
+      if (t.kind !== "one") return t;
+      return { kind: "run", command: { command: "archive_entity", entityKind: "task", entityId: t.value.id } };
+    }
+    if (intent.entityKind === "goal") {
+      const g = chooseOrAsk(resolvePooled(intent.ref, env, "goal", goalRefs(), "没有找到这个目标"), env, "goal", (v) => v.title, "目标");
+      if (g.kind !== "one") return g;
+      return { kind: "run", command: { command: "archive_entity", entityKind: "goal", entityId: g.value.id } };
+    }
+    if (intent.entityKind === "course_set") {
+      const sets = courseSetRefs();
+      const r = intent.ref.kind === "named" && sets.length === 1 ? { kind: "one" as const, value: sets[0]! } : resolvePooled(intent.ref, env, "course_set", sets, "现在没有可以归档的课表");
+      const c = chooseOrAsk(r, env, "course_set", (v) => v.title, "课表");
+      if (c.kind !== "one") return c;
+      return { kind: "run", command: { command: "archive_entity", entityKind: "course_set", entityId: c.value.id } };
+    }
+    const HOW: Record<string, string> = { project: "项目请说“结束项目”或“暂停项目”", resource: "资料暂不支持归档，可以改它的归属或用途", fixed_event: "固定活动请说“删除这个固定活动”", practice_entry: "实践记录不能归档，可以纠正分钟或日期", plan_session: "学习安排请说“跳过”或“挪到别的时间”" };
+    return { kind: "fail", error: `归档只支持任务、目标和课表；${HOW[intent.entityKind] ?? "这类对象不能归档"}` };
+  }
   // 以下都针对任务
   if (intent.op === "classify_task" || intent.op === "pause_task" || intent.op === "resume_task" || intent.op === "prioritize" || intent.op === "set_due" || intent.op === "remaining" || intent.op === "complete") {
     const resolved = resolveTask(intent.ref, env);
@@ -544,7 +679,33 @@ function labelAt(iso: string, tz: string): string {
 export function bindIntents(intents: Intent[], env: BindEnv): Bound {
   if (!intents.length) return { kind: "fail", error: "没有可执行的内容" };
   if (intents.every(isPolicyIntent)) return mergePolicy(intents, env);
+  // 多个对象的修改必须先拆成步骤（intake 的 splitSteps）；这里不静默只做第一个
+  if (intents.length > 1) return { kind: "fail", error: "这条指令包含多个不同对象的修改，需要拆成步骤分别执行" };
   return bindOne(intents[0]!, env);
+}
+
+/** 拆步骤：连续的时间规则合并成一步，其余每个意图各一步；返回每步包含的意图下标（从 0 起） */
+export function stepGroups(intents: Intent[]): number[][] {
+  const groups: number[][] = [];
+  intents.forEach((intent, i) => {
+    const last = groups.at(-1);
+    if (isPolicyIntent(intent) && last && isPolicyIntent(intents[last[0]!]!)) last.push(i);
+    else groups.push([i]);
+  });
+  return groups;
+}
+
+/** 意图里引用的前序步骤（从 1 起的意图序号） */
+export function stepRefsOf(intent: Intent): number[] {
+  const out: number[] = [];
+  const visit = (v: unknown) => {
+    if (!v || typeof v !== "object") return;
+    const o = v as Record<string, unknown>;
+    if (o.kind === "step" && typeof o.step === "number") out.push(o.step);
+    else for (const x of Object.values(o)) if (x && typeof x === "object") visit(x);
+  };
+  visit(intent);
+  return out;
 }
 
 /** 完成表达要先确认真的对得上已有任务；对不上就不当指令，留给分类按一次实践处理 */

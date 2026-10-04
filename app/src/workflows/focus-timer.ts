@@ -3,6 +3,7 @@ import { getFocusSession, stopFocus } from "@/repositories/focus-timer";
 import { insertPracticeEntry } from "@/repositories/practice";
 import { localDateInTz, instanceTimezone } from "@/domain/time";
 import { matchTask } from "@/domain/task-text";
+import { nowDate } from "@/domain/clock";
 
 /**
  * focus 停止 → 实践记录（MASTER-PLAN §6.3，REPAIR-PLAN §5.2）：
@@ -34,7 +35,7 @@ export function stopFocusAndRecord(id: string, expectedVersion: number, opts: bo
   if (!row || row.status === "completed") return { kind: "not_open" };
   if (row.version !== expectedVersion) return { kind: "stale" };
   const tz = instanceTimezone();
-  const now = new Date();
+  const now = nowDate();
   const elapsed = row.accumulatedMinutes + (row.status === "in_progress" ? Math.max(0, Math.round((now.getTime() - new Date(row.startedAt).getTime()) / 60000)) : 0);
   const crossDay = localDateInTz(new Date(row.startedAt), tz) !== localDateInTz(now, tz);
   const decided = o.confirm || o.discard || (o.minutes !== undefined && o.minutes !== null);

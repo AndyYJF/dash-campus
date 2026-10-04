@@ -11,11 +11,13 @@ import styles from "./dash.module.css";
 
 type Budget = {
   dailyModelCalls: number;
+  perIntakeModelRequests: number;
   dailySearchCalls: number;
   scheduledEnabled: boolean;
   weeklyReview: { weekday: number; localTime: string } | null;
 };
 type Usage = { modelCalls: number; searchCalls: number; inputTokens: number; outputTokens: number; localDate: string };
+type BudgetResp = { budget: Budget; version: number; usage: Usage; belowDefault: boolean; defaultDaily: number };
 
 const WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
@@ -26,14 +28,16 @@ export default function AiBudgetCard() {
   const [form, setForm] = useState<Budget | null>(null);
   const [error, setError] = useState<{ message: string; status?: number } | null>(null);
   const [saved, setSaved] = useState(false);
+  const [raiseHint, setRaiseHint] = useState<number | null>(null);
 
   const refresh = useCallback(() => {
-    api<{ budget: Budget; version: number; usage: Usage }>("/api/v1/ai-budget")
+    api<BudgetResp>("/api/v1/ai-budget")
       .then((r) => {
         setBudget(r.budget);
         setForm(r.budget);
         setVersion(r.version);
         setUsage(r.usage);
+        setRaiseHint(r.belowDefault ? r.defaultDaily : null);
       })
       .catch((e) => setError(toErrorState(e, "加载失败")));
   }, []);
@@ -45,7 +49,7 @@ export default function AiBudgetCard() {
     setError(null);
     setSaved(false);
     try {
-      const r = await api<{ budget: Budget; version: number; usage: Usage }>("/api/v1/ai-budget", {
+      const r = await api<BudgetResp>("/api/v1/ai-budget", {
         method: "PATCH",
         body: { expectedVersion: version, ...form },
       });
@@ -53,6 +57,7 @@ export default function AiBudgetCard() {
       setForm(r.budget);
       setVersion(r.version);
       setUsage(r.usage);
+      setRaiseHint(r.belowDefault ? r.defaultDaily : null);
       setSaved(true);
     } catch (e) {
       setError(toErrorState(e));
@@ -72,8 +77,13 @@ export default function AiBudgetCard() {
       <p className={styles.muted}>
         统计日期 {usage.localDate}
         {usage.inputTokens + usage.outputTokens > 0 && ` · token 输入 ${usage.inputTokens} / 输出 ${usage.outputTokens}`}
-        。只统计次数与 token，不估算费用。达到上限后暂停探索、复盘推测和卡点分析，截止提醒照常。
+        。按实际发出的模型请求计（含结构修复与重试），只统计次数与 token，不估算费用。达到上限后暂停探索、复盘推测和卡点分析，截止提醒照常。
       </p>
+      {raiseHint !== null && (
+        <p className={styles.muted} role="note">
+          自然语言理解改为模型优先后，默认每日上限是 {raiseHint} 次；你保存过的上限较低，没有被自动改动，可按需上调。
+        </p>
+      )}
       <div className={styles.formGrid}>
         <label className={styles.label}>
           每日模型调用上限
@@ -84,6 +94,17 @@ export default function AiBudgetCard() {
             max={1000}
             value={form.dailyModelCalls}
             onChange={(e) => set({ dailyModelCalls: Number(e.target.value) })}
+          />
+        </label>
+        <label className={styles.label}>
+          单份投递最多模型请求
+          <input
+            className={styles.field}
+            type="number"
+            min={1}
+            max={50}
+            value={form.perIntakeModelRequests}
+            onChange={(e) => set({ perIntakeModelRequests: Number(e.target.value) })}
           />
         </label>
         <label className={styles.label}>

@@ -25,7 +25,7 @@ import {
 import { createJob, getJob, leaseValid, renewLease, completeJob, failJob, completeCancellation, listJobs, requestCancel } from "@/repositories/jobs";
 import { getInstanceState } from "@/repositories/instance";
 import { resolveModelProvider } from "@/integrations";
-import { budgetCheck, meteredModel } from "@/workflows/ai-budget";
+import { budgetCheck, intakeBudgetCheck, meteredModel } from "@/workflows/ai-budget";
 import { instanceTimezone, localDateInTz, mondayOf, addDays } from "@/domain/time";
 import { parseTimetable, TimetableError } from "@/domain/timetable";
 import { executeCommand, executeOperation } from "@/workflows/commands";
@@ -216,8 +216,6 @@ async function collectExtraInputs(intakeId: string): Promise<{ sources: ExtraSou
 
 /** 模型每次最多看 5 张图（MASTER-PLAN §3.2） */
 const MAX_MODEL_IMAGES = 5;
-/** 单份投递的模型请求上限（§4.1）：1 次分类 + 结构化提取 */
-const MAX_MODEL_CALLS = 4;
 
 /**
  * 国务院办公厅年度节假日通知：确定性解析，不经模型。
@@ -352,23 +350,28 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
   items = listItems(intakeId);
   const rest = [ownerText, ...extraTexts].filter(Boolean).join("\n\n");
 
-  let modelCalls = 0;
-  /** 一次模型请求：预算与次数上限、租约续期、取消检查都在这里；模型调用不在事务内 */
-  async function callModel<T>(workflow: string, context: Record<string, unknown>, instructions: string, schema: z.ZodType<T>): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
+  /**
+   * 一次模型决策：日额度与单投递额度（请求数、累计执行时间）由持久账目原子核对，恢复/重跑不重置；
+   * 租约续期、取消检查都在这里；模型调用不在事务内。
+   */
+  async function callModel<T>(workflow: string, context: Record<string, unknown>, instructions: string, schema: z.ZodType<T>, itemId: string | null = null): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
     const model = resolveModelProvider();
     if (!model) return { ok: false, error: "模型未配置，原文已保留" };
     const budget = budgetCheck({ model: 1 });
     if (!budget.ok) return { ok: false, error: `BUDGET_EXCEEDED：${budget.message}` };
-    if (modelCalls >= MAX_MODEL_CALLS) return { ok: false, error: "这份材料已达到单次处理的模型请求上限，剩余部分请分开投递" };
-    modelCalls++;
+    const perIntake = intakeBudgetCheck(intakeId);
+    if (!perIntake.ok) return { ok: false, error: `BUDGET_EXCEEDED：${perIntake.message}` };
     db.prepare(`UPDATE intakes SET status = 'processing', updated_at = ? WHERE id = ?`).run(now(), intakeId);
     const controller = new AbortController();
     const interval = setInterval(() => {
       if (!renewLease(job.id, token, job.generation, now())) controller.abort();
     }, JOB_RENEW_INTERVAL_MS);
     try {
-      const result = await meteredModel(model.provider, { type: "intake", id: intakeId }).call({ workflow, context, outputSchemaVersion: 1, timeoutMs: JOB_EXTERNAL_TIMEOUT_MS, instructions, schema, signal: controller.signal });
-      if (!result.ok) return { ok: false, error: `${result.error.code}：${result.error.message}` };
+      const result = await meteredModel(model.provider, { type: "intake", id: intakeId }, { itemId, conversationId: intake?.conversationId ?? null }).call({ workflow, context, outputSchemaVersion: 1, timeoutMs: JOB_EXTERNAL_TIMEOUT_MS, instructions, schema, signal: controller.signal });
+      if (!result.ok) {
+        const message = result.error.code === "BUDGET_EXCEEDED" ? result.error.message.replace(/^BUDGET_EXCEEDED:\s*/, "") : result.error.message;
+        return { ok: false, error: `${result.error.code}：${message}` };
+      }
       // provider 已按 schema 校验；这里再过一遍，保证默认值与类型一致（不信任任何未校验的输出）
       const checked = schema.safeParse(result.validatedResult);
       return checked.success ? { ok: true, value: checked.data } : { ok: false, error: `SCHEMA_INVALID：模型输出不符合约定（${checked.error.issues[0]?.path.join(".") ?? ""} ${checked.error.issues[0]?.message ?? ""}）` };
@@ -440,7 +443,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
       }
     } else {
       const today = localDateInTz(nowDate(), intake.timezone);
-      const result = await callModel(ADJUSTMENT_DECISION_WORKFLOW, adjustmentContext(String(item.payload.decisionText), today, nowDate(), intake.context.selectedEntityRef ?? null, replies), ADJUSTMENT_DECISION_INSTRUCTIONS, adjustmentDecisionSchema);
+      const result = await callModel(ADJUSTMENT_DECISION_WORKFLOW, adjustmentContext(String(item.payload.decisionText), today, nowDate(), intake.context.selectedEntityRef ?? null, replies), ADJUSTMENT_DECISION_INSTRUCTIONS, adjustmentDecisionSchema, item.id);
       if (getJob(job.id)?.cancelRequested) return cancel();
       if (!leaseValid(job.id, token, job.generation, now())) return { kind: "fenced" };
       if (!result.ok) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: `没有修改安排：${result.error}` } }); continue; }
@@ -466,7 +469,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
     if (item.state !== "extracted" || !item.payload.fromModel) continue;
     const context = { text: rest, images: extra.images, referenceDate: intake.referenceDate, timezone: intake.timezone, about: item.payload.summary };
     if (item.kind === "timetable" && !item.payload.sdctText) {
-      const r = await callModel<TimetableExtraction>(TIMETABLE_EXTRACT_WORKFLOW, context, TIMETABLE_EXTRACT_INSTRUCTIONS, timetableExtractionSchema);
+      const r = await callModel<TimetableExtraction>(TIMETABLE_EXTRACT_WORKFLOW, context, TIMETABLE_EXTRACT_INSTRUCTIONS, timetableExtractionSchema, item.id);
       if (getJob(job.id)?.cancelRequested) return cancel();
       if (!r.ok) {
         updateItem(item.id, { state: "failed", payload: { ...item.payload, retryable: true }, evidence: { ...item.evidence, error: `课表没有读出来：${r.error}` } });
@@ -480,7 +483,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
       }
       updateItem(item.id, { payload: { ...item.payload, sdctText: conv.sdct, extraction: { courseCount: conv.courseCount, termLabel: r.value.termLabel, courses: r.value.courses.slice(0, 60) }, unclear }, evidence: { ...item.evidence, fields: r.value.courses.slice(0, 60).map((c) => ({ name: c.name, where: c.evidence })) } });
     } else if (item.kind === "calendar" && !item.payload.calendar) {
-      const r = await callModel<CalendarExtraction>(CALENDAR_EXTRACT_WORKFLOW, context, CALENDAR_EXTRACT_INSTRUCTIONS, calendarExtractionSchema);
+      const r = await callModel<CalendarExtraction>(CALENDAR_EXTRACT_WORKFLOW, context, CALENDAR_EXTRACT_INSTRUCTIONS, calendarExtractionSchema, item.id);
       if (getJob(job.id)?.cancelRequested) return cancel();
       if (!r.ok) {
         updateItem(item.id, { state: "failed", payload: { ...item.payload, retryable: true }, evidence: { ...item.evidence, error: `校历没有读出来：${r.error}` } });
@@ -496,7 +499,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
         else createItem({ intakeId, stableItemKey: `${item.stableItemKey}-t${n + 1}`, kind: "calendar", payload, evidence: item.evidence });
       });
     } else if (item.kind === "adjustment" && !item.payload.adjustment) {
-      const r = await callModel<AdjustmentExtraction>(ADJUSTMENT_EXTRACT_WORKFLOW, context, ADJUSTMENT_EXTRACT_INSTRUCTIONS, adjustmentExtractionSchema);
+      const r = await callModel<AdjustmentExtraction>(ADJUSTMENT_EXTRACT_WORKFLOW, context, ADJUSTMENT_EXTRACT_INSTRUCTIONS, adjustmentExtractionSchema, item.id);
       if (getJob(job.id)?.cancelRequested) return cancel();
       if (!r.ok || !r.value.items.length) {
         updateItem(item.id, { state: "failed", payload: { ...item.payload, retryable: !r.ok }, evidence: { ...item.evidence, error: r.ok ? "通知里没有读出具体的停课/调课日期，原文已保留" : `调课通知没有读出来：${r.error}` } });
@@ -512,7 +515,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
       const notices = listItems(intakeId).filter((x) => x.kind === "notice");
       const text = notices.length === 1 && rest ? rest : ((item.evidence?.excerpt as string) ?? "");
       if (!text.trim()) continue;
-      const r = await callModel<NoticeExtraction>(NOTICE_EXTRACTION_JOB_TYPE, { text, occurredAt: intake.createdAt, timezone: intake.timezone }, NOTICE_EXTRACT_INSTRUCTIONS, noticeExtractionSchema);
+      const r = await callModel<NoticeExtraction>(NOTICE_EXTRACTION_JOB_TYPE, { text, occurredAt: intake.createdAt, timezone: intake.timezone }, NOTICE_EXTRACT_INSTRUCTIONS, noticeExtractionSchema, item.id);
       if (getJob(job.id)?.cancelRequested) return cancel();
       if (!r.ok) {
         updateItem(item.id, { payload: { ...item.payload, notice: { text, structured: null, reason: r.error } } });

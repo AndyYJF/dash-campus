@@ -7,6 +7,7 @@ import Icon from "./Icon";
 import Link from "next/link";
 import IntegrationStatus from "./IntegrationStatus";
 import AiBudgetCard from "./AiBudgetCard";
+import ModelCapabilitiesCard from "./ModelCapabilitiesCard";
 import ThemeToggle from "./ThemeToggle";
 import DigestSettingsCard from "./DigestSettingsCard";
 import ProfileSourcesCard from "./ProfileSourcesCard";
@@ -151,6 +152,7 @@ export default function SettingsView() {
 
       <ProfileSourcesCard />
       <DigestSettingsCard />
+      {integrations.model.state === "configured" && <ModelCapabilitiesCard />}
       <AiBudgetCard />
       <DataExportCard />
       <LegacyImportCard />

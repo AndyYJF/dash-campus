@@ -127,7 +127,7 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
 };
 
 /** settings 里只属于调度内部的键 */
-export const FULL_JSON_SETTINGS_OMIT_KEYS = ["weeklyReviewNextRun", "digestSchedule:daily", "digestSchedule:weekly", "digestSystemFingerprint"];
+export const FULL_JSON_SETTINGS_OMIT_KEYS = ["weeklyReviewNextRun", "digestSchedule:daily", "digestSchedule:weekly", "digestSystemFingerprint", "modelCapabilities"];
 
 /** 明确不导出（审计用）：凭证、会话、幂等记录、后台队列、导出记录本身、实例控制 */
 export const FULL_JSON_EXCLUDED = [
@@ -142,4 +142,8 @@ export const FULL_JSON_EXCLUDED = [
   "planning_state",
   "schema_version",
   "intake_blobs",
+  // Agent 增强 P0（迁移 0030）：请求额度账目与模型诊断/纠错不是用户事实
+  "ai_request_ledger",
+  "agent_traces",
+  "agent_feedback",
 ] as const;

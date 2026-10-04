@@ -4,6 +4,7 @@ import { getConfig, SUPPORTED_MODEL_PROTOCOLS } from "@/config";
 import { OpenAIChatProvider } from "@/integrations/openai-chat";
 import { TavilySearchProvider } from "@/integrations/tavily";
 import { fixtureModelProvider, fixtureSearchProvider } from "@/integrations/fixtures";
+import { currentModelCapabilities } from "@/workflows/model-capabilities";
 
 /**
  * provider 工厂。真实协议：模型 openai-chat、搜索 tavily。
@@ -37,6 +38,8 @@ export function resolveModelProvider(): Resolved<ModelProvider> {
       endpoint: cfg.MODEL_ENDPOINT,
       apiKey: cfg.MODEL_API_KEY,
       model: cfg.MODEL_NAME,
+      // 协议分支按实测能力：未探测或配置已变化时为 undefined，走 json_object 兼容路径
+      jsonSchema: currentModelCapabilities(cfg)?.jsonSchema,
     }),
     mode: "real",
   };

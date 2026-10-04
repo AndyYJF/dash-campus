@@ -8,6 +8,36 @@
 
 下文“尚未实施”“未部署”和旧测试数为当时记录，不是当前结论。
 
+## Agent增强 v1.1 · P0 能力探测、请求预算、trace（2026-10-04，本地实现，未提交/未部署）
+
+方案见 [Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) §3.3、§6 P0。基于 `main @ 256d13b`，迁移最大号 29 → 新增 0030。
+
+### 交付
+
+- 迁移 `0030_agent_requests_traces.sql`：`ai_request_ledger`（按实际 HTTP 的持久额度账目）、`agent_traces`、`agent_feedback`；`EXPECTED_SCHEMA_VERSION = 30`。三表列入导出排除，`modelCapabilities` 设置键不入导出。
+- 请求级持久预算（`workflows/ai-budget.ts`）：每次 HTTP 发出前在 `BEGIN IMMEDIATE` 事务内原子占用（web/worker 共享），发出后即使超时/崩溃也保留占用，只有确认未发出才释放；同一 requestId 重复结算不重复计数。日额度 150（旧保存值不覆盖，设置页提示可上调）、单决策 4 次、单投递 10 次（新增 `perIntakeModelRequests`）、单投递累计执行 180 秒，都从账目计数，重启/恢复不重置。`intake.ts` 去掉进程内 `MAX_MODEL_CALLS=4` 局部计数。复盘/探索/通知提取同样经 `meteredModel` 走请求级日额度。
+- 协议层（`integrations/model-json.ts`、`openai-chat.ts`、`contracts/model.ts`）：`ModelRequest.gate` 闸门在每次 HTTP（含结构修复）前占用额度；`ChatMessage` 支持 assistant `tool_calls` 与 `role: "tool"`，`rawExchange` 支持 `tools/tool_choice` 并解析 `tool_calls`；`jsonSchema=supported` 时按 Zod 生成 `response_format: json_schema`（满足 strict 子集才 `strict: true`，否则作引导），其余情况保留 `json_object` 兼容路径；服务端 Zod 校验不变。
+- 脱敏 trace（`workflows/agent-trace.ts`）：每次模型决策（成功/失败/超额）一条，关联投递/事项/对话/目标与 requestId，记录 workflow、协议/模型、指令摘要版本、schema 版本、状态、次数、耗时、每次 HTTP 的截断输出；key 与 key 形态字符串替换为 `[redacted]`，图片换成 sha256+字节数，整体封顶 20k 字并标截断。worker 每趟清理 trace 30 天、反馈 90 天、请求账目 90 天。
+- 能力探测：`integrations/model-capabilities.ts`（文本基准、strict json_schema、工具调用含 `role=tool` 回填、16×16 图片）三态 supported/unsupported/unknown，错误/超时/鉴权失败为 unknown；`workflows/model-capabilities.ts` 保存协议、端点指纹、模型、探测版本与时间（不存 key），配置或探测版本变化即失效；`resolveModelProvider()` 按当前有效结论选择协议。`scripts/dev/probe-model-caps.mts` 命令行探测；设置页新增“模型端点能力”卡与 `GET/POST /api/v1/integrations/model-capabilities`（主人鉴权、CSRF）手动重探，每次约 5 个请求计入日额度。
+- 语料种子 `test/corpus/utterances.jsonl` 208 条（开发集 150、独立验收集 58；act 166 / decide 20 / ask 8 / material 14；多轮 9 条；49 条标 fallback），只含现有测试/文档公开示例与合成句子；格式由 `test/corpus/schema.ts` 校验。引用了 P1 计划补齐的意图（create_task、practice、schedule_at、session_state、resolve_notice、archive）。
+
+### 验证证据（隔离层）
+
+- 新增 `test/agent-p0.test.ts` 16 项：结构修复两次请求各计一条；额度只剩 1 次时最后一次修复不发出；6 个并发决策在剩 3 次额度时只发 3 个；单决策第 5 次请求被拒；单投递额度换新包装实例仍不重置；180 秒累计执行时间；崩溃遗留预留照常计数、未发出才释放、重复结算无效；trace 无 key/base64、超额也有记录；TTL 清理；json_schema/json_object 选择；能力探测各分支；配置变化后能力失效；投递管线按持久账目停止后续提取。
+- 新增 `test/corpus.test.ts` 2 项：规模（≥200、开发≥150、验收≥50）/格式/ID/op 覆盖；fallback 子集由当前规则解析给出同样结果（规则路径缺口如 u002 “这周还有哪些学习块？”标 `rules-gap`，不列入降级保证）。
+- 全套 **355/355 通过**（原 337 + 新 18）；`tsc --noEmit` 仅余需 `next typegen` 生成的 `LayoutProps`（既有）；改动文件 eslint 无错。真实 `npm run migrate` 在临时库应用 0030 至 schema30；探测脚本在未配置模型时明确报 `INTEGRATION_UNAVAILABLE`。
+
+### 真实端点能力探测（2026-10-04）
+
+- 主人指定模型 `gemini-3.8-flash-high`（OpenAI 兼容端点，只测此模型），凭证仅以进程环境变量传入、未写文件；在临时库（迁移至 schema30，探测后删除）运行 `probe-model-caps.mts`：**text / jsonSchema（strict json_schema）/ tools（含 role=tool 回填）/ vision 均为 supported**，指纹 `08281fa15a6c8dfe`。
+- 同库核对：请求账目 5 条全部 `ok`（每个能力各计一条，含基准与工具回填）；trace 1 条；trace 与 settings 中无 key 片段、无 base64 图片。
+- 结论只适用于该模型与该端点；更换模型/端点后旧结论按指纹失效，需重探。生产库未写入探测结果。
+
+### 未验证 / 未完成
+
+- 并发测试在单进程内进行；跨进程原子性依赖 SQLite `BEGIN IMMEDIATE`，没有做多进程压测。
+- 设置页新卡片没有做网页走查；未提交、未推送、未部署。
+
 ## 2026-10-04 易用性修复规格发布（尚未实施）
 
 - 当前交接从 [START-HERE](./START-HERE.md) 和 [STATUS](../STATUS.md) 开始；业务审计基线cbbaeee/schema23，九项失败路径见 [审计摘要](./REPAIR-BASELINE-2026-10-04.md)。

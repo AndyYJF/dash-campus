@@ -24,10 +24,14 @@ export const BLOCKER_LOOKBACK_DAYS = 7;
 // ===== 预算设置（非秘密，存 settings 表） =====
 
 export const AI_BUDGET_SETTINGS_KEY = "aiBudget";
+/** 模型优先路由后的默认日额度；已保存的旧设置不强制覆盖 */
+export const DEFAULT_DAILY_MODEL_CALLS = 150;
 
 export const aiBudgetSchema = z.object({
-  /** 每日模型调用次数上限（含修复重试）；达到后暂停非必要 AI 任务，截止提醒不受影响 */
-  dailyModelCalls: z.number().int().min(0).max(1000).default(40),
+  /** 每日实际模型 HTTP 请求上限（含修复、重试、工具轮次）；达到后暂停非必要 AI 任务，截止提醒不受影响 */
+  dailyModelCalls: z.number().int().min(0).max(1000).default(DEFAULT_DAILY_MODEL_CALLS),
+  /** 单份投递累计模型 HTTP 请求上限（路由、决策、材料理解、修复与追问续答合计；恢复不重置） */
+  perIntakeModelRequests: z.number().int().min(1).max(50).default(10),
   /** 每日搜索调用上限（search + extract 各算一次） */
   dailySearchCalls: z.number().int().min(0).max(1000).default(30),
   /** 定期任务（定期探索、定期周复盘）是否在额度内运行 */

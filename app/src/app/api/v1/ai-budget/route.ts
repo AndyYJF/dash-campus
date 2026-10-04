@@ -1,10 +1,10 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { aiBudgetSchema } from "@/contracts/review";
+import { aiBudgetSchema, DEFAULT_DAILY_MODEL_CALLS } from "@/contracts/review";
 import { requireOwner } from "@/workflows/auth-guard";
 import { conflict409, errorResponse } from "@/workflows/http";
-import { getAiBudget, saveAiBudget, usageToday } from "@/workflows/ai-budget";
+import { getAiBudget, saveAiBudget, savedDailyBelowDefault, usageToday } from "@/workflows/ai-budget";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +13,7 @@ export function GET(request: NextRequest) {
   const auth = requireOwner(request);
   if (!auth.ok) return auth.response;
   const { budget, version } = getAiBudget();
-  return NextResponse.json({ budget, version, usage: usageToday() });
+  return NextResponse.json({ budget, version, usage: usageToday(), belowDefault: savedDailyBelowDefault(), defaultDaily: DEFAULT_DAILY_MODEL_CALLS });
 }
 
 /** PATCH —— expectedVersion 乐观锁；0 表示首次保存。只合并请求里显式给出的字段 */
@@ -31,5 +31,5 @@ export async function PATCH(request: NextRequest) {
   const expected = version.data.expectedVersion;
   const r = saveAiBudget(merged, expected);
   if (r === "conflict") return conflict409();
-  return NextResponse.json({ budget: merged, version: r.version, usage: usageToday() });
+  return NextResponse.json({ budget: merged, version: r.version, usage: usageToday(), belowDefault: savedDailyBelowDefault(), defaultDaily: DEFAULT_DAILY_MODEL_CALLS });
 }

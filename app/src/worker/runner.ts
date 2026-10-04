@@ -13,6 +13,7 @@ import { runAssistantJob, runReviewJob, scheduleWeeklyReview } from "@/workflows
 import type { JobRow } from "@/contracts/jobs";
 import { isRestoredHold, touchWorkerHeartbeat } from "@/repositories/instance";
 import { sweepExpiredExports } from "@/workflows/exports";
+import { sweepAgentDiagnostics } from "@/workflows/agent-trace";
 
 import { NOTICE_EXTRACTION_JOB_TYPE } from "@/contracts/notice-extraction";
 import { runNoticeExtractionJob } from "@/workflows/notice-extraction";
@@ -67,6 +68,7 @@ export async function runDueJobsOnce(limit = 1): Promise<RunOnceStats & { held?:
   touchWorkerHeartbeat();
   // 本地文件清理，无外部请求：hold 期间也照常
   sweepExpiredExports();
+  sweepAgentDiagnostics();
   // 从备份恢复后：不调度、不领取，邮件/搜索/模型一律不发起，直到主人显式 resume（F14）
   if (isRestoredHold()) return { claimed: 0, done: 0, failed: 0, cancelled: 0, held: true };
   // 定期探索与定期周复盘：到期先入队（入队本身不调用外部服务）

@@ -1,10 +1,14 @@
 import type { ModelProvider, ModelRequest, ModelResult } from "@/contracts/model";
-import { completeWithSchema, type ChatMessage, type RawCallResult } from "@/integrations/model-json";
+import type { CapabilityState } from "@/contracts/model-capabilities";
+import { completeWithSchema, type ChatMessage, type RawCallResult, type ToolCall } from "@/integrations/model-json";
+import { toProviderJsonSchema } from "@/integrations/json-schema";
 
 /**
  * OpenAI 兼容 Chat Completions 适配器（MODEL_PROTOCOL=openai-chat）。
  * MODEL_ENDPOINT 为 base URL（如 https://api.example.com/v1），自动补 /chat/completions；
- * 已以 /chat/completions 结尾时原样使用。只用 JSON 输出，不假定支持联网或工具调用。
+ * 已以 /chat/completions 结尾时原样使用。
+ * 结构化输出按已探测能力选择：jsonSchema=supported 时发 json_schema，否则 json_object（兼容路径）。
+ * 工具消息（tools / tool_calls / role=tool）由 rawExchange 支持，只在能力探测为 supported 时由上层使用。
  */
 
 export function chatCompletionsUrl(endpoint: string): string {
@@ -12,19 +16,44 @@ export function chatCompletionsUrl(endpoint: string): string {
   return base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
 }
 
+export type ToolSpec = { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
+
+export type ExchangeOptions = {
+  responseFormat?: Record<string, unknown> | null;
+  tools?: ToolSpec[];
+  toolChoice?: "auto" | "none" | "required" | { type: "function"; function: { name: string } };
+  temperature?: number;
+};
+
 export class OpenAIChatProvider implements ModelProvider {
   readonly protocol = "openai-chat";
 
   constructor(
-    private readonly cfg: { endpoint: string; apiKey: string; model: string },
+    private readonly cfg: { endpoint: string; apiKey: string; model: string; jsonSchema?: CapabilityState },
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
   call(request: ModelRequest): Promise<ModelResult> {
-    return completeWithSchema(request, (messages) => this.raw(messages, request));
+    return completeWithSchema(request, (messages) => this.rawExchange(messages, request, { responseFormat: this.responseFormat(request) }));
   }
 
-  private async raw(messages: ChatMessage[], request: ModelRequest): Promise<RawCallResult> {
+  /** 结构化输出格式：只有探测确认支持时才发 json_schema */
+  responseFormat(request: ModelRequest): Record<string, unknown> {
+    if (this.cfg.jsonSchema === "supported") {
+      const js = toProviderJsonSchema(request.workflow, request.schema);
+      if (js) return { type: "json_schema", json_schema: js };
+    }
+    return { type: "json_object" };
+  }
+
+  async rawExchange(
+    messages: ChatMessage[],
+    request: Pick<ModelRequest, "timeoutMs" | "signal">,
+    options: ExchangeOptions = {},
+  ): Promise<RawCallResult> {
+    if (request.signal?.aborted) {
+      return { ok: false, code: "TIMEOUT", message: "已中断（预算或租约）", retryable: false, notSent: true };
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), request.timeoutMs);
     const onOuterAbort = () => controller.abort();
@@ -39,8 +68,9 @@ export class OpenAIChatProvider implements ModelProvider {
         body: JSON.stringify({
           model: this.cfg.model,
           messages,
-          temperature: 0.2,
-          response_format: { type: "json_object" },
+          temperature: options.temperature ?? 0.2,
+          ...(options.responseFormat ? { response_format: options.responseFormat } : {}),
+          ...(options.tools?.length ? { tools: options.tools, tool_choice: options.toolChoice ?? "auto" } : {}),
         }),
         signal: controller.signal,
       });
@@ -56,16 +86,19 @@ export class OpenAIChatProvider implements ModelProvider {
       }
       const body = (await res.json()) as {
         id?: string;
-        choices?: Array<{ message?: { content?: string | null } }>;
+        choices?: Array<{ message?: { content?: string | null; tool_calls?: ToolCall[] } }>;
         usage?: { prompt_tokens?: number; completion_tokens?: number };
       };
-      const text = body.choices?.[0]?.message?.content;
-      if (typeof text !== "string" || !text.trim()) {
+      const message = body.choices?.[0]?.message;
+      const text = message?.content;
+      const toolCalls = Array.isArray(message?.tool_calls) && message.tool_calls.length ? message.tool_calls : undefined;
+      if ((typeof text !== "string" || !text.trim()) && !toolCalls) {
         return { ok: false, code: "UNKNOWN", message: "模型响应没有文本内容", retryable: false };
       }
       return {
         ok: true,
-        text,
+        text: typeof text === "string" ? text : "",
+        toolCalls,
         requestId: body.id,
         usage: body.usage
           ? { inputTokens: body.usage.prompt_tokens, outputTokens: body.usage.completion_tokens }

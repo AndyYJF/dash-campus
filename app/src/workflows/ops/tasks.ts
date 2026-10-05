@@ -54,7 +54,7 @@ export function applyTask(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInpu
       `INSERT INTO tasks (id, title, description, status, priority, estimate_minutes, due_kind, due_local_date, due_timezone, due_at, effort_mode, remaining_minutes, remaining_reported_at, created_at, updated_at)
        VALUES (?, ?, '', 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, cmd.title, cmd.priority ?? "normal", cmd.estimateMinutes ?? null, due.kind, due.localDate, due.timezone, due.at, cmd.effortMode ?? "deliverable", cmd.remainingMinutes ?? null, cmd.remainingMinutes != null ? (ctx.now ?? nowDate()).toISOString() : null, now, now);
+    .run(id, cmd.title, cmd.priority ?? "normal", cmd.estimateMinutes ?? null, due.kind, due.localDate, due.timezone, due.at, cmd.effortMode ?? "deliverable", cmd.remainingMinutes ?? null, cmd.remainingMinutes != null ? now : null, now, now);
   getDb().prepare("UPDATE tasks SET task_kind = ?, project_id = ? WHERE id = ?").run(cmd.taskKind ?? "auto", cmd.projectId ?? null, id);
   changes.push({ entityKind: "task", entityId: id, action: "create", after: { title: cmd.title, taskKind: cmd.taskKind ?? "auto", ...(cmd.projectId ? { projectId: cmd.projectId } : {}) }, afterVersion: 1 });
   linkSource({ entityKind: "task", entityId: id, namespace: "intake", externalId: ctx.intakeId ?? "", itemKey: ctx.itemKey, evidence: ctx.evidence });
@@ -85,11 +85,13 @@ function applyTaskUpdate(cmd: TaskCmd, ctx: CommandContext, changes: ChangeInput
     set("projectId", "project_id", cmd.projectId);
   }
   if (cmd.remainingMinutes !== undefined) {
-    // 报告剩余需求：记下报告时刻，之后的投入从这个数扣
+    // 报告剩余需求：记下报告时刻，之后的投入从这个数扣。
+    // 和学习记录、块状态的写入时间同一时钟（真实写入时刻），不能用规划时钟 ctx.now：
+    // 同一次回答里先记下的实际分钟已经包含在报告里，不能因为时钟不一致再扣一次
     before.remainingMinutes = row.remaining_minutes ?? null;
     after.remainingMinutes = cmd.remainingMinutes;
     before.remainingReportedAt = row.remaining_reported_at ?? null;
-    after.remainingReportedAt = cmd.remainingMinutes === null ? null : (ctx.now ?? nowDate()).toISOString();
+    after.remainingReportedAt = cmd.remainingMinutes === null ? null : new Date().toISOString();
   }
   if (cmd.dueLocalDate !== undefined) {
     const due = dueColumns(cmd);

@@ -1,10 +1,14 @@
 # 从这里接手：V2 易用性修复与自研 Agent
 
-更新：2026-10-05。Agent 语义修复（R01–R08、S01–S20，迁移 0033）见下节；Agent增强 v1.1 的 P0–P6 已在 `main` 实现并逐包部署生产（`521aeaa`、schema32）；早先 R0–R5 与易用性修复的业务版本为 `95c8cf1`（schema29）。后续文档提交与业务部署修订分开记录。先读 [当前状态](../STATUS.md)、[产品与工程决策](../decisions.md) 及 [模糊调整的实现与证据](../flexible-adjustments-2026-10-04.md)。修复前审计基线 `cbbaeeeaa328807ebc97389a7a824f7acdb6c356` 只作历史，拉取后仍核对代码与工作区。
+更新：2026-10-05。Agent 语义修复（R01–R08、S01–S20，迁移 0033；复审修复 0034；过期未反馈块修复，当前生产 `de8adff`、schema 34）见下节；Agent增强 v1.1 的 P0–P6 已在 `main` 实现并逐包部署生产（`521aeaa`、schema32）；早先 R0–R5 与易用性修复的业务版本为 `95c8cf1`（schema29）。后续文档提交与业务部署修订分开记录。先读 [当前状态](../STATUS.md)、[产品与工程决策](../decisions.md) 及 [模糊调整的实现与证据](../flexible-adjustments-2026-10-04.md)。修复前审计基线 `cbbaeeeaa328807ebc97389a7a824f7acdb6c356` 只作历史，拉取后仍核对代码与工作区。
 
 ## Agent 语义修复（2026-10-05）
 
 [语义修复提示词](../../../Plan/dash-campus-AGENT-SEMANTIC-REPAIR-PROMPT-2026-10-05.md) 的 R01–R08 与 S01–S20 已实现，迁移 0033（schema 33）。证据见 [语义修复验收](./acceptance-semantic-repair-2026-10-05.md)，接口见 [契约](./AGENT-INTERFACE-CONTRACT.md) 末节，取舍见 [决策记录](../decisions.md) 末节。新增代码入口：约束类型 `src/domain/constraints.ts`、目标约束 `src/repositories/goal-constraints.ts`、统一门 `src/workflows/agent-gate.ts`、确认事实与实际影响 `src/workflows/command-facts.ts`、步骤凭据 `src/repositories/step-executions.ts`；回归 `test/agent-semantic-repair.test.ts`（R01–R08）与 `test/agent-semantic-scenarios.test.ts`（S 场景）。原 G04“通过”因核对盲点作废。
+
+复审修复（验收页 §8，迁移 **0034** `intakes.active_ms`，schema 34，生产 `1c7792f`）：解除约束单独授权、学习块按实际时间核对条件、对象身份统一由 `commandEntities` 解析、`in_background` 结果状态、180 秒按主动执行时间、指代不明请主人指认；回归 `test/agent-semantic-review.test.ts`。
+
+过期未反馈学习块（验收页 §9，无迁移，生产 `de8adff`）：已结束没反馈的块挂住需求不整段补排（`awaitingFeedbackSessions`，`src/workflows/plan.ts`），每段一个“这段做了吗，还剩多少？”问题（`askSessionFeedback`，`src/workflows/agent.ts`），回答走现有操作；回归 `test/session-feedback.test.ts`。剩余需求的报告时刻用真实写入时刻（`src/workflows/ops/tasks.ts`），和学习记录同一时钟比较先后，不要改回规划时钟 `ctx.now`。
 
 ## Agent增强 v1.1（已实施，2026-10-05）
 
@@ -43,7 +47,7 @@
 
 1. 补复杂课表截图、扫描 PDF 的真实视觉验证，以及真实模型的模糊调整追问续答。官网校历图片和简单调整已验证，不能据此推断任意材料/问答都可靠。
 2. 配置邮件后做 E23/E34 的真实投递与收件核对。
-3. 语义修复带迁移 0033（schema 33，部署状态见 STATUS）；后续改动按实际迁移版本、匹配备份/回退和公开行为验证发布，不重复执行旧迁移或重建生产。部署仍须相应用户授权。
+3. 语义修复带迁移 0033，复审修复带 0034（当前 schema 34，部署状态见 STATUS）；后续改动按实际迁移版本、匹配备份/回退和公开行为验证发布，不重复执行旧迁移或重建生产。部署仍须相应用户授权。
 4. 主人连续七天试用，记录 REPAIR-PLAN §8 列的指标并修正。
 5. 把仍在使用的 v1 写接口（候选/资料/身份规则/可用时间块/设置表单）逐个并入统一操作或同一份变更记录；课表导入和任务/目标/项目/固定活动表单已并入。
 

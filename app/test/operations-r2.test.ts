@@ -252,7 +252,7 @@ test("E13：deliverable 投入达估时后等主人报告剩余；报告“还�
   const asOf = at("2026-10-12T08:00");
   const taskId = addTask("复现基线", 60);
   rebuildPlan(asOf);
-  for (const s of blocks(taskId)) getDb().prepare(`UPDATE plan_sessions SET status = 'completed', updated_at = ? WHERE id = ?`).run("2026-10-12T04:00:00.000Z", s.id);
+  for (const s of blocks(taskId)) getDb().prepare(`UPDATE plan_sessions SET status = 'completed', updated_at = ? WHERE id = ?`).run(new Date().toISOString(), s.id);
   const later = at("2026-10-13T08:00");
   assert.deepEqual(rebuildPlan(later).unscheduled.map((u) => u.reason), ["needs_remaining_estimate"]);
   const out = executeOperation({ command: "create_or_update_task", taskId, remainingMinutes: 30 }, ctx(later));

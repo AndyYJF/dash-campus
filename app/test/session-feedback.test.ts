@@ -211,6 +211,24 @@ test("回答部分完成（做了多久 + 还剩多少）：记下实际分钟�
   assert.equal(total(future(a)), 30);
 });
 
+test("部分完成：规划时钟落后于写入时钟时，同一次回答记下的实际分钟不从报告的剩余里再扣，也不再追问剩余", () => {
+  // 生产里规划时刻在批次开始取、学习记录在之后几毫秒写入；固定在过去的规划时钟把这个先后放大成确定的复现
+  clock("2025-03-03T07:00");
+  const a = addTask("微积分作业", 60);
+  own(a, "2025-03-03", "08:00", 60);
+  clock("2025-03-03T10:19");
+  replan();
+  const r = answer(feedback(a)[0]!, "做了40分钟，还剩30分钟");
+  assert.equal(r.kind, "answered", JSON.stringify(r));
+  assert.deepEqual(practice(a).map((p) => p.actual_minutes), [40]);
+  assert.equal(taskRow(a).remaining_minutes, 30);
+  assert.equal(total(future(a)), 30, "报告的 30 就是剩余，不是 30−40");
+  const plan = replan();
+  assert.equal(total(future(a)), 30);
+  assert.ok(!plan.unscheduled.some((u) => u.taskId === a && u.reason === "needs_remaining_estimate"));
+  assert.deepEqual(listOpenQuestions().filter((q) => q.purpose === "remaining" && q.context.taskId === a), [], "刚说过还剩多少，不再问");
+});
+
 test("回答部分完成（只说做了多久）：按估时扣掉实际分钟；只说“没做完”就追问，不猜", () => {
   const b = addTask("概率论作业", 90);
   own(b, "2026-10-13", "08:00", 90);

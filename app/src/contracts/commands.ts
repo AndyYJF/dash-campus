@@ -371,7 +371,8 @@ export const linkResourceSchema = z.object({
 /** 主人明确说的当前阶段与去向偏好；阶段不从任务数推算，去向可多选，未选不代表排除 */
 export const updateDirectionProfileSchema = z.object({
   command: z.literal("update_direction_profile"),
-  expectedVersion: z.number().int().min(1).nullable().default(null),
+  /** 尚无记录时快照为 0，首次提交允许 0；已有记录必须等于当前版本 */
+  expectedVersion: z.number().int().min(0).nullable().default(null),
   confirmedStage: z.enum(STAGE_KEYS).nullable().optional(),
   entryYear: z.number().int().min(2000).max(2100).nullable().optional(),
   pathPreferences: z.array(z.enum(PATH_KEYS)).max(PATH_KEYS.length).optional(),

@@ -71,6 +71,7 @@ export function undoBatch(batchId: string): UndoResult {
 
 function collectConflicts(changes: ChangeRow[]): string[] {
   const conflicts: string[] = [];
+  const deleting = new Set(changes.filter((c) => c.action === "create").map((c) => `${c.entityKind}:${c.entityId}`));
   for (const c of changes) {
     const meta = KIND_TABLE[c.entityKind];
     if (!meta) conflicts.push(`未知实体类型 ${c.entityKind}`);
@@ -80,8 +81,31 @@ function collectConflicts(changes: ChangeRow[]): string[] {
       else if (c.afterVersion !== null && row.version !== c.afterVersion)
         conflicts.push(`${c.entityKind} ${c.entityId} 当前版本 ${row.version} ≠ 批次后版本 ${c.afterVersion}（之后有新修改）`);
     }
+    if (c.action === "create") {
+      const leftover = inboundUses(c.entityKind, c.entityId, deleting);
+      if (leftover) conflicts.push(leftover);
+    }
   }
   return conflicts;
+}
+
+/** 撤销创建时：本批次之外的入站引用不能级联清掉，否则主人后来的关联/感受会一起没了 */
+function inboundUses(kind: string, id: string, deleting: Set<string>): string | null {
+  const db = getDb();
+  const leftover = (rows: Array<{ id: string }>, entityKind: string) => rows.filter((r) => !deleting.has(`${entityKind}:${r.id}`)).length;
+  if (kind === "direction_track") {
+    const n =
+      leftover(db.prepare(`SELECT id FROM direction_project_links WHERE track_id = ?`).all(id) as Array<{ id: string }>, "direction_project_link") +
+      leftover(db.prepare(`SELECT id FROM roadmap_items WHERE track_id = ?`).all(id) as Array<{ id: string }>, "roadmap_item") +
+      leftover(db.prepare(`SELECT id FROM direction_reflections WHERE track_id = ?`).all(id) as Array<{ id: string }>, "direction_reflection") +
+      leftover(db.prepare(`SELECT id FROM resource_links WHERE track_id = ?`).all(id) as Array<{ id: string }>, "resource_link");
+    if (n) return `关注方向还有 ${n} 条之后单独记下的关联、阶段项、感受或线索，撤销创建会丢掉它们；先解除那些关联，或只改关注状态`;
+  }
+  if (kind === "roadmap_item") {
+    const n = leftover(db.prepare(`SELECT id FROM direction_project_links WHERE roadmap_item_id = ?`).all(id) as Array<{ id: string }>, "direction_project_link");
+    if (n) return `这个阶段项还有 ${n} 个之后单独关联的项目，撤销创建会丢掉那些关联；先解除关联`;
+  }
+  return null;
 }
 
 function revertOne(c: ChangeRow): void {

@@ -48,6 +48,7 @@ type Stage = {
   choices: string[];
   outputs: string[];
   nextNeeds: string[];
+  pathHints: Partial<Record<Exclude<PathKey, "undecided">, string>>;
   adopted: Array<{ id: string; title: string; purpose: string; status: string }>;
 };
 type Sample = {
@@ -58,12 +59,17 @@ type Sample = {
   sample: { steps: string[]; output: string };
   basics: Array<{ label: string; needed: boolean }>;
   trial: { title: string; verifies: string; firstStep: string; estimateMinutes: number };
+  follow: { id: string; status: string; version: number } | null;
 };
 type Track = {
   id: string;
   title: string;
   status: string;
   problem: string | null;
+  activities: string[];
+  sample: { steps: string[]; output: string } | null;
+  basics: Array<{ label: string; needed: boolean }>;
+  trial: { title: string; verifies: string; firstStep: string; estimateMinutes: number } | null;
   projects: Array<{ id: string; title: string; status: string; engagement: string }>;
 };
 type Direction = {
@@ -85,6 +91,31 @@ const REQ: Record<string, string> = { met: "具备", unmet: "不具备", unknown
 const SOURCE: Record<string, string> = { retrieved: "已读到原文", snippet: "只有摘要", user_supplied: "你提供的资料" };
 const PATHS: PathKey[] = ["research", "further_study", "employment", "undecided"];
 const TRACK_STATUS: Record<string, string> = { exploring: "在了解", following: "持续关注", paused: "先不看" };
+
+function sampleBody(s: { problem?: string | null; activities: string[]; sample: { steps: string[]; output: string } | null; basics: Array<{ label: string; needed: boolean }>; trial: { title: string; verifies: string; firstStep: string; estimateMinutes: number } | null }) {
+  return (
+    <>
+      {s.problem && <p className={styles.why}>{s.problem}</p>}
+      {s.activities.length > 0 && <p className={styles.muted}>平时做：{s.activities.join("、")}</p>}
+      {s.sample && (
+        <p className={styles.muted}>
+          工作样本：{s.sample.steps.join(" → ")}。产出：{s.sample.output}
+        </p>
+      )}
+      {s.trial && (
+        <p className={styles.muted}>
+          可试：{s.trial.title}（约 {s.trial.estimateMinutes} 分钟）——{s.trial.verifies}。第一步：{s.trial.firstStep}
+        </p>
+      )}
+      {s.basics.length > 0 && (
+        <p className={styles.muted}>
+          基础：{s.basics.filter((b) => b.needed).map((b) => b.label).join("、")}
+          {s.basics.some((b) => !b.needed) ? `；暂不需要：${s.basics.filter((b) => !b.needed).map((b) => b.label).join("、")}` : ""}
+        </p>
+      )}
+    </>
+  );
+}
 
 function when(utc: string): string {
   const d = new Date(utc);
@@ -148,6 +179,13 @@ export default function V2DirectionView() {
               <p className={styles.muted}>共同基础：{s.foundations.join("；")}</p>
               <p className={styles.muted}>值得验证：{s.choices.join("；")}</p>
               {s.adopted.length > 0 && <p className={styles.muted}>你采用的：{s.adopted.map((i) => `${i.title}${i.status === "completed" ? "（完成）" : ""}`).join("、")}</p>}
+              {Object.entries(s.pathHints).map(([k, text]) =>
+                text ? (
+                  <p key={k} className={styles.muted}>
+                    {PATH_LABEL[k as PathKey]}：{text}
+                  </p>
+                ) : null,
+              )}
               <div className={styles.detailActions}>
                 <button type="button" className={styles.btn} onClick={() => act("update_direction_profile", { expectedVersion: data.profile.version, confirmedStage: s.key })}>
                   我现在在{s.label}
@@ -188,11 +226,15 @@ export default function V2DirectionView() {
                 <span className={styles.candTitle}>{t.title}</span>
                 <em className={styles.tagBadge}>{TRACK_STATUS[t.status] ?? t.status}</em>
               </div>
-              {t.problem && <p className={styles.muted}>{t.problem}</p>}
+              {sampleBody(t)}
               {t.projects.length > 0 ? <p className={styles.muted}>关联项目：{t.projects.map((p) => `${p.title}（${p.engagement === "trial" ? "试做" : "投入"}）`).join("、")}</p> : <p className={styles.muted}>还没有关联项目。</p>}
-              {t.status !== "paused" && (
+              {t.status !== "paused" ? (
                 <button type="button" className={styles.btnGhost} onClick={() => act("upsert_direction_track", { trackId: t.id, status: "paused" })}>
                   这个方向先不看了
+                </button>
+              ) : (
+                <button type="button" className={styles.btn} onClick={() => act("upsert_direction_track", { trackId: t.id, status: "exploring" })}>
+                  继续了解
                 </button>
               )}
             </div>
@@ -202,23 +244,33 @@ export default function V2DirectionView() {
 
       <section className={styles.card}>
         <h2 className={styles.title}>工作样本</h2>
-        <p className={styles.muted}>先看这类人平时做什么。点“先关注”只记下来，不建任务。</p>
+        <p className={styles.muted}>先看这类人平时做什么。关注只记下来，不建任务；关注后仍能看到同样的步骤和基础。</p>
         <div className={styles.compare}>
-          {data.workSamples.map((s) => (
+          {data.workSamples.map((s) => {
+            const follow = s.follow;
+            return (
             <div key={s.templateKey} className={styles.cand}>
-              <span className={styles.candTitle}>{s.title}</span>
-              <p className={styles.why}>{s.problem}</p>
-              <p className={styles.muted}>平时做：{s.activities.join("、")}</p>
-              <p className={styles.muted}>可试：{s.trial.title}（约 {s.trial.estimateMinutes} 分钟）——{s.trial.verifies}</p>
-              <p className={styles.muted}>
-                基础：{s.basics.filter((b) => b.needed).map((b) => b.label).join("、")}
-                {s.basics.some((b) => !b.needed) ? `；暂不需要：${s.basics.filter((b) => !b.needed).map((b) => b.label).join("、")}` : ""}
-              </p>
-              <button type="button" className={styles.btn} onClick={() => act("upsert_direction_track", { templateKey: s.templateKey })}>
-                先关注这类工作
-              </button>
+              <div className={styles.candHead}>
+                <span className={styles.candTitle}>{s.title}</span>
+                {follow && <em className={styles.tagBadge}>{TRACK_STATUS[follow.status] ?? follow.status}</em>}
+              </div>
+              {sampleBody(s)}
+              {follow?.status === "paused" ? (
+                <button type="button" className={styles.btn} onClick={() => act("upsert_direction_track", { trackId: follow.id, status: "exploring" })}>
+                  继续了解
+                </button>
+              ) : follow ? (
+                <button type="button" className={styles.btnGhost} onClick={() => act("upsert_direction_track", { trackId: follow.id, status: "paused" })}>
+                  这个方向先不看了
+                </button>
+              ) : (
+                <button type="button" className={styles.btn} onClick={() => act("upsert_direction_track", { templateKey: s.templateKey })}>
+                  先关注这类工作
+                </button>
+              )}
             </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 

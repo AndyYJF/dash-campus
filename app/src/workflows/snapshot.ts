@@ -414,16 +414,20 @@ function directionWorkspace(today: string) {
         projects: linked.map((l) => ({ id: l.project_id, title: l.title, status: l.status, engagement: l.engagement, unlinked: false })),
       };
     }),
-    workSamples: TRACKS.filter((s) => !tracks.some((t) => t.template_key === s.key)).map((s) => ({
-      templateKey: s.key,
-      title: s.title,
-      problem: s.problem,
-      activities: s.activities,
-      sample: s.sample,
-      basics: s.basics,
-      trial: s.trial,
-      relatedFields: s.relatedFields,
-    })),
+    workSamples: TRACKS.map((s) => {
+      const t = tracks.find((x) => x.template_key === s.key);
+      return {
+        templateKey: s.key,
+        title: s.title,
+        problem: s.problem,
+        activities: s.activities,
+        sample: s.sample,
+        basics: s.basics,
+        trial: s.trial,
+        relatedFields: s.relatedFields,
+        follow: t ? { id: t.id, status: t.status, version: t.version } : null,
+      };
+    }),
     notes: notes.map((n) => ({
       id: n.id,
       resourceId: n.resource_id,

@@ -11,8 +11,11 @@ import { buildFullJson } from "@/workflows/exports";
 import { createProject } from "@/repositories/planning";
 import { catalogProblems } from "@/domain/intent-catalog";
 import { GET as directionRoute } from "@/app/api/v2/direction/route";
+import { POST as actionsRoute } from "@/app/api/v2/actions/route";
 import { STAGES, TRACKS } from "@/content/direction";
 import { FULL_JSON_TABLES } from "@/contracts/exports";
+import { createBatch, addChange, type ChangeInput } from "@/repositories/journal";
+import { applyDirectionTrack, applyLinkDirectionProject } from "@/workflows/ops/direction-workspace";
 
 /**
  * 方向页打磨 D0/D1：阶段模板与工作样本是编辑内容；主人确认的阶段/去向、关注方向、阶段项、项目关联、感受走注册操作；GET 只读。
@@ -21,9 +24,18 @@ import { FULL_JSON_TABLES } from "@/contracts/exports";
 const NOW = new Date("2026-10-12T09:00:00+08:00");
 const CTX = { intakeId: null, itemId: null, itemKey: "", instanceEpoch: 0, evidence: "", explicit: true, now: NOW };
 let sessionToken = "";
+let csrfToken = "";
+let seq = 0;
 
 function req(url: string): NextRequest {
   return new NextRequest(`http://localhost${url}`, { method: "GET", headers: { cookie: `${SESSION_COOKIE}=${sessionToken}` } });
+}
+function actionReq(body: unknown): NextRequest {
+  return new NextRequest("http://localhost/api/v2/actions", {
+    method: "POST",
+    headers: { cookie: `${SESSION_COOKIE}=${sessionToken}`, "x-csrf-token": csrfToken, "content-type": "application/json", "idempotency-key": `dir-ws-${seq++}` },
+    body: JSON.stringify(body),
+  });
 }
 function run(command: Record<string, unknown>) {
   const r = executeCommand(command, CTX);
@@ -40,6 +52,7 @@ before(() => {
   createOwner(hashPassword("dir-ws-pass"));
   const s = createSession(1);
   sessionToken = s.token;
+  csrfToken = s.session.csrfToken;
 });
 after(() => setNowForTests(null));
 
@@ -148,3 +161,58 @@ test("导出包含新表白名单；快照里候选上限为 3", () => {
   assert.ok(json.tables.direction_reflections.length >= 1);
   assert.equal(directionSnapshot(NOW).candidates.length, 0);
 });
+
+test("F01 未建配置时 expectedVersion=0 与页面首次点击一致；已被别人创建则冲突", async () => {
+  getDb().prepare(`DELETE FROM direction_profile`).run();
+  assert.equal(directionSnapshot(NOW).profile.version, 0);
+  const res = await actionsRoute(actionReq({ operation: "update_direction_profile", args: { expectedVersion: 0, confirmedStage: "year1" } }));
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.equal(directionSnapshot(NOW).profile.confirmedStage, "year1");
+  const raced = executeCommand({ command: "update_direction_profile", expectedVersion: 0, pathPreferences: ["research"] }, CTX);
+  assert.equal(raced.ok, false);
+  assert.equal(!raced.ok && raced.code, "STALE_VERSION");
+  assert.equal(directionSnapshot(NOW).profile.confirmedStage, "year1");
+  assert.deepEqual(directionSnapshot(NOW).profile.pathPreferences, []);
+});
+
+test("F03 关注后工作样本步骤和基础仍在目录里", () => {
+  const snap = directionSnapshot(NOW);
+  assert.equal(snap.workSamples.length, TRACKS.length);
+  const followed = snap.workSamples.find((s) => s.templateKey === "reliable_agents");
+  assert.ok(followed?.follow);
+  assert.ok(followed!.sample.steps.length >= 3);
+  assert.ok(followed!.basics.some((b) => b.needed));
+  assert.ok(followed!.trial.title);
+  run({ command: "upsert_direction_track", trackId: followed!.follow!.id, status: "paused" });
+  const after = directionSnapshot(NOW).workSamples.find((s) => s.templateKey === "reliable_agents")!;
+  assert.equal(after.follow?.status, "paused");
+  assert.deepEqual(after.sample.steps, followed!.sample.steps);
+});
+
+test("F02 后续单独关联后撤销创建返回冲突，不抛外键；同批次创建并关联可整批撤销", () => {
+  const created = run({ command: "upsert_direction_track", templateKey: "data_quality" });
+  assert.ok(created.ok && created.batchId);
+  const trackId = (getDb().prepare(`SELECT id FROM direction_tracks WHERE template_key = 'data_quality'`).get() as { id: string }).id;
+  const project = createProject({ title: "数据集检查", question: "数据里有没有标错", expectedOutcome: "检查报告", prerequisites: "", reviewQuestions: "", goalIds: [] });
+  run({ command: "link_direction_project", projectId: project.id, trackId });
+  const blocked = undoWithFollowUps(created.batchId!);
+  assert.equal(blocked.kind, "conflict");
+  if (blocked.kind === "conflict") assert.match(blocked.conflicts.join("；"), /关联|感受|线索|阶段项/);
+  assert.equal((getDb().prepare(`SELECT COUNT(*) AS n FROM direction_tracks WHERE id = ?`).get(trackId) as { n: number }).n, 1);
+  assert.equal((getDb().prepare(`SELECT COUNT(*) AS n FROM direction_project_links WHERE track_id = ?`).get(trackId) as { n: number }).n, 1);
+
+  const changes: ChangeInput[] = [];
+  const other = createProject({ title: "图像认错分析", question: "哪些图会认错", expectedOutcome: "认错记录", prerequisites: "", reviewQuestions: "", goalIds: [] });
+  getDb().transaction(() => {
+    applyDirectionTrack({ command: "upsert_direction_track", trackId: null, expectedVersion: null, templateKey: "vision", title: undefined, status: undefined, ownerNotes: undefined }, CTX, changes);
+    const visionId = (getDb().prepare(`SELECT id FROM direction_tracks WHERE template_key = 'vision'`).get() as { id: string }).id;
+    applyLinkDirectionProject({ command: "link_direction_project", projectId: other.id, trackId: visionId, roadmapItemId: undefined, remove: false }, CTX, changes);
+  })();
+  const batchId = createBatch({ command: "upsert_direction_track", reason: "同批次关注并关联", intakeId: null, itemId: null, policyVersion: "v2-p2", instanceEpoch: 0, conversationId: null });
+  for (const c of changes) addChange(batchId, c);
+  const undone = undoWithFollowUps(batchId);
+  assert.equal(undone.kind, "undone", JSON.stringify(undone));
+  assert.equal((getDb().prepare(`SELECT COUNT(*) AS n FROM direction_tracks WHERE template_key = 'vision'`).get() as { n: number }).n, 0);
+  assert.equal((getDb().prepare(`SELECT COUNT(*) AS n FROM direction_project_links WHERE project_id = ?`).get(other.id) as { n: number }).n, 0);
+});
+

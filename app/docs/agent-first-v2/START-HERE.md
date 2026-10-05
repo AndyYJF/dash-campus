@@ -1,6 +1,6 @@
 # 从这里接手：V2 易用性修复与自研 Agent
 
-更新：2026-10-05。Agent 语义修复（R01–R08、S01–S20，迁移 0033；复审修复 0034；过期未反馈块修复，当前生产 `de8adff`、schema 34）见下节；Agent增强 v1.1 的 P0–P6 已在 `main` 实现并逐包部署生产（`521aeaa`、schema32）；早先 R0–R5 与易用性修复的业务版本为 `95c8cf1`（schema29）。后续文档提交与业务部署修订分开记录。先读 [当前状态](../STATUS.md)、[产品与工程决策](../decisions.md) 及 [模糊调整的实现与证据](../flexible-adjustments-2026-10-04.md)。修复前审计基线 `cbbaeeeaa328807ebc97389a7a824f7acdb6c356` 只作历史，拉取后仍核对代码与工作区。
+更新：2026-10-05。Agent 语义修复（R01–R08、S01–S20，迁移 0033；复审修复 0034；过期未反馈块修复及剩余时钟修复，当前生产 `962b120`、schema 34）见下节；Agent增强 v1.1 的 P0–P6 已在 `main` 实现并逐包部署生产（`521aeaa`、schema32）；早先 R0–R5 与易用性修复的业务版本为 `95c8cf1`（schema29）。后续文档提交与业务部署修订分开记录。先读 [当前状态](../STATUS.md)、[产品与工程决策](../decisions.md) 及 [模糊调整的实现与证据](../flexible-adjustments-2026-10-04.md)。修复前审计基线 `cbbaeeeaa328807ebc97389a7a824f7acdb6c356` 只作历史，拉取后仍核对代码与工作区。
 
 ## Agent 语义修复（2026-10-05）
 
@@ -8,7 +8,7 @@
 
 复审修复（验收页 §8，迁移 **0034** `intakes.active_ms`，schema 34，生产 `1c7792f`）：解除约束单独授权、学习块按实际时间核对条件、对象身份统一由 `commandEntities` 解析、`in_background` 结果状态、180 秒按主动执行时间、指代不明请主人指认；回归 `test/agent-semantic-review.test.ts`。
 
-过期未反馈学习块（验收页 §9，无迁移，生产 `de8adff`）：已结束没反馈的块挂住需求不整段补排（`awaitingFeedbackSessions`，`src/workflows/plan.ts`），每段一个“这段做了吗，还剩多少？”问题（`askSessionFeedback`，`src/workflows/agent.ts`），回答走现有操作；回归 `test/session-feedback.test.ts`。剩余需求的报告时刻用真实写入时刻（`src/workflows/ops/tasks.ts`），和学习记录同一时钟比较先后，不要改回规划时钟 `ctx.now`。
+过期未反馈学习块（验收页 §9，无迁移，生产 `de8adff` → `962b120`）：已结束没反馈的块挂住需求不整段补排（`awaitingFeedbackSessions`，`src/workflows/plan.ts`），每段一个“这段做了吗，还剩多少？”问题（`askSessionFeedback`，`src/workflows/agent.ts`），回答走现有操作；回归 `test/session-feedback.test.ts`。剩余需求的报告时刻用真实写入时刻（`src/workflows/ops/tasks.ts`），和学习记录同一时钟比较先后，不要改回规划时钟 `ctx.now`。
 
 ## Agent增强 v1.1（已实施，2026-10-05）
 

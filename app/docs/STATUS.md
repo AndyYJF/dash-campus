@@ -9,7 +9,7 @@
 | 层 | 状态 |
 |---|---|
 | 隔离 | `direction-workspace` 9 项；`direction-r5`、`agent-p1`、`agent-p2`、`delivery`、`upgrade`、`agent-ops` 同步通过；`tsc` 0 错误 |
-| 真实模型 / 网页 / 生产 | 本切片未走查、未部署 |
+| 真实模型 / 网页 / 生产 | 本切片未做真实模型与登录态走查。`54ca2f1` 已部署，迁移 34 → 35；只读冒烟：health schema 35；`/login` `/settings` `/direction` 200；方向与动作接口未登录 401；五张新表在、0 行；245 个任务、19 条投递保留；web healthy、worker 恢复 0 项 |
 
 ## 2026-10-05：截止日不再被当成范围
 

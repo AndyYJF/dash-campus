@@ -2,13 +2,14 @@
 
 本页按阶段记录事实、缺口和下一步。开工指令见 [CODING-AGENT.md](./CODING-AGENT.md)，完整契约见 [MASTER-PLAN.md](./MASTER-PLAN.md)。每条结论注明验证方式；无证据的能力标为缺口。
 
-## 方向页打磨 D0/D1（2026-10-05，未部署）
+## 方向页打磨 D0/D1（2026-10-05，已部署 `54ca2f1`）
 
 计划见 [dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md](../../../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md)。
 
 - 交付：`src/content/direction/`（四年模板 year1–year4、5 个工作样本）；迁移 `0035_direction_workspace.sql`，`EXPECTED_SCHEMA_VERSION = 35`；操作 `update_direction_profile` / `upsert_direction_track` / `update_roadmap_item` / `link_direction_project` / `record_direction_reflection` 走 OPERATIONS、Zod、intent、绑定、facts、执行、核验表、撤销、导出；`select_candidate` 可带 `trackId`/`roadmapItemId`；`link_resource` 可带方向线索字段；`GET /api/v2/direction` 增加 profile/roadmap/tracks/workSamples/notes/reflections，候选最多 3 个。
 - 验证：`test/direction-workspace.test.ts` 9 项（未知年级只读、并存去向、阶段项不建任务、先不看了不暂停项目、感受去重、线索不建任务、撤销、导出白名单）；相关旧测同步通过。
-- 未做：投入预览、网页走查、真实模型、生产部署与只读冒烟、第 11 节 13 个场景的完整验收。
+- 部署：停服备份 schema 34（`backups/production-20261005-54ca2f1`）→ 覆盖源码 → 构建 → 迁移 34 → 35 → 启动。回退材料：源码快照 `6376ad8` 与镜像 `dash-campus:rollback-6376ad8`。只读冒烟：health schema 35；页面 200；仅主人接口 401；五张新表 0 行；任务/投递数量未变；web healthy。
+- 未做：投入预览、登录态网页走查、真实模型、第 11 节 13 个场景的完整验收。
 
 ## 2026-10-04 后续交互修复与决策同步（当前补充）
 

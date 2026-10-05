@@ -2,6 +2,17 @@
 
 更新：2026-10-05。本页是当前状态入口；历史记录保留其日期。规划、业务实现、测试和生产部署分别报告。
 
+## 2026-10-05：网页「最近的目标」续办（`2c54500`）
+
+展开 Agent 对话后列出服务端最近目标（含已完成、不含已取消），可点「继续：…」带 `goalId` 续办，不依赖本机草稿。`eval-goal-flows` 增加 `s17-continue-goal`（六小时、换会话）；本机无 `MODEL_API_KEY`，真实模型这条未跑。本地 Playwright 登录态见到「继续：下周的学习重新安排一下，周末别动」。证据见 [语义修复验收 §11](agent-first-v2/acceptance-semantic-repair-2026-10-05.md)。无迁移，schema **35**。
+
+| 层 | 状态 |
+|---|---|
+| 隔离 | `agent-p4` 10/10（含跨设备 `goalId` 续办） |
+| 网页 | 独立库 Playwright：展开对话出现「最近的目标」 |
+| 真实模型 | `s17-continue-goal` 未跑（缺密钥）；生产真实投递未做 |
+| 生产 | `2c54500` 已部署（回退快照 `54ca2f1`），schema 35 无新迁移；只读冒烟：health 35；`/login` `/settings` 200；`/api/v2/goals` 与投递未登录 401；条件确认与越界门纯函数核对通过；245 个任务、19 条投递保留 |
+
 ## 2026-10-05：方向页打磨 D0/D1（迁移 0035）
 
 按 [方向页打磨计划](../../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md) 做了阶段模板与工作样本目录、向前迁移（`direction_profile` / `direction_tracks` / `roadmap_items` / `direction_project_links` / `direction_reflections`，`resource_links` 增加方向上下文）、五个注册操作走完整执行通路、只读四年地图与导出白名单。阶段不从任务数推算；采用模板不建目标或任务；“先不看了”只改关注状态。候选展示上限统一为 3。schema **35**。D2–D5（投入预览、网页走查、真实模型、生产冒烟）尚未做。

@@ -15,12 +15,13 @@
 
 ## 2026-10-05：方向页打磨 D0/D1（迁移 0035）
 
-按 [方向页打磨计划](../../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md) 做了阶段模板与工作样本目录、向前迁移（`direction_profile` / `direction_tracks` / `roadmap_items` / `direction_project_links` / `direction_reflections`，`resource_links` 增加方向上下文）、五个注册操作走完整执行通路、只读四年地图与导出白名单。阶段不从任务数推算；采用模板不建目标或任务；“先不看了”只改关注状态。候选展示上限统一为 3。schema **35**。D2–D5（投入预览、网页走查、真实模型、生产冒烟）尚未做。
+按 [方向页打磨计划](../../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md) 做了阶段模板与工作样本目录、向前迁移（`direction_profile` / `direction_tracks` / `roadmap_items` / `direction_project_links` / `direction_reflections`，`resource_links` 增加方向上下文）、五个注册操作走完整执行通路、只读四年地图与导出白名单。阶段不从任务数推算；采用模板不建目标或任务；“先不看了”只改关注状态。候选展示上限统一为 3。schema **35**。D2–D5（投入预览、登录态网页走查、真实模型、整份 13 场景）尚未完成。D0/D1 生产只读冒烟已做（见下表），不代表易用性验收通过。
 
 | 层 | 状态 |
 |---|---|
-| 隔离 | `direction-workspace` 9 项；`direction-r5`、`agent-p1`、`agent-p2`、`delivery`、`upgrade`、`agent-ops` 同步通过；`tsc` 0 错误 |
-| 真实模型 / 网页 / 生产 | 本切片未做真实模型与登录态走查。`54ca2f1` 已部署，迁移 34 → 35；只读冒烟：health schema 35；`/login` `/settings` `/direction` 200；方向与动作接口未登录 401；五张新表在、0 行；245 个任务、19 条投递保留；web healthy、worker 恢复 0 项 |
+| 隔离 | `direction-workspace` 含 F01/F02/F03 复现修复；相关旧测同步通过 |
+| 真实模型 / 网页 | 未做登录态走查、未做真实模型 |
+| 生产 | `395c0f3` 已部署（回退 `2c54500`），无新迁移，schema 35。F01：`expectedVersion` 允许 0。只读冒烟：health 35；`/login` `/settings` `/direction` 200；动作与方向接口未登录 401；已部署源码含 `min(0)`、`inboundUses`、工作样本 `follow` |
 
 ## 2026-10-05：截止日不再被当成范围
 

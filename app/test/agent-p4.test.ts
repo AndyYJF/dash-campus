@@ -245,7 +245,8 @@ test("G07 选“作为新的要求”：不当作回答，交给决策重新理�
 
 test("跨设备 / 隔几小时继续：goalId+expectedGoalRevision 续到同一目标同一对话；版本过期 409、目标不存在 404，都不提交", async () => {
   onRoute = () => ({ items: [decideItem("下周的复习节奏帮我定一下")] });
-  onDecide = (c) => ((c.goal as { revision?: number } | null)?.revision ?? 1) > 1 ? replan("2026-10-05", "2026-10-11") : { kind: "ask", question: "考试大概什么时候？", reason: "要按考试日倒排", options: ["很快", "还早"] };
+  // NOW 是周一 10-05：主人说的“下周”是 10-12 至 10-18，续办沿用这个范围
+  onDecide = (c) => ((c.goal as { revision?: number } | null)?.revision ?? 1) > 1 ? replan("2026-10-12", "2026-10-18") : { kind: "ask", question: "考试大概什么时候？", reason: "要按考试日倒排", options: ["很快", "还早"] };
   const first = await say("下周的复习节奏帮我定一下");
   const goalId = first.goal!.id;
 

@@ -46,8 +46,9 @@ export const intentSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("group_limit"), group: z.enum(["workday", "weekend"]), limitMinutes: z.number().int().min(0).max(960) }),
   z.object({ op: z.literal("daily_limit"), limitMinutes: z.number().int().min(0).max(960) }),
   z.object({ op: z.literal("date_limit"), date: dateStr, limitMinutes: z.number().int().min(0).max(960) }),
-  z.object({ op: z.literal("window_end"), time: timeStr }),
-  z.object({ op: z.literal("window_start"), time: timeStr }),
+  /** days：只改工作日模板、只改周末模板，或两者（缺省两者） */
+  z.object({ op: z.literal("window_end"), time: timeStr, days: z.enum(["all", "workday", "weekend"]).default("all") }),
+  z.object({ op: z.literal("window_start"), time: timeStr, days: z.enum(["all", "workday", "weekend"]).default("all") }),
   z.object({ op: z.literal("holiday_policy"), mode: z.enum(["weekend_template", "reduced", "none"]) }),
   z.object({ op: z.literal("prefer_window"), part: z.enum(["morning", "afternoon", "evening", "weekend"]) }),
   z.object({ op: z.literal("replan"), dateFrom: dateStr, dateTo: dateStr }),
@@ -430,16 +431,17 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
     }
   }
 
-  // 时段边界：“晚上十点后不排”“九点前别排”
+  // 时段边界：“晚上十点后不排”“九点前别排”；同一分句里点明工作日/周末的只改那一类
+  const days = /(工作日|平时|周一到周五|上课日)/.test(c) ? "workday" : /(周末|双休)/.test(c) ? "weekend" : "all";
   const after = /(.+?点\s*(?:半|一刻|\d{1,2}\s*分?)?)\s*(?:以后|之后|后)\s*(?:就)?(?:不排|不学|不安排|别排|别安排|不要安排|不再安排)/.exec(c);
   if (after) {
-    const time = eveningTime(after[1]!);
-    if (time) return { op: "window_end", time };
+    const time = eveningTime(after[1]!.replace(/工作日|平时|周一到周五|上课日|周末|双休日?/g, ""));
+    if (time) return { op: "window_end", time, days };
   }
   const beforeT = /(.+?点\s*(?:半|一刻|\d{1,2}\s*分?)?)\s*(?:以前|之前|前)\s*(?:不排|不学|不安排|别排|别安排|不要安排)/.exec(c);
   if (beforeT) {
-    const time = timeFromText(beforeT[1]!);
-    if (time) return { op: "window_start", time };
+    const time = timeFromText(beforeT[1]!.replace(/工作日|平时|周一到周五|上课日|周末|双休日?/g, ""));
+    if (time) return { op: "window_start", time, days };
   }
 
   // 某天/某晚不学、某段日期不安排

@@ -25,8 +25,8 @@ const questionSpec = z
   .transform((q) => ({ prompt: (q.prompt ?? q.text)!, reason: q.reason, options: q.options }));
 
 export const routeOutcomeSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("act"), intents: z.array(intentSchema).min(1).max(6), rationale: z.string().min(1).max(1000) }),
-  z.object({ kind: z.literal("decide"), objective: z.string().min(1).max(500), rationale: z.string().min(1).max(1000) }),
+  z.object({ kind: z.literal("act"), intents: z.array(intentSchema).min(1).max(6), rationale: z.string().min(1).max(1000), constraints: z.array(z.unknown()).max(12).default([]) }),
+  z.object({ kind: z.literal("decide"), objective: z.string().min(1).max(500), rationale: z.string().min(1).max(1000), constraints: z.array(z.unknown()).max(12).default([]) }),
   z.object({ kind: z.literal("ask"), question: questionSpec }),
   z.object({ kind: z.literal("material"), note: z.string().max(300).default("") }),
   z.object({ kind: z.literal("reply"), questionId: z.string().max(64).nullable().default(null) }),
@@ -84,7 +84,8 @@ export function routeInstructions(): string {
     "查不到对象时：要新建的（在某时刻安排一件新的事用 title、记一次已发生的学习/实践不必关联任务、建任务）直接写意图，不需要先有对象；要改已有对象而名称对不上时，用 named 名称引用交给服务端匹配（对不上服务端会追问），不要反复换词搜索。",
     "工具按需使用：能从原话直接写出意图的（大多数指令）不调用工具，对象用名称引用即可，服务端会去匹配；需要现有数据才能回答的问题才查，通常一轮就够，最多两轮。get_conversation 只在原话指代前文时用，get_open_questions 只在原话像是在回答问题时用，不为凑信息调用无关工具。查不到足够信息就 ask，绝不用 inspect 凑一个结果。",
     "主人在改上一轮的结果或方案（相对说法：再少/再多一点、换成另一周）时，用 decide，objective 写清在上一轮基础上要怎么改；需要时用 get_conversation 看上一轮。",
-    "context.currentGoal 是当前对话里最近的一件事（目标原话、第几版、状态、最近结果、范围）。这句话是在改它、补充它的约束或接着办它（改成下周、周末别动、数学再少一点、刚才那项先别动）时，在该事项上加 \"continuesGoal\":true；全新的、不相干的要求不加。",
+    "context.currentGoal 是当前对话里最近的一件事（目标原话、第几版、状态、最近结果、范围、主人已经说过的约束 constraints——这些约束服务端会一直执行，不必重复写）。这句话是在改它、补充它的约束或接着办它（改成下周、周末别动、数学再少一点、刚才那项先别动）时，在该事项上加 \"continuesGoal\":true；全新的、不相干的要求不加。",
+    "act 与 decide 都可以带 constraints：主人在这段话里说出的条件（只涉及哪几天、哪类日子或哪几天不动、哪个对象不动、几点后不排），每条写成 {kind:'date_scope',dateFrom,dateTo} / {kind:'protect_days',days:'workday'|'weekend'} / {kind:'protect_dates',dateFrom,dateTo} / {kind:'protect_entity',ref} / {kind:'no_study_after',time,days}，并带 excerpt（从原话逐字复制的那几个字）；主人明说取消之前的条件用 {kind:'release',target,days?}。没有条件就不写。作息时间 window_end/window_start 的 days 字段区分每天(all)/工作日(workday)/周末(weekend)。",
     "context.openQuestions 是正在等主人回答的问题。这句话是在回答其中一个时，输出 {\"kind\":\"reply\",\"questionId\":\"对应 id\"}，拿不准是哪一个就 questionId:null，由服务端问清；不要自己替主人回答，也不要把回答改写成别的意图。",
     "context.selected 是主人在界面上选中的对象（label 是名称），“这个/这门课/它/这段”优先指它。原话缺对象或缺改法（只说改一下、挪一下，又对不上 selected 与前文）、或只是孤立的简短回答而没有待回答问题时，直接 ask，问清要改哪个、改成什么，不要猜。",
     "对象引用（ref）：优先用名称引用 {kind:'named',text:'名称',date:'YYYY-MM-DD'或null,part:'morning|afternoon|evening|any'} 或 {kind:'recent'}；只有工具结果/选中卡片里出现过的对象才能用 {kind:'id',entityKind,id}，不要编造 ID。同一句里后面的意图要用前面意图新建的对象时，用 {kind:'step',step:N}（N 从 1 起）。",
@@ -161,7 +162,7 @@ export type RouteResult =
   | { ok: false; reason: string; observations: Observation[] };
 
 /** 一次路由决策：建工具箱（SeenSet 从选中卡片与当前对话开始）→ 带工具调用模型 → 服务端校验 */
-export type RouteGoalContext = { objective: string; revision: number; state: string; lastResult: string | null; scope: { dateFrom: string; dateTo: string } | null };
+export type RouteGoalContext = { objective: string; revision: number; state: string; lastResult: string | null; scope: { dateFrom: string; dateTo: string } | null; constraints?: Array<{ value: unknown; excerpt: string }> };
 
 export async function routeOwnerText(call: RouteCall, input: { text: string; env: ToolEnv; slot?: unknown; replies?: Array<{ question: string; answer: string }>; hints?: Array<{ clause: string; intents: Intent[] }>; currentGoal?: RouteGoalContext | null; openQuestions?: Array<{ id: string; prompt: string; options: string[] }> }): Promise<RouteResult> {
   const toolbox = new AgentToolbox(input.env);

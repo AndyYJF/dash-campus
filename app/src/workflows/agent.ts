@@ -298,18 +298,20 @@ function mergePolicy(intents: Intent[], env: BindEnv): Bound {
       patch.base.dailyLimitMinutes = i.limitMinutes;
       patch.confirm = true;
     } else if (i.op === "window_end") {
-      patch.base.workdayEnd = i.time;
-      patch.base.weekendEnd = i.time;
+      if (i.days !== "weekend") patch.base.workdayEnd = i.time;
+      if (i.days !== "workday") patch.base.weekendEnd = i.time;
       patch.confirm = true;
     } else if (i.op === "window_start") {
-      patch.base.workdayStart = i.time;
-      patch.base.weekendStart = i.time;
+      if (i.days !== "weekend") patch.base.workdayStart = i.time;
+      if (i.days !== "workday") patch.base.weekendStart = i.time;
       patch.confirm = true;
     } else if (i.op === "holiday_policy") patch.rules.push({ kind: "holiday_policy", scope: "persistent", value: { mode: i.mode, ...(i.mode === "reduced" ? { limitMinutes: 60 } : {}) } });
     else if (i.op === "prefer_window") patch.rules.push({ kind: "preferred_window", scope: "persistent", value: { part: i.part } });
     else if (i.op === "confirm_policy") patch.confirm = true;
     else if (i.op === "replan") {
       // 授权只覆盖说到的那几天里未锁定、未开始的学习安排；课程、截止、锁定块都不在范围内
+      // 先限跨度再展开日期：坏日期或超过 31 天的范围不逐日展开
+      if (i.dateTo < i.dateFrom || Date.parse(i.dateTo) - Date.parse(i.dateFrom) > 30 * 86_400_000 || Number.isNaN(Date.parse(i.dateFrom))) return { kind: "fail", error: `重新安排的范围 ${i.dateFrom}–${i.dateTo} 无效或超过 31 天，没有执行` };
       patch.rules.push({ kind: "auto_reschedule", dateFrom: i.dateFrom, dateTo: i.dateTo, scope: "temporary", value: {} });
       for (let d = i.dateFrom; d <= i.dateTo; d = addDays(d, 1)) patch.replanDates.push(d);
     } else if (i.op === "revoke_replan") {
@@ -725,8 +727,32 @@ export function completionHasTarget(ref: Ref): boolean {
 
 export type AnswerParse = { ok: true; structured: Record<string, unknown> } | { ok: false; hint: string };
 
-const YES = /^(是|好|好的|行|可以|嗯|对|确认|同意|没问题|就这样|按校历|按这个|要)/;
-const NO = /^(不|否|先不|别|不要|不用|算了|不行)/;
+const YES_WORDS = new Set(["是", "是的", "好", "好的", "行", "可以", "嗯", "嗯嗯", "对", "对的", "确认", "同意", "没问题", "就这样", "那就这样", "按这个", "按这个来", "就按这个", "就按这个来", "按你说的", "要", "采用", "ok", "好呀", "好啊", "行啊", "可以啊", "可以呀", "按校历", "按校历修正"]);
+const NO_WORDS = new Set(["不", "否", "不是", "先不", "先不要", "不要", "不用", "算了", "不行", "别", "先别", "不了", "不采用", "不同意", "先不改", "不改", "别改", "先不用"]);
+
+/**
+ * 确认类回答的整句判断：只有完整、无条件的“同意/不同意”才走零模型快路径。
+ * 带条件、改正、疑问或犹豫的（“可以，但周末别动”“可以吗？我还没想好”）返回 null，交给整句理解，不按前缀截断。
+ */
+export function completeVerdict(text: string, options: string[] = []): "yes" | "no" | null {
+  const t = text.trim();
+  const exact = options.findIndex((o) => o.trim() === t);
+  if (exact === 0) return "yes";
+  if (exact === 1) return "no";
+  if (!t || /[?？]/.test(t)) return null;
+  const parts = t.split(/[，,。.！!~～\s]+/).map((p) => p.replace(/[吧啊呀啦哈了]+$/, "").toLowerCase()).filter(Boolean);
+  if (!parts.length) return null;
+  if (parts.every((p) => wholly(p, YES_WORDS))) return "yes";
+  if (parts.every((p) => wholly(p, NO_WORDS) || wholly(p, YES_WORDS)) && wholly(parts[0]!, NO_WORDS)) return "no";
+  return null;
+}
+
+/** 整段都能切成这类词（“嗯嗯可以”= 嗯嗯 + 可以）；剩下任何别的字都不算 */
+function wholly(p: string, words: Set<string>): boolean {
+  const ok: boolean[] = [true];
+  for (let i = 1; i <= p.length; i++) ok[i] = [...words].some((w) => w.length <= i && ok[i - w.length] === true && p.slice(i - w.length, i) === w);
+  return ok[p.length] === true;
+}
 
 function optionIndex(text: string, options: string[]): number {
   const t = text.trim();
@@ -773,15 +799,17 @@ export function parseAnswerByPurpose(q: QuestionRow, text: string, env: { refere
     return i >= 0 ? { ok: true, structured: { choice: choices[i] } } : { ok: false, hint: `回答其中一个：${options.join(" / ")}` };
   }
   if (q.purpose === "confirm") {
-    if (YES.test(text.trim())) return { ok: true, structured: { yes: true } };
-    if (NO.test(text.trim())) return { ok: true, structured: { yes: false } };
-    return { ok: false, hint: "回答“可以”或“先不要”" };
+    const verdict = completeVerdict(text, options);
+    if (verdict) return { ok: true, structured: { yes: verdict === "yes" } };
+    // 方案确认：带条件/改正/犹豫的回答原样交给决策整句理解（修订同一目标），不当作同意
+    if (q.context.revisable === true) return { ok: true, structured: { revise: true, text: text.trim() } };
+    return { ok: false, hint: `这句带了条件或疑问，没法直接当作“${options[0] ?? "是"}”或“${options[1] ?? "不是"}”；请先回答其中一个，其他要求可以另外说` };
   }
   if (q.purpose === "routine") {
     const parsed = parseInstruction(text, env.referenceDate, env.now, env.tz);
     const policy = parsed.intents.map((i) => i.intent).filter(isPolicyIntent);
     if (policy.length) return { ok: true, structured: { intents: policy } };
-    if (YES.test(text.trim()) || /推荐|建议|你(帮我|来)?(定|决定|安排)/.test(text)) return { ok: true, structured: { intents: [{ op: "confirm_policy" }] } };
+    if (completeVerdict(text) === "yes" || /^(那)?(就)?(你|您)?(就)?按(你|您)?(的)?(推荐|建议)(的)?(来|安排|办)?(吧|就行)?[。！!]?$|^你(帮我|来)?(定|决定|安排)(吧|就行|就好)?[。！!]?$/.test(text.trim())) return { ok: true, structured: { intents: [{ op: "confirm_policy" }] } };
     return { ok: false, hint: "可以说“按你推荐的来”，或者告诉我晚上几点后不排、每天最多学多久、更适合晚上还是周末" };
   }
   if (q.purpose === "task_kind") {

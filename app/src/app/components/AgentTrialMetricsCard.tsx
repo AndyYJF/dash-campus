@@ -51,6 +51,10 @@ export default function AgentTrialMetricsCard() {
         {m.asking.byPurpose.length > 0 && ` · 问题类型：${m.asking.byPurpose.map((p) => `${PURPOSE[p.purpose] ?? p.purpose} ${p.n}`).join("、")}`}
         {m.routing.fallbackReasons.length > 0 && ` · 兜底原因：${m.routing.fallbackReasons.map((r) => `${r.reason}（${r.n}）`).join("、")}`}
       </p>
+      <p className={styles.muted}>
+        经历的环节（一条可计入多项）：理解失败 {m.stages.understandFailed} · 追问 {m.stages.clarified} · 确认 {m.stages.confirmed} · 范围/保护拒绝 {m.stages.scopeRejected} · 情况变化重新确认 {m.stages.staleReconfirmed} · 执行失败 {m.stages.execFailed} · 等后台任务 {m.stages.asyncWaiting} · 核验通过 {m.stages.verified} · 部分完成 {m.stages.partial} · 自动修正 {m.stages.repaired} · 你改口 {m.stages.ownerCorrected}
+      </p>
+      <p className={styles.muted}>单条投递模型耗时 p50 {sec(m.modelTime.p50Ms)} · p95 {sec(m.modelTime.p95Ms)} · 最长 {sec(m.modelTime.maxMs)}（只计模型请求）</p>
       <table className={styles.table}>
         <thead>
           <tr>

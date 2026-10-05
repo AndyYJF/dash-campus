@@ -24,6 +24,8 @@ import { refreshAllReminders } from "@/workflows/reminders";
 import { getBatch } from "@/repositories/journal";
 import { rebuildPlan, type PlanConflict } from "@/workflows/plan";
 import type { Unscheduled } from "@/domain/scheduler";
+import { factsHash } from "@/workflows/command-facts";
+import { getStepExecution } from "@/repositories/step-executions";
 
 /**
  * 操作执行器（MASTER-PLAN §4.2/§5.3，AGENT-INTERFACE-CONTRACT §3/§4）：
@@ -35,12 +37,15 @@ import type { Unscheduled } from "@/domain/scheduler";
 export type EntityRef = { kind: string; id: string };
 
 export type CommandResult =
-  | { ok: true; batchId: string; summary: string; noChange: false; affects: OperationAffect[]; refs: EntityRef[]; replayed?: true }
-  | { ok: true; batchId: null; summary: string; noChange: true; affects: OperationAffect[]; refs: EntityRef[] }
+  | { ok: true; batchId: string; summary: string; noChange: false; affects: OperationAffect[]; refs: EntityRef[]; effects?: EntityRef[]; replayed?: true }
+  | { ok: true; batchId: null; summary: string; noChange: true; affects: OperationAffect[]; refs: EntityRef[]; effects?: EntityRef[]; replayed?: true }
   | { ok: false; error: string; code: string };
 
-/** handler 返回给人看的摘要；自己管理变更记录的操作（如撤销）返回 effect，执行器不再另写批次 */
-type HandlerOutput = string | { summary: string; effectBatchId: string };
+/**
+ * handler 返回给人看的摘要；自己管理变更记录的操作（如撤销）返回 effect，执行器不再另写批次。
+ * effects：外部/异步结果的引用（探索 run、任务 job、复盘、导出），记进步骤执行凭据，供恢复认领与核验跟踪。
+ */
+type HandlerOutput = string | { summary: string; effectBatchId: string; effects?: EntityRef[] };
 type Handler<N extends Command["command"]> = (cmd: Extract<Command, { command: N }>, ctx: CommandContext, changes: ChangeInput[]) => HandlerOutput;
 
 /**
@@ -77,8 +82,9 @@ function applyRequestExport(cmd: Extract<Command, { command: "request_export" }>
   const r = createExport({ type: cmd.type });
   if (!r.ok) throw new HttpError(r.status, r.code, r.message);
   if (r.export.status !== "ready") throw new HttpError(500, "EXPORT_FAILED", `导出没有生成成功：${r.export.error ?? "写文件失败"}`);
-  return { summary: `已生成数据导出（${Math.max(1, Math.round((r.export.byteSize ?? 0) / 1024))} KB），24 小时内可下载：/api/v1/exports/${r.export.id}/download。不含密码、会话和后台队列。`, effectBatchId: "" };
+  return { summary: `已生成数据导出（${Math.max(1, Math.round((r.export.byteSize ?? 0) / 1024))} KB），24 小时内可下载：/api/v1/exports/${r.export.id}/download。不含密码、会话和后台队列。`, effectBatchId: "", effects: [{ kind: "export", id: r.export.id }] };
 }
+
 
 function applyUndoBatch(cmd: Extract<Command, { command: "undo_batch" }>): HandlerOutput {
   const r = undoWithFollowUps(cmd.batchId);
@@ -156,18 +162,40 @@ export function executeCommand(raw: unknown, ctx: CommandContext): CommandResult
         // 目标已被改口或停下：旧版本投递的写入在同一事务里拒绝（旧模型响应晚到也写不进来）
         const revision = ctx.intakeId ? intakeRevisionCurrent(ctx.intakeId) : { current: true as const };
         if (!revision.current) return { ok: false, code: "STALE_GOAL_REVISION", error: `目标已按新要求改为第 ${revision.goalRevision} 版，这一步没有执行` };
-        // 这一步已经提交过（提交后、标记前崩溃，恢复后重跑）：按 journal 返回原批次，不再写第二次
+        // 这一步已经提交过（提交后、标记前崩溃，恢复后重跑）：按执行凭据认领原结果（批次/任务/探索），不再产生第二次副作用
         if (ctx.itemId) {
+          const step = getStepExecution(ctx.itemId, parsed.data.command);
+          if (step) {
+            const refs = step.batchId ? uniqueRefs(listChanges(step.batchId)) : [];
+            return step.batchId || step.effects.length
+              ? ({ ok: true, batchId: step.batchId, summary: step.summary, noChange: false, affects: meta.affects, refs, effects: step.effects, replayed: true } as CommandResult)
+              : { ok: true, batchId: null, summary: step.summary, noChange: true, affects: [], refs, effects: step.effects, replayed: true };
+          }
+          // 0033 之前已提交的步骤只有 journal 批次
           const prior = getDb().prepare(`SELECT id, reason FROM agent_action_batches WHERE item_id = ? AND command = ? ORDER BY created_at, rowid LIMIT 1`).get(ctx.itemId, parsed.data.command) as { id: string; reason: string } | undefined;
           if (prior) return { ok: true, batchId: prior.id, summary: prior.reason, noChange: false, affects: meta.affects, refs: uniqueRefs(listChanges(prior.id)), replayed: true };
+        }
+        // 确认绑定的是当时的相关事实：事务内重算，变了就不写，由调用方按现在的事实重新确认
+        if (ctx.expectedFacts && factsHash(raw as Record<string, unknown>) !== ctx.expectedFacts) {
+          return { ok: false, code: "STALE_FACTS", error: "确认之后相关的设置或对象变了，这一步没有执行" };
         }
         const changes: ChangeInput[] = [];
         const handler = HANDLERS[parsed.data.command] as Handler<Command["command"]>;
         const output = handler(parsed.data, ctx, changes);
         const summary = typeof output === "string" ? output : output.summary;
         const refs = uniqueRefs(changes);
-        if (typeof output !== "string") return { ok: true, batchId: output.effectBatchId || null, summary, noChange: false, affects: meta.affects, refs } as CommandResult;
-        if (!changes.length) return { ok: true, batchId: null, summary, noChange: true, affects: [], refs };
+        const record = (batchId: string | null, effects: EntityRef[]) => {
+          if (ctx.itemId) getDb().prepare(`INSERT INTO agent_step_executions (item_id, command, intake_id, batch_id, effects_json, summary, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(ctx.itemId, parsed.data.command, ctx.intakeId, batchId, JSON.stringify(effects), summary.slice(0, 2000), new Date().toISOString());
+        };
+        if (typeof output !== "string") {
+          const effects = output.effects ?? [];
+          record(output.effectBatchId || null, effects);
+          return { ok: true, batchId: output.effectBatchId || null, summary, noChange: false, affects: meta.affects, refs, effects } as CommandResult;
+        }
+        if (!changes.length) {
+          record(null, []);
+          return { ok: true, batchId: null, summary, noChange: true, affects: [], refs };
+        }
         const batchId = createBatch({
           command: parsed.data.command,
           reason: summary,
@@ -178,6 +206,7 @@ export function executeCommand(raw: unknown, ctx: CommandContext): CommandResult
           conversationId: ctx.conversationId ?? null,
         });
         for (const c of changes) addChange(batchId, c);
+        record(batchId, []);
         return { ok: true, batchId, summary, noChange: false, affects: meta.affects, refs };
       })
       .immediate();
@@ -206,7 +235,9 @@ export type OperationOutcome = { result: CommandResult; followUps: FollowUp[] };
  * 执行操作并完成必要的后续（AGENT-INTERFACE-CONTRACT §3）：领域事务提交后再做重排等派生更新，
  * 各自状态分开报告——“已保存”和“安排已更新”不合并成一个完成。
  */
-export function executeOperation(raw: unknown, ctx: CommandContext, opts: { replanDates?: string[] } = {}): OperationOutcome {
+export type PlanScope = { replanDates?: string[]; frozenDates?: string[]; frozenTaskIds?: string[] };
+
+export function executeOperation(raw: unknown, ctx: CommandContext, opts: PlanScope = {}): OperationOutcome {
   const result = executeCommand(raw, ctx);
   const followUps: FollowUp[] = [];
   if (result.ok && ((!result.noChange && result.affects.includes("plan")) || (opts.replanDates?.length && ctx.explicit && (raw as { command?: string }).command === "update_planning_policy"))) {
@@ -214,7 +245,7 @@ export function executeOperation(raw: unknown, ctx: CommandContext, opts: { repl
       const asOf = ctx.now ?? nowDate();
       const lastRequested = [...(opts.replanDates ?? [])].sort().at(-1);
       const days = lastRequested ? Math.max(7, Math.ceil((Date.parse(lastRequested) - Date.parse(localDateInTz(asOf, instanceTimezone()))) / 86_400_000) + 1) : 7;
-      const plan = rebuildPlan(asOf, { horizonDays: days, causedBy: result.batchId, conversationId: ctx.conversationId ?? null, intakeId: ctx.intakeId, replanDates: opts.replanDates });
+      const plan = rebuildPlan(asOf, { horizonDays: days, causedBy: result.batchId, conversationId: ctx.conversationId ?? null, intakeId: ctx.intakeId, replanDates: opts.replanDates, frozenDates: opts.frozenDates, frozenTaskIds: opts.frozenTaskIds });
       followUps.push({ kind: "plan", state: plan.changed ? "updated" : "unchanged", batchId: plan.batchId, placed: plan.placed, superseded: plan.superseded, unscheduled: plan.unscheduled, conflicts: plan.conflicts });
     } catch (e) {
       followUps.push({ kind: "plan", state: "failed", batchId: null, placed: 0, superseded: 0, unscheduled: [], conflicts: [], error: e instanceof Error ? e.message : String(e) });

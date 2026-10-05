@@ -6,6 +6,8 @@ import type { CheckRecord, VerificationStatus } from "@/repositories/agent-runs"
 import { instanceTimezone, localDateInTz } from "@/domain/time";
 import { eventsForDay, latestPlanUnscheduled } from "@/workflows/plan";
 import { batchChanges, entityLabel } from "@/workflows/results";
+import { stepEffects } from "@/repositories/step-executions";
+import { protectedSnapshot, type GateContext } from "@/workflows/agent-gate";
 
 /**
  * 执行后核验（Agent 方案 §5.2）：命令成功后重新读取当前事实，按操作注册表里的 verify 模板逐项判定。
@@ -131,6 +133,67 @@ function practiceDuplicates(batch: Batch, intakeId: string): string | null {
   return null;
 }
 
+function protectedNow(item: IntakeItemRow): string | null {
+  const ctx = (item.payload.gate as { ctx?: GateContext } | undefined)?.ctx;
+  return ctx ? protectedSnapshot(ctx) : null;
+}
+
+const JOB_WAIT: Record<string, string> = { queued: "还在排队", running: "正在进行" };
+
+/**
+ * 异步/外部结果的真实状态：排队/进行中 = 等待（不算通过，也不算失败）；完成看结果；失败如实记。
+ * 邮件：服务器接收不等于进收件箱；结果不确定的不自动重发，也不算通过。
+ */
+function effectChecks(item: IntakeItemRow, effects: Array<{ kind: string; id: string }>, subject: string, mail: boolean): CheckRecord[] {
+  const db = getDb();
+  const out: CheckRecord[] = [];
+  const add = (ok: boolean | null, detail: string) => out.push({ kind: "side_effect_status", ok, itemId: item.id, subject, detail });
+  const job = (id: string) => db.prepare(`SELECT status, result_json, last_error FROM jobs WHERE id = ?`).get(id) as { status: string; result_json: string | null; last_error: string | null } | undefined;
+  const domain = effects.filter((e) => e.kind !== "job");
+  for (const e of domain) {
+    if (e.kind === "exploration_run") {
+      const r = db.prepare(`SELECT status, error_message, job_id FROM exploration_runs WHERE id = ?`).get(e.id) as { status: string; error_message: string | null; job_id: string | null } | undefined;
+      if (!r) add(false, "探索记录找不到了");
+      else if (r.status === "done") add(true, "找候选项目已完成，结果在「方向」页");
+      else if (r.status === "failed" || r.status === "cancelled") add(false, `找候选项目没有完成：${r.error_message ?? (r.status === "cancelled" ? "已取消" : "失败")}`);
+      else {
+        const j = r.job_id ? job(r.job_id) : undefined;
+        if (j && ["failed", "cancelled"].includes(j.status)) add(false, `找候选项目的任务已结束但没有结果：${j.last_error ?? j.status}`);
+        else add(null, `找候选项目${r.status === "queued" ? "还在排队" : "正在进行"}，完成后会自动再核对`);
+      }
+    } else if (e.kind === "review") {
+      const r = db.prepare(`SELECT status, job_id FROM reviews WHERE id = ?`).get(e.id) as { status: string; job_id: string | null } | undefined;
+      if (!r) add(false, "复盘记录找不到了");
+      else if (r.status === "ready") add(true, "复盘已生成，在「复盘」页");
+      else if (r.status === "insufficient") add(true, "这一周记录太少，复盘只列了已有事实");
+      else if (r.status === "failed" || r.status === "cancelled") add(false, `复盘没有生成：${r.status === "cancelled" ? "已取消" : "生成失败"}`);
+      else {
+        const j = r.job_id ? job(r.job_id) : undefined;
+        if (j && ["failed", "cancelled"].includes(j.status)) add(false, `复盘任务已结束但没有结果：${j.last_error ?? j.status}`);
+        else add(null, `复盘${r.status === "queued" ? "还在排队" : "正在生成"}，完成后会自动再核对`);
+      }
+    } else if (e.kind === "export") {
+      const r = db.prepare(`SELECT status, private_path FROM exports WHERE id = ?`).get(e.id) as { status: string; private_path: string | null } | undefined;
+      add(r?.status === "ready" && r.private_path ? true : false, r?.status === "ready" ? "导出文件已生成，可下载" : `导出文件不可用（${r?.status ?? "找不到记录"}）`);
+    }
+  }
+  if (!domain.length) {
+    for (const e of effects.filter((x) => x.kind === "job")) {
+      const j = job(e.id);
+      if (!j) add(false, "后台任务找不到了");
+      else if (JOB_WAIT[j.status]) add(null, `${mail ? "邮件" : "后台任务"}${JOB_WAIT[j.status]}，完成后会自动再核对`);
+      else if (j.status === "failed" || j.status === "cancelled") add(false, `${mail ? "邮件没有发出" : "后台任务失败"}：${j.last_error ?? j.status}`);
+      else {
+        const result = j.result_json ? (JSON.parse(j.result_json) as { kind?: string; reason?: string }) : {};
+        if (!mail || result.kind === "sent") add(true, mail ? "邮件服务器已接收（不等于已进收件箱；发出后不能撤回）" : "后台任务已完成");
+        else if (result.kind === "unknown") add(false, "发送结果不确定，不会自动重发；可在「通知」页查看");
+        else add(false, `没有发送：${result.reason ?? result.kind ?? "被跳过"}`);
+      }
+    }
+  }
+  return out;
+}
+
 /** 一个已执行步骤的核验项 */
 function verifyAppliedItem(intakeId: string, item: IntakeItemRow, now: Date, tz: string): CheckRecord[] {
   const checks: CheckRecord[] = [];
@@ -146,8 +209,24 @@ function verifyAppliedItem(intakeId: string, item: IntakeItemRow, now: Date, tz:
   if (batches.length > 1) push("applied_once", `同一步写入了 ${batches.length} 次`, "");
   const applied = item.payload.applied as { batchId?: string | null; noChange?: boolean } | undefined;
   const batch = batches.find((b) => b.id === applied?.batchId) ?? batches[0];
+  const command = String((item.payload.command as { command?: string } | undefined)?.command ?? "");
+  // 主人说过不动的部分：执行前后的事实指纹必须一致（周末作息/规则/学习块、受保护对象）
+  const guarded = item.payload.gate as { protectedBefore?: string | null } | undefined;
+  if (guarded?.protectedBefore) {
+    const now2 = protectedNow(item);
+    push("constraints_hold", now2 !== guarded.protectedBefore ? "你说过不动的部分（日子、规则或安排）被这次处理改动了" : null, "你说过不动的部分没有被改动");
+  }
+  // 异步/外部结果：按执行凭据里的任务、探索、复盘、导出的真实状态判断，不把“已受理”当成完成
+  const effects = stepEffects(item.id);
+  if (effects.length) checks.push(...effectChecks(item, effects, summary, OPERATIONS[command as Command["command"]]?.sideEffects.includes("mail") ?? false));
   if (!batch) {
-    push("entity_state_matches", null, applied?.noChange ? "原本就是这样，没有需要改的" : "没有产生业务变更");
+    // 没有业务批次不等于达成：必需的后续（主人要求的重排）失败或缺失也算没完成
+    const follow = planFollowUp(item);
+    const required = ((item.payload.replanDates as string[] | undefined) ?? []).length > 0 || Boolean(follow);
+    if (follow?.state === "failed") push("plan_consistent", "要求的学习安排更新失败", "", { repair: "replan" });
+    else if (required && !follow && command === "update_planning_policy") push("plan_consistent", "要求的学习安排没有更新", "", { repair: "replan" });
+    else if (!effects.length) push("entity_state_matches", null, applied?.noChange ? "原本就是这样，没有需要改的" : "没有产生业务变更");
+    if (follow && follow.state !== "failed") push("plan_consistent", null, follow.state === "updated" ? "学习安排已按要求更新" : "学习安排核对过，不需要变化");
     return checks;
   }
   if (batch.status === "undone") {
@@ -202,9 +281,9 @@ function verifyAppliedItem(intakeId: string, item: IntakeItemRow, now: Date, tz:
       }
     } else if (kind === "practice_not_duplicated") {
       push(kind, practiceDuplicates(batch, intakeId), "这次投入只记了一次");
-    } else if (kind === "side_effect_status") {
-      const mail = meta.sideEffects.includes("mail");
-      push(kind, null, mail ? "已交给发送队列；是否送达不在这里核对，不会自动重发" : "已受理，后续结果在对应页面查看");
+    } else if (kind === "side_effect_status" && !effects.length) {
+      // 有执行凭据的已在上面按真实状态核对；这里只剩没有外部结果的设置类操作
+      push(kind, null, meta.sideEffects.includes("mail") ? "已交给发送队列；是否送达不在这里核对，不会自动重发" : "设置已保存");
     }
   }
   return checks;

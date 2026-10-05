@@ -495,7 +495,15 @@ export type OperationMeta = {
   reads: ReadToolName[];
   /** 执行后用哪些确定性检查确认结果 */
   verify: VerificationKind[];
+  /**
+   * 确认快照的读取集合：确认绑定“命令 + 这些事实的当前值”，执行事务内再核对一次；集合外的变化不让确认失效。
+   * 缺省只读命令里点名对象的版本。
+   */
+  facts?: FactSet[];
 };
+
+/** entity：命令里点名对象的版本；preferences：命令要改的作息字段当前值；rules：同类或日期重叠的生效规则 */
+export type FactSet = "entity" | "preferences" | "rules";
 
 export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   upsert_course_set: { title: "课表更新", description: "用确定性课表文本（SDCT1）和学期首周一建立/替换本学期课程。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"], sideEffects: ["replan"], reads: ["get_context"], verify: ["entity_state_matches", "plan_consistent"] },
@@ -508,7 +516,7 @@ export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   upsert_academic_calendar: { title: "校历", description: "一个学期的校历：首周、周数、停课区间、学校明确的补课映射。", group: "calendar", authorization: "auto", undo: "journal", affects: ["plan", "calendar"], sideEffects: ["replan"], reads: ["get_calendar_budget"], verify: ["entity_state_matches", "plan_consistent"] },
   apply_teaching_day_override: { title: "调课/停课", description: "单次例外：某门课取消或移到别的时间；或整天停课、按另一天的课表上课。周次条件按原教学日期判断。", group: "calendar", authorization: "auto", undo: "journal", affects: ["plan", "calendar"], sideEffects: ["replan"], reads: ["get_calendar_budget"], verify: ["entity_state_matches", "plan_consistent"] },
   update_calendar_sync_policy: { title: "日历自动更新设置", description: "开启/关闭校历与节假日的有限自动核对，设置学校、人群、间隔与官方入口。", group: "calendar", authorization: "explicit", undo: "journal", affects: [], sideEffects: ["job"], reads: ["get_context"], verify: ["policy_saved"] },
-  update_planning_policy: { title: "时间安排规则", description: "修改作息模板字段、按星期/工作日的上限、某段时间不学、假期策略、集中时段偏好，或授权重新安排某天。", group: "plan", authorization: "explicit", undo: "journal", affects: ["plan"], sideEffects: ["replan"], reads: ["get_context", "get_calendar_budget"], verify: ["policy_saved", "plan_consistent"] },
+  update_planning_policy: { title: "时间安排规则", description: "修改作息模板字段、按星期/工作日的上限、某段时间不学、假期策略、集中时段偏好，或授权重新安排某天。", group: "plan", authorization: "explicit", undo: "journal", affects: ["plan"], sideEffects: ["replan"], reads: ["get_context", "get_calendar_budget"], verify: ["policy_saved", "plan_consistent"], facts: ["preferences", "rules"] },
   pause_task: { title: "暂停任务", description: "把任务先放一放（到某天或先不定），让出未执行的学习块；resume 恢复。", group: "task", authorization: "explicit", undo: "journal", affects: ["plan", "reminders"], sideEffects: ["replan", "reminders"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "plan_consistent"] },
   correct_practice: { title: "纠正实践记录", description: "修改一条已有实践记录的分钟、日期、说明或关联任务。", group: "practice", authorization: "explicit", undo: "journal", affects: ["plan", "direction"], sideEffects: ["replan"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "practice_not_duplicated"] },
   reschedule_session: { title: "调整学习安排", description: "把一个具体学习块挪到别的日期/时段/钟点，或只改这一段的长度。", group: "plan", authorization: "explicit", undo: "journal", affects: ["plan"], sideEffects: ["replan"], reads: ["find_entities", "get_calendar_budget"], verify: ["session_in_scope", "plan_consistent"] },
@@ -554,4 +562,6 @@ export type CommandContext = {
   /** 规划时刻；缺省取当前时间（测试用固定时钟） */
   now?: Date;
   conversationId?: string | null;
+  /** 确认时的事实快照指纹：执行事务内重算，不一致就不写（确认期间相关事实变了） */
+  expectedFacts?: string | null;
 };

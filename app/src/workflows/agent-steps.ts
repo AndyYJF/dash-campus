@@ -1,73 +1,77 @@
-import crypto from "node:crypto";
-import { getDb } from "@/repositories/db";
+import { commandFacts, hashOf, type Facts } from "./command-facts";
 import { createItem, getItem, listItems, updateItem, type IntakeItemRow } from "@/repositories/intakes";
 import { listChanges } from "@/repositories/journal";
 import type { EntityRef } from "@/repositories/conversations";
 import type { Intent } from "@/domain/intent";
 import { authorizeCommand } from "@/domain/authorization";
 import { bindIntents, stepGroups, stepRefsOf, type BindEnv } from "./agent";
+import { gateCommand, gateKey, type GateContext } from "./agent-gate";
 
 /**
- * 多步执行与确认绑定（Agent 增强 v1.1 P1）：
+ * 多步执行与确认绑定（Agent 增强 v1.1 P1；语义修复 R06）：
  * - 一句话里多个对象的修改拆成步骤事项，各自一个 journal 批次，可分别撤销；
  * - 后一步引用前一步的结果（{kind:"step"}）时，等前一步落库后再绑定，前一步失败则这一步不执行；
- * - 确认针对“绑定后的命令 + 涉及对象的版本”的指纹，对象在确认前变了，旧确认作废。
+ * - 确认针对“绑定后的命令 + 注册表声明的相关事实 + 授权范围与保护约束”的指纹，任何一项变了旧确认作废。
  */
 
-const VERSIONED: Record<string, string> = { taskId: "tasks", sessionId: "plan_sessions", projectId: "projects", goalId: "goals", eventId: "fixed_events", practiceId: "practice_entries", candidateId: "candidates" };
-
-function readVersions(command: Record<string, unknown>): Record<string, number | null> {
-  const out: Record<string, number | null> = {};
-  for (const [field, table] of Object.entries(VERSIONED)) {
-    const id = command[field];
-    if (typeof id !== "string") continue;
-    try {
-      out[`${field}:${id}`] = (getDb().prepare(`SELECT version FROM ${table} WHERE id = ?`).get(id) as { version: number } | undefined)?.version ?? null;
-    } catch {
-      out[`${field}:${id}`] = null;
-    }
-  }
-  return out;
+/** 绑定后的命令连同相关事实快照、授权范围与保护的指纹 */
+export function planHash(commands: Array<Record<string, unknown>>, gateKey = ""): string {
+  return hashOf({ g: gateKey, p: commands.map((c) => ({ c, f: commandFacts(c) })) });
 }
 
-function stable(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(stable);
-  if (v && typeof v === "object") return Object.fromEntries(Object.keys(v as object).sort().map((k) => [k, stable((v as Record<string, unknown>)[k])]));
-  return v;
-}
-
-/** 绑定后的命令连同所涉对象当前版本的指纹 */
-export function planHash(commands: Array<Record<string, unknown>>): string {
-  return crypto.createHash("sha256").update(JSON.stringify(commands.map((c) => ({ c: stable(c), v: readVersions(c) })))).digest("hex").slice(0, 16);
+/** 确认时保存的事实快照（说明差异用） */
+export function planFacts(commands: Array<Record<string, unknown>>): Facts[] {
+  return commands.map(commandFacts);
 }
 
 export type PlanView = {
+  /** 过门（按范围与保护约束收窄）后的命令 */
   commands: Array<Record<string, unknown>>;
   hash: string;
+  /** 每一步各自的指纹：执行前逐步核对，任何一步变了旧确认作废 */
+  stepHashes: string[];
   /** 所有步骤都已绑定到具体命令 */
   bound: boolean;
   needsConfirm: boolean;
-  /** 授权直接拒绝的原因 */
+  /** 授权或约束直接拒绝的原因 */
   denied: string | null;
+  /** 按约束收窄了什么（给主人看） */
+  notes: string[];
 };
 
-/** Agent 推断的方案：先绑定，再按参数级授权判断是否需要确认 */
-export function planOf(intents: Intent[], env: BindEnv, fallbackNeedsConfirm: boolean): PlanView {
+/** Agent 推断的方案：先绑定，再过统一门，再按参数级授权判断是否需要确认 */
+export function planOf(intents: Intent[], env: BindEnv, fallbackNeedsConfirm: boolean, ctx: GateContext): PlanView {
   const commands: Array<Record<string, unknown>> = [];
+  const notes: string[] = [];
   let bound = true;
+  let denied: string | null = null;
   for (const group of stepGroups(intents)) {
     const b = bindIntents(group.map((i) => intents[i]!), env);
-    if (b.kind === "run") commands.push(b.command);
-    else if (b.kind !== "answer") bound = false;
+    if (b.kind === "run") {
+      const g = gateCommand(b.command, b.replanDates ?? [], ctx);
+      if (g.kind === "reject") denied ??= g.reason;
+      else {
+        commands.push(g.command);
+        notes.push(...g.notes);
+      }
+    } else if (b.kind !== "answer") bound = false;
   }
   let needsConfirm = bound ? false : fallbackNeedsConfirm;
-  let denied: string | null = null;
   for (const c of commands) {
     const a = authorizeCommand(c as Record<string, unknown> & { command: string }, { origin: "inferred" });
     if (a.kind === "deny") denied ??= a.reason;
     if (a.kind === "confirm") needsConfirm = true;
   }
-  return { commands, hash: bound ? planHash(commands) : planHash([{ intents } as unknown as Record<string, unknown>]), bound, needsConfirm, denied };
+  const key = gateKey(ctx);
+  return {
+    commands,
+    hash: bound ? planHash(commands, key) : planHash([{ intents } as unknown as Record<string, unknown>], key),
+    stepHashes: bound ? commands.map((c) => planHash([c], key)) : [],
+    bound,
+    needsConfirm,
+    denied,
+    notes: [...new Set(notes)],
+  };
 }
 
 /**

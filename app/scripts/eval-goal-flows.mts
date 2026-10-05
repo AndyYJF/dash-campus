@@ -36,9 +36,13 @@ if (MODEL_PROTOCOL !== "openai-chat" || !MODEL_ENDPOINT || !MODEL_API_KEY || !MO
 const only = (() => { const i = process.argv.indexOf("--only"); return i >= 0 ? new Set(process.argv[i + 1]!.split(",")) : null; })();
 
 type Setup = { text: string; decide: unknown };
-type Ctx = { setup: string[]; live: string; lives: string[]; question: (setupIndex: number) => string | null; before: Record<string, string> };
-/** live 为数组时按顺序都由真实模型理解；confirm 时像点结果卡上的按钮一样逐个确认“可以” */
-type Flow = { id: string; what: string; setup: Setup[]; live: string | string[]; confirm?: boolean; prepare?: () => void; check: (c: Ctx) => string[] };
+type Ctx = { setup: string[]; live: string; lives: string[]; question: (setupIndex: number) => string | null; before: Record<string, string>; prompts: string[] };
+/**
+ * live 为数组时按顺序都由真实模型理解；answer 是对第一个前置投递待确认问题的原话回答（同样由真实模型理解）；
+ * confirm 时像点结果卡上的按钮一样逐个确认“可以”；seed 在前置之前建数据，prepare 在前置之后
+ */
+/** approve：模拟会看确认内容的主人，返回 false 时回答“先不要”；不给则每个确认都答“可以” */
+type Flow = { id: string; what: string; setup: Setup[]; live: string | string[]; answer?: string; confirm?: boolean; approve?: (prompt: string) => boolean; seed?: () => void; prepare?: () => void; check: (c: Ctx) => string[] };
 
 const thisWeek = { kind: "act", rationale: "按课程与预算重排本周剩余时间", intents: [{ op: "replan", dateFrom: "2026-10-12", dateTo: "2026-10-18" }] };
 const ask = (question: string, options: string[]) => ({ kind: "ask", question, reason: "几种安排差别明显", options });
@@ -49,12 +53,26 @@ const snapshot = () => {
     facts: JSON.stringify([db.prepare(`SELECT id, status, version, priority, paused_until, due_local_date FROM tasks ORDER BY id`).all(), db.prepare(`SELECT id, start_utc, status, version, locked FROM plan_sessions ORDER BY id`).all()]),
     courses: JSON.stringify(db.prepare(`SELECT * FROM courses ORDER BY id`).all()),
     budget: JSON.stringify([db.prepare(`SELECT * FROM planning_policy_rules ORDER BY id`).all(), db.prepare(`SELECT * FROM planning_preferences`).all()]),
-    weekend: weekend(),
+    weekend: protectedDays("2026-10-17", "2026-10-18"),
+    nextWeekend: protectedDays("2026-10-24", "2026-10-25"),
   };
 };
-function weekend(): string {
-  return JSON.stringify(getDb().prepare(`SELECT id, start_utc, end_utc, status FROM plan_sessions WHERE status IN ('tentative','planned') AND start_utc >= '2026-10-16T16:00:00Z' AND start_utc < '2026-10-18T16:00:00Z' ORDER BY start_utc, id`).all());
+/** 某段日子（含）受保护的全部事实：周末作息模板、落在这些天的生效规则、未开始学习块 */
+function protectedDays(from: string, to: string): string {
+  const db = getDb();
+  return JSON.stringify([
+    db.prepare(`SELECT weekend_start, weekend_end FROM planning_preferences WHERE id = 1`).get(),
+    db.prepare(`SELECT kind, weekday, date_from, date_to, value_json FROM planning_policy_rules WHERE status = 'active' AND ((date_from IS NOT NULL AND date_to >= ? AND date_from <= ?) OR weekday IN (0, 6)) ORDER BY id`).all(from, to),
+    db.prepare(`SELECT id, start_utc, end_utc, status FROM plan_sessions WHERE status IN ('tentative','planned') AND date(start_utc, '+8 hours') BETWEEN ? AND ? ORDER BY id`).all(from, to),
+  ]);
 }
+const prefsNow = () => getDb().prepare(`SELECT workday_end AS workdayEnd, weekend_end AS weekendEnd FROM planning_preferences WHERE id = 1`).get() as { workdayEnd: string; weekendEnd: string };
+const OWNER = { intakeId: null, itemId: null, itemKey: "", instanceEpoch: 0, evidence: "", explicit: true, now: new Date(FIXTURE_NOW) };
+const weekendSessions = () => {
+  executeOperation({ command: "schedule_session", title: "英语阅读", date: "2026-10-17", startLocalTime: "10:00", durationMinutes: 60 }, OWNER);
+  executeOperation({ command: "schedule_session", title: "英语听力", date: "2026-10-24", startLocalTime: "10:00", durationMinutes: 60 }, OWNER);
+};
+const lateAll = { kind: "act", rationale: "建议长期把每天学习结束时间提前到 22:00", intents: [{ op: "window_end", time: "22:00" }] };
 const batchesOf = (intakeId: string) => (getDb().prepare(`SELECT COUNT(*) AS n FROM agent_action_batches WHERE intake_id = ?`).get(intakeId) as { n: number }).n;
 const taskOf = (title: string) => getDb().prepare(`SELECT * FROM tasks WHERE title = ? AND archived_at IS NULL`).get(title) as Record<string, unknown> | undefined;
 const verificationOf = (intakeId: string) => intakeResultById(intakeId)?.verification ?? null;
@@ -135,12 +153,12 @@ const FLOWS: Flow[] = [
     },
   },
   {
-    id: "g04-revise-before-confirm", what: "确认前改口“周末别动”= 旧确认作废、同一目标第 2 版，旧方案不执行，周末与课程保留",
-    setup: [{ text: "晚上安排太满了", decide: { kind: "act", rationale: "建议长期把每天学习结束时间提前到 22:00", intents: [{ op: "window_end", time: "22:00" }] } }],
+    id: "g04-revise-before-confirm", what: "确认前改口“周末别动”= 旧确认作废、同一目标第 2 版；旧方案不执行；周末作息模板/规则/学习块与课程都不变，工作日的修改确实做了",
+    setup: [{ text: "晚上安排太满了", decide: lateAll }],
     live: "周末别动", confirm: true,
-    prepare: () => { executeOperation({ command: "schedule_session", title: "英语阅读", date: "2026-10-17", startLocalTime: "10:00", durationMinutes: 60 }, { intakeId: null, itemId: null, itemKey: "", instanceEpoch: 0, evidence: "", explicit: true, now: new Date(FIXTURE_NOW) }); },
+    seed: weekendSessions,
     check: (c) => {
-      if (c.before.weekend === "[]") return ["前置没有周末学习块，核对无意义"];
+      if (!c.before.weekend.includes("start_utc")) return ["前置没有周末学习块，核对无意义"];
       const out: string[] = [];
       const old = c.question(0);
       if (!old) out.push("前置没有产生待确认方案");
@@ -148,9 +166,106 @@ const FLOWS: Flow[] = [
       if (goalOf(c.live) !== goalOf(c.setup[0]!)) out.push("没有续到同一目标");
       if (revOf(c.live) !== 2) out.push(`修订号 ${revOf(c.live)}，期望 2`);
       if (batchesOf(c.setup[0]!)) out.push(`旧一轮写入了 ${batchesOf(c.setup[0]!)} 个批次`);
-      if (weekend() !== c.before.weekend) out.push("周末的学习块被改了");
+      if (protectedDays("2026-10-17", "2026-10-18") !== c.before.weekend) out.push("周末作息/规则/学习块被改了");
       if (snapshot().courses !== c.before.courses) out.push("课程被改了");
+      if (prefsNow().workdayEnd >= "23:00" && stateOf(c.live) !== "needs_input") out.push(`工作日收工没有提前（${prefsNow().workdayEnd}），却显示 ${stateOf(c.live)}`);
       if (stateOf(c.live) === "failed") out.push(`执行失败：${intakeResultById(c.live)?.summary}`);
+      return out;
+    },
+  },
+  {
+    id: "s02-conditional-yes", what: "S02 待确认时回答“可以，但只改工作日，周末别动”= 修订方案（不当无条件同意）；只改工作日，周末全部保留",
+    setup: [{ text: "晚上太满了", decide: lateAll }],
+    live: [], answer: "可以，但只改工作日，周末别动", confirm: true,
+    seed: weekendSessions,
+    check: (c) => {
+      const out: string[] = [];
+      const q = c.question(0);
+      if (!q) out.push("前置没有产生待确认方案");
+      if (protectedDays("2026-10-17", "2026-10-18") !== c.before.weekend) out.push("周末作息/规则/学习块被改了");
+      const p = prefsNow();
+      if (p.weekendEnd !== "23:00") out.push(`周末收工被改成 ${p.weekendEnd}`);
+      if (p.workdayEnd >= "23:00" && stateOf(c.live) !== "needs_input") out.push(`工作日收工没有提前（${p.workdayEnd}），却显示 ${stateOf(c.live)}`);
+      if (revOf(c.live) !== 2 && getGoal(goalOf(c.live)!)?.revision !== 2) out.push(`没有按回答修订（目标第 ${getGoal(goalOf(c.live)!)?.revision} 版）`);
+      return out;
+    },
+  },
+  {
+    id: "s06-hedge", what: "S06 待确认时回答“可以吗？我还没想好”= 不执行，仍等主人决定",
+    setup: [{ text: "晚上太满了", decide: lateAll }],
+    live: [], answer: "可以吗？我还没想好",
+    check: (c) => {
+      const out: string[] = [];
+      if (batchesOf(c.setup[0]!)) out.push(`写入了 ${batchesOf(c.setup[0]!)} 个批次`);
+      if (prefsNow().workdayEnd !== "23:00" || prefsNow().weekendEnd !== "23:00") out.push(`作息被改了 ${JSON.stringify(prefsNow())}`);
+      if (listQuestionsForIntake(c.setup[0]!).every((q) => q.status !== "open")) out.push("没有留下待主人决定的问题");
+      return out;
+    },
+  },
+  {
+    id: "s04-s05-carry", what: "S04/S05 “周末别动”后连续改口：改成下周 → 数学再少一点 → 再优化一下 = 同一目标、范围下周、周末一直不动",
+    setup: [{ text: "帮我把这周的学习安排优化一下，周末别动", decide: { ...thisWeek, constraints: [{ kind: "protect_days", days: "weekend", excerpt: "周末别动" }] } }],
+    live: ["改成下周吧", "数学再少一点", "再优化一下"], confirm: true,
+    seed: weekendSessions,
+    check: (c) => {
+      const out: string[] = [];
+      const goal = goalOf(c.setup[0]!);
+      for (const id of c.lives) if (goalOf(id) !== goal) out.push(`“${getIntake(id)?.text}”没有续到同一目标`);
+      const scope = getGoal(goal!)?.summary.scope;
+      if (scope && scope.dateFrom !== "2026-10-19") out.push(`范围 ${JSON.stringify(scope)}，期望下周`);
+      if (protectedDays("2026-10-24", "2026-10-25") !== c.before.nextWeekend) out.push("下周末作息/规则/学习块被改了");
+      if (protectedDays("2026-10-17", "2026-10-18") !== c.before.weekend) out.push("本周末作息/规则/学习块被改了");
+      for (const id of c.lives) if (stateOf(id) === "failed") out.push(`“${getIntake(id)?.text}”失败：${intakeResultById(id)?.summary}`);
+      return out;
+    },
+  },
+  {
+    id: "gen-weekday-only", what: "泛化（holdout，不在提示词）“平时早点收工，双休日维持原样”= 只提前工作日收工",
+    setup: [], live: "平时早点收工，双休日维持原样", confirm: true,
+    seed: weekendSessions,
+    check: (c) => {
+      const out: string[] = [];
+      if (protectedDays("2026-10-17", "2026-10-18") !== c.before.weekend) out.push("周末作息/规则/学习块被改了");
+      if (prefsNow().weekendEnd !== "23:00") out.push(`周末收工被改成 ${prefsNow().weekendEnd}`);
+      if (prefsNow().workdayEnd >= "23:00" && stateOf(c.live) !== "needs_input") out.push(`工作日没有提前，却显示 ${stateOf(c.live)}`);
+      return out;
+    },
+  },
+  {
+    id: "gen-keep-weekend-replan", what: "泛化（holdout）“这周的学习重新排一下，周六周日照旧”= 周末学习块与规则不动",
+    setup: [], live: "这周的学习重新排一下，周六周日照旧", confirm: true,
+    seed: weekendSessions,
+    check: (c) => {
+      const out: string[] = [];
+      if (protectedDays("2026-10-17", "2026-10-18") !== c.before.weekend) out.push("周末作息/规则/学习块被改了");
+      if (stateOf(c.live) === "failed") out.push(`失败：${intakeResultById(c.live)?.summary}`);
+      return out;
+    },
+  },
+  {
+    id: "gen-dont-move-that", what: "泛化（holdout）待确认挪动时回答“好，不过刚才那门课别挪”= 那个学习块不被挪",
+    setup: [{ text: "高数复习改到晚上七点", decide: { kind: "act", rationale: "挪到 19:00", intents: [{ op: "move_session", ref: { kind: "named", text: "高数复习", date: "2026-10-18", part: "any" }, targetDate: "2026-10-18", startLocalTime: "19:00" }] } }],
+    live: [], answer: "好，不过刚才那门课别挪", confirm: true,
+    seed: () => { executeOperation({ command: "schedule_session", title: "高数复习", date: "2026-10-18", startLocalTime: "15:00", durationMinutes: 60 }, OWNER); },
+    check: (c) => {
+      const out: string[] = [];
+      if (!c.question(0)) out.push("前置没有产生待确认挪动");
+      const row = getDb().prepare(`SELECT s.start_utc FROM plan_sessions s JOIN tasks t ON t.id = s.task_id WHERE t.title = '高数复习' AND s.status IN ('tentative','planned')`).get() as { start_utc: string } | undefined;
+      if (row?.start_utc !== "2026-10-18T07:00:00.000Z") out.push(`高数复习被挪到 ${row?.start_utc}`);
+      return out;
+    },
+  },
+  {
+    id: "gen-dont-move-that-reader", what: "同上，但主人会看确认：确认里仍写着要挪「高数复习」就答“先不要” = 无论模型怎么理解所指，高数复习都不会被挪，且确认如实写出要挪的对象",
+    setup: [{ text: "高数复习改到晚上七点", decide: { kind: "act", rationale: "挪到 19:00", intents: [{ op: "move_session", ref: { kind: "named", text: "高数复习", date: "2026-10-18", part: "any" }, targetDate: "2026-10-18", startLocalTime: "19:00" }] } }],
+    live: [], answer: "好，不过刚才那门课别挪", confirm: true,
+    approve: (prompt) => !/挪动学习块：「高数复习」/.test(prompt),
+    seed: () => { executeOperation({ command: "schedule_session", title: "高数复习", date: "2026-10-18", startLocalTime: "15:00", durationMinutes: 60 }, OWNER); },
+    check: (c) => {
+      const out: string[] = [];
+      const row = getDb().prepare(`SELECT s.start_utc FROM plan_sessions s JOIN tasks t ON t.id = s.task_id WHERE t.title = '高数复习' AND s.status IN ('tentative','planned')`).get() as { start_utc: string } | undefined;
+      if (row?.start_utc !== "2026-10-18T07:00:00.000Z") out.push(`高数复习被挪到 ${row?.start_utc}`);
+      if (c.prompts.some((p) => !/挪动学习块：「高数复习」/.test(p)) && row?.start_utc !== "2026-10-18T07:00:00.000Z") out.push("确认里没写出要挪的对象");
       return out;
     },
   },
@@ -214,7 +329,7 @@ console.log(`probe: tools=${caps.tools} jsonSchema=${caps.jsonSchema}`);
 const cfg = { endpoint: MODEL_ENDPOINT, apiKey: MODEL_API_KEY, model: MODEL_NAME, jsonSchema: caps.jsonSchema, tools: caps.tools };
 const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "dash-goals-"));
 const template = buildTemplate(workDir);
-const report: Array<{ id: string; what: string; pass: boolean; failures: string[]; requests: number; liveState: string; liveSummary: string; ms: number }> = [];
+const report: Array<{ id: string; what: string; pass: boolean; failures: string[]; confirmPrompts: string[]; requests: number; liveState: string; liveSummary: string; ms: number }> = [];
 let seq = 0;
 
 for (const flow of FLOWS.filter((f) => !only || only.has(f.id))) {
@@ -241,6 +356,7 @@ for (const flow of FLOWS.filter((f) => !only || only.has(f.id))) {
     return { ok: false, code: "HTTP_ERROR", message: `脚本没有处理 ${req.workflow}`, retryable: false };
   });
   setProvidersForTests({ model: { mode: "fixture", provider: scripted } });
+  flow.seed?.();
   for (const step of flow.setup) {
     current = step;
     setupIds.push(await post(step.text));
@@ -255,24 +371,42 @@ for (const flow of FLOWS.filter((f) => !only || only.has(f.id))) {
   let failures: string[];
   let liveId = "";
   const lives: string[] = [];
+  const prompts: string[] = [];
   try {
-    for (const text of typeof flow.live === "string" ? [flow.live] : flow.live) lives.push(await post(text));
-    liveId = lives[0]!;
-    for (let n = 0; flow.confirm && n < 6; n++) {
-      const q = listQuestionsForIntake(liveId).find((x) => x.status === "open" && x.purpose === "confirm");
-      if (!q) break;
-      const res = await answerRoute(new NextRequest(`http://localhost/api/v2/questions/${q.id}/answers`, { method: "POST", headers: { cookie: `${SESSION_COOKIE}=${s.token}`, "x-csrf-token": s.session.csrfToken, "content-type": "application/json", "idempotency-key": `goal-${seq++}` }, body: JSON.stringify({ text: "可以", expectedVersion: q.version }) }), { params: Promise.resolve({ id: q.id }) });
-      if (res.status >= 300) throw new Error(`确认被拒 ${res.status}`);
+    const reply = async (qid: string, version: number, text: string) => {
+      const res = await answerRoute(new NextRequest(`http://localhost/api/v2/questions/${qid}/answers`, { method: "POST", headers: { cookie: `${SESSION_COOKIE}=${s.token}`, "x-csrf-token": s.session.csrfToken, "content-type": "application/json", "idempotency-key": `goal-${seq++}` }, body: JSON.stringify({ text, expectedVersion: version }) }), { params: Promise.resolve({ id: qid }) });
+      if (res.status >= 300) throw new Error(`回答被拒 ${res.status}：${(await res.text()).slice(0, 200)}`);
       for (let k = 0; k < 6; k++) await runDueJobsOnce();
+    };
+    if (flow.answer) {
+      const q = questionIds[0] ? getQuestion(questionIds[0]) : null;
+      if (!q) throw new Error("前置没有待答问题");
+      await reply(q.id, q.version, flow.answer);
     }
-    failures = flow.check({ setup: setupIds, live: liveId, lives, question: (i) => questionIds[i] ?? null, before });
+    // 多句改口时每句之后都像点按钮一样确认，再说下一句
+    const confirmAll = async (id: string) => {
+      for (let n = 0; flow.confirm && n < 6; n++) {
+        const q = listQuestionsForIntake(id).find((x) => x.status === "open" && x.purpose === "confirm");
+        if (!q) break;
+        prompts.push(q.prompt);
+        await reply(q.id, q.version, !flow.approve || flow.approve(q.prompt) ? "可以" : "先不要");
+      }
+    };
+    for (const text of typeof flow.live === "string" ? [flow.live] : flow.live) {
+      const id = await post(text);
+      lives.push(id);
+      await confirmAll(id);
+    }
+    liveId = lives[0] ?? setupIds[0]!;
+    if (!lives.length) await confirmAll(liveId);
+    failures = flow.check({ setup: setupIds, live: liveId, lives, question: (i) => questionIds[i] ?? null, before, prompts });
   } catch (e) {
     failures = [`异常：${e instanceof Error ? e.message : String(e)}`];
   }
   const live = liveId ? intakeResultById(liveId) : null;
   const items = liveId ? (getDb().prepare(`SELECT state, payload_json FROM intake_items WHERE intake_id = ?`).all(liveId) as Array<{ state: string; payload_json: string }>) : [];
   const shape = items.map((i) => { const p = JSON.parse(i.payload_json) as Record<string, unknown>; return `${i.state}${p.reply ? ":reply" : p.needsDecision || p.decisionText ? ":decide" : p.intents ? `:act(${(p.intents as Array<{ op: string }>).map((x) => x.op).join(",")})` : p.routeAsk ? ":ask" : ""}`; }).join(" ");
-  const row = { id: flow.id, what: flow.what, pass: failures.length === 0, failures, requests: calls, liveState: live?.state ?? "-", liveSummary: `${shape} | 核验=${live?.verification?.status ?? "无"} | ${(live?.summary ?? "").slice(0, 200)}${liveId ? listQuestionsForIntake(liveId).filter((q) => q.status === "open").map((q) => ` | 问[${q.purpose}] ${q.prompt.slice(0, 120)} ${JSON.stringify(q.options ?? [])}`).join("") : ""}`, ms: Date.now() - started };
+  const row = { id: flow.id, what: flow.what, pass: failures.length === 0, failures, confirmPrompts: prompts, requests: calls, liveState: live?.state ?? "-", liveSummary: `${shape} | 核验=${live?.verification?.status ?? "无"} | ${(live?.summary ?? "").slice(0, 200)}${liveId ? listQuestionsForIntake(liveId).filter((q) => q.status === "open").map((q) => ` | 问[${q.purpose}] ${q.prompt.slice(0, 120)} ${JSON.stringify(q.options ?? [])}`).join("") : ""}`, ms: Date.now() - started };
   report.push(row);
   console.log(`${row.pass ? "pass" : "FAIL"} ${flow.id} req=${calls} ${row.ms}ms state=${row.liveState} ${row.liveSummary} ${failures.join("；")}`);
   setProvidersForTests({ model: undefined });

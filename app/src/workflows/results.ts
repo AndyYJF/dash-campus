@@ -10,6 +10,8 @@ import { getIntake, listItems, type IntakeRow } from "@/repositories/intakes";
 import { getQuestion, listQuestionsForIntake } from "@/repositories/questions";
 import { getGoal } from "@/repositories/goals";
 import { listVerifications } from "@/repositories/agent-runs";
+import { listGoalConstraints } from "@/repositories/goal-constraints";
+import { describeConstraint } from "@/domain/constraints";
 
 /**
  * 统一业务结果（AGENT-INTERFACE-CONTRACT §5.3）：聊天、卡片按钮、兼容 API 的结果同一形状。
@@ -173,7 +175,8 @@ export type IntakeResultView = {
   snapshotRevision: string;
   error: { message: string; recoverable: boolean } | null;
   /** 所属目标：current=false 表示目标已被改口/停止，这一轮的结果不再是最新 */
-  goal: { id: string; revision: number; intakeRevision: number; current: boolean; state: string; objective: string } | null;
+  /** constraints：这个目标上生效的主人条件（人话 + 原话），随后每一版都按它们核对 */
+  goal: { id: string; revision: number; intakeRevision: number; current: boolean; state: string; objective: string; constraints: string[] } | null;
   /**
    * 执行后核验（服务端读回当前事实）：verified 已核对 / partial 部分完成 / needs_action 等你取舍 / blocked 受阻 / pending 还有步骤在等。
    * repairs 是原授权内自动做过的修正；没有执行任何步骤时为 null。
@@ -393,7 +396,8 @@ function goalView(intake: IntakeRow): IntakeResultView["goal"] {
   if (!intake.goalId) return null;
   const g = getGoal(intake.goalId);
   if (!g) return null;
-  return { id: g.id, revision: g.revision, intakeRevision: intake.goalRevision ?? 1, current: (intake.goalRevision ?? 1) === g.revision, state: g.state, objective: g.objective.slice(0, 200) };
+  const constraints = listGoalConstraints(g.id).map((c) => `${describeConstraint(c.value)}（${c.source === "inherited" ? "沿用你前面说的" : "你说"}“${c.excerpt.slice(0, 40)}”）`);
+  return { id: g.id, revision: g.revision, intakeRevision: intake.goalRevision ?? 1, current: (intake.goalRevision ?? 1) === g.revision, state: g.state, objective: g.objective.slice(0, 200), constraints };
 }
 
 export function intakeResultById(id: string): IntakeResultView | null {

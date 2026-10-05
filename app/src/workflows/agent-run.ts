@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { appendVerification, listVerifications, recordRepairOutcome, type CheckRecord, type RepairRecord, type VerificationRow } from "@/repositories/agent-runs";
-import { intakeRequestUsage, INTAKE_ACTIVE_MS_LIMIT } from "@/workflows/ai-budget";
+import { intakeRequestUsage, INTAKE_MODEL_MS_LIMIT } from "@/workflows/ai-budget";
 import type { IntakeRow } from "@/repositories/intakes";
 import { verifyIntake } from "./agent-verify";
 
@@ -51,7 +51,7 @@ export function verifyAndRepair(intake: IntakeRow, hooks: RepairHooks, now: Date
     if (fingerprint) {
       if (tried.has(fingerprint)) stop = "修正后仍是同样的问题，不再重复尝试";
       else if (repairs >= MAX_REPAIRS) stop = `已自动修正 ${MAX_REPAIRS} 次仍未通过，不再继续`;
-      else if (intakeRequestUsage(intake.id).activeMs >= INTAKE_ACTIVE_MS_LIMIT) stop = `这份投递已累计处理 ${INTAKE_ACTIVE_MS_LIMIT / 1000} 秒，没有继续修正`;
+      else if (intakeRequestUsage(intake.id).modelMs >= INTAKE_MODEL_MS_LIMIT) stop = `这份投递的模型请求已累计 ${INTAKE_MODEL_MS_LIMIT / 1000} 秒，没有继续修正`;
     }
     if (stop) {
       status = "blocked";
@@ -73,4 +73,16 @@ export function verifyAndRepair(intake: IntakeRow, hooks: RepairHooks, now: Date
     recordRepairOutcome(last.id, { ...repair, steps: done });
   }
   return last;
+}
+
+/**
+ * 异步结果到达后的再核验（复盘/探索/摘要任务结束时由 worker 调用，不轮询）：只核验、不修正；
+ * 结论和上一轮相同就不重复记一轮。
+ */
+export function reverifyAfterEffect(intake: IntakeRow, now: Date): VerificationRow | null {
+  const v = verifyIntake(intake.id, now);
+  if (!v) return null;
+  const prior = listVerifications(intake.id).at(-1);
+  if (prior && prior.status === v.status && fingerprintOf(prior.checks) === fingerprintOf(v.checks)) return prior;
+  return appendVerification({ intakeId: intake.id, goalId: intake.goalId, goalRevision: intake.goalRevision, status: v.status, checks: v.checks, fingerprint: null, repair: null, at: now });
 }

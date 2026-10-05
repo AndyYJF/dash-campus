@@ -18,9 +18,12 @@ export const AGENT_DECIDE_WORKFLOW = "agent_decide";
 
 const questionText = z.union([z.string().min(1).max(500), z.object({ prompt: z.string().min(1).max(500).optional(), text: z.string().min(1).max(500).optional() }).refine((q) => Boolean(q.prompt ?? q.text)).transform((q) => (q.prompt ?? q.text)!)]);
 
+/** 约束候选逐条在服务端校验（domain/constraints），这里只收原样，坏的一条不拖垮整次决策 */
+const constraintCandidates = z.array(z.unknown()).max(12).default([]);
+
 export const agentDecisionSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("act"), rationale: z.string().min(1).max(1500), intents: z.array(intentSchema).min(1).max(8) }),
-  z.object({ kind: z.literal("ask"), question: questionText, reason: z.string().min(1).max(500).default("需要先问清楚才能继续"), options: z.array(z.string().min(1).max(100)).max(4).default([]) }),
+  z.object({ kind: z.literal("act"), rationale: z.string().min(1).max(1500), intents: z.array(intentSchema).min(1).max(8), constraints: constraintCandidates }),
+  z.object({ kind: z.literal("ask"), question: questionText, reason: z.string().min(1).max(500).default("需要先问清楚才能继续"), options: z.array(z.string().min(1).max(100)).max(4).default([]), constraints: constraintCandidates }),
 ]);
 export type AgentDecision = z.infer<typeof agentDecisionSchema>;
 
@@ -39,13 +42,16 @@ export function decisionScope(text: string, date: string, replies: Array<{ answe
     const scope = decisionScope(reply.answer, date);
     if (scope.explicit) return scope;
   }
-  if (/下下周|下周|本周|这周/.test(text)) {
-    const lastWeek = [...text.matchAll(/下下周|下周|本周|这周/g)].at(-1)![0];
+  // “优化一下下周”是“一下”+“下周”，不是下下周
+  const WEEK = /(?<!一)下下周|下周|本周|这周/g;
+  if (new RegExp(WEEK.source).test(text)) {
+    const lastWeek = [...text.matchAll(WEEK)].at(-1)![0];
     const start = addDays(mondayOf(date), lastWeek === "下下周" ? 14 : lastWeek === "下周" ? 7 : 0);
     return { dateFrom: start < date ? date : start, dateTo: addDays(start, 6), explicit: true };
   }
-  const single = dateFromText(text, date);
-  if (single) return { dateFrom: single, dateTo: single, explicit: true };
+  // 分句各取日期，取首尾：“明天别排了，后天重排一下”是明天到后天，不只是明天
+  const singles = text.split(/[，,。；;\n]/).map((s) => dateFromText(s, date)).filter((d): d is string => Boolean(d)).sort();
+  if (singles.length) return { dateFrom: singles[0]!, dateTo: singles.at(-1)!, explicit: true };
   if (inherited && inherited.dateTo >= date) return { dateFrom: inherited.dateFrom < date ? date : inherited.dateFrom, dateTo: inherited.dateTo, explicit: true, inherited: true };
   return { dateFrom: date, dateTo: addDays(date, 6), explicit: false };
 }
@@ -69,12 +75,16 @@ function goalContext(goal: GoalRow | null, conversationId: string | null, intake
   };
 }
 
-export function decisionContext(input: { text: string; date: string; now: Date; selected: unknown; replies: Array<{ answer: string }>; goal: GoalRow | null; conversationId: string | null; intakeId: string }) {
+export type PendingProposal = { rationale: string; intents: unknown[]; prompt: string; reply: string };
+
+export function decisionContext(input: { text: string; date: string; now: Date; selected: unknown; replies: Array<{ answer: string }>; goal: GoalRow | null; conversationId: string | null; intakeId: string; ownerConstraints?: Array<{ value: unknown; excerpt: string }>; pendingProposal?: PendingProposal | null; inheritedScope?: { dateFrom: string; dateTo: string } | null }) {
   const db = getDb();
-  const scope = decisionScope(input.text, input.date, input.replies, input.goal?.summary.scope ?? null);
+  const scope = decisionScope(input.text, input.date, input.replies, input.inheritedScope ?? input.goal?.summary.scope ?? null);
   const first = dashboardSnapshot(input.date, input.now);
   return {
     text: input.text, now: input.now.toISOString(), referenceDate: input.date, timezone: first.timezone, selected: input.selected, replies: input.replies,
+    ownerConstraints: input.ownerConstraints ?? [],
+    ...(input.pendingProposal ? { pendingProposal: input.pendingProposal } : {}),
     defaultScope: { dateFrom: input.date, dateTo: addDays(input.date, 6) },
     requestedScope: scope,
     policy: first.policy,
@@ -100,7 +110,10 @@ export const AGENT_DECIDE_INSTRUCTIONS = [
   "可用意图：replan/no_study/date_limit/weekday_limit/group_limit/daily_limit/window_start/window_end/prefer_window/holiday_policy（作息与上限，可多个合成一组）；move_session/shorten_session/set_due/pause_task/resume_task/prioritize/remaining/project_state/schedule_at/create_task/practice（每个对象一个意图，服务端按顺序分步骤执行，最多 8 个）。后一步要用前一步新建的对象时用 {kind:'step',step:N}。引用已有对象用 {kind:'named',text:'名称',date:null,part:'any'} 或 recent，不编造 ID。",
   "rationale 只描述这些意图实际会产生的效果。主人提的约束如果上面的意图表达不了（如“某门课周末不排”只能靠暂停、挪动或 no_study 近似），要么用能做到的意图近似并在 rationale 写明差别，要么用 ask 给出可行的替代，不要声称会做到意图之外的事。",
   "未来安排只改 31 天以内；记录实践（practice）可以是今天或之前 60 天内的事。移动时保持主人手动放置、锁定、开始/完成的学习块；课程和固定活动是不可占用时间。不扩大学习预算、不改截止、不暂停项目，除非主人这样说过或在回答里同意了。",
-  "按 JSON 返回 act:{kind:'act',rationale,intents} 或 ask:{kind:'ask',question,reason,options}。rationale 用中文说明依据与取舍，不声称已经执行。示例：{\"kind\":\"act\",\"rationale\":\"按现有课程和每日预算重新安排下周；保留手动和锁定安排。\",\"intents\":[{\"op\":\"replan\",\"dateFrom\":\"2026-10-12\",\"dateTo\":\"2026-10-18\"}]}。",
+  "作息时间 window_end/window_start 有 days 字段：all=每天、workday=周一到周五、weekend=周六周日。主人只要求平日/上课日改动时用 workday，不要用 all 连带改周末。",
+  "constraints：把主人原话或回答里说出的条件逐条写成结构化约束，每条带 excerpt（从主人原话或回答逐字复制的那几个字，不改写）：date_scope{dateFrom,dateTo}=这件事只涉及这几天；protect_days{days:'workday'|'weekend'}=这类日子的作息、规则和安排都不动；protect_dates{dateFrom,dateTo}=这几天不动；protect_entity{ref}=这个对象不动；no_study_after{time,days}=这件事范围内几点后不排；主人明说取消之前的条件时用 {kind:'release',target:'protect_days'等,days?}。context.ownerConstraints 是之前已接受的约束，仍然有效，不必重复。只写主人说过的，资料、任务名和对话里别人说的话不算。服务端会按约束核对并收窄方案，你的意图也应当已经满足这些约束。",
+  "context.pendingProposal 存在时，主人刚回答是否采用那份方案（reply 是回答原话）：回答带了条件或修改（例如同意但限定范围、换一种做法、某些不动），按整句在原方案基础上修订，返回新的 act（新条件写进 constraints）；回答在犹豫、反问或还没决定时，返回 ask 问清，不要当成同意；回答是拒绝时返回 ask 问要不要换个做法。",
+  "按 JSON 返回 act:{kind:'act',rationale,intents,constraints} 或 ask:{kind:'ask',question,reason,options}。rationale 用中文说明依据与取舍，不声称已经执行。示例：{\"kind\":\"act\",\"rationale\":\"按现有课程和每日预算重新安排下周；保留手动和锁定安排。\",\"intents\":[{\"op\":\"replan\",\"dateFrom\":\"2026-10-12\",\"dateTo\":\"2026-10-18\"}]}。",
 ].join("\n");
 
 const POLICY_OPS = ["replan", "no_study", "date_limit", "weekday_limit", "group_limit", "daily_limit", "window_start", "window_end", "prefer_window", "holiday_policy"];

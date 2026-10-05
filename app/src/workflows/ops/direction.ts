@@ -147,10 +147,10 @@ export function applyProjectState(cmd: Cmd<"update_project_state">, _ctx: Comman
 }
 
 /** 找候选项目：走已有的探索流程（检索有来源的资料 → 最多 3 个候选）。需要模型；没有搜索服务时要先贴资料 */
-export function applyRequestExploration(cmd: Cmd<"request_exploration">): { summary: string; effectBatchId: string } {
+export function applyRequestExploration(cmd: Cmd<"request_exploration">): { summary: string; effectBatchId: string; effects: Array<{ kind: string; id: string }> } {
   const r = startExploration({ query: cmd.query, topicId: null, projectId: null, background: cmd.background, materials: [], resourceIds: [] });
   if (!r.ok) throw new HttpError(r.code === "NOT_FOUND" ? 404 : 409, r.code, r.message);
-  return { summary: `开始为「${cmd.query.slice(0, 40)}」找候选项目：会检索有出处的资料，最多给 3 个候选，完成后出现在「方向」页。不会替你报名或承诺投入。`, effectBatchId: "" };
+  return { summary: `开始为「${cmd.query.slice(0, 40)}」找候选项目：会检索有出处的资料，最多给 3 个候选，完成后出现在「方向」页。不会替你报名或承诺投入。`, effectBatchId: "", effects: [{ kind: "exploration_run", id: r.run.id }, { kind: "job", id: r.jobId }] };
 }
 
 /** 资料入库并标明归属与事实类型；默认是参考资料，不当成你自己的成果 */

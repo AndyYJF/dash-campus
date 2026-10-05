@@ -72,6 +72,9 @@ export type RebuildOptions = {
   horizonDays?: number;
   /** 主人明确要求重新安排的日期：这些天里未锁定、未开始的块全部重排（不受 24h 保护） */
   replanDates?: string[];
+  /** 主人说过不动的日子/对象：这些日子与任务的块原样保留，也不往这些日子新增块 */
+  frozenDates?: string[];
+  frozenTaskIds?: string[];
   /** 这次重排由哪个变更批次引起、属于哪次对话与投递（撤销与结果展示用） */
   causedBy?: string | null;
   conversationId?: string | null;
@@ -221,11 +224,13 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
   // 主人给过“这几天可以重新安排”的授权：范围内未锁定、未开始的块不再受 24h 保护；授权可撤回，撤回后恢复保护
   const rules = activePolicyRules();
   const granted = (date: string) => rules.some((r) => r.kind === "auto_reschedule" && (r.dateFrom ?? "") <= date && date <= (r.dateTo ?? ""));
-  const replan = new Set(opts.replanDates ?? []);
+  const frozenDates = new Set(opts.frozenDates ?? []);
+  const frozenTasks = new Set(opts.frozenTaskIds ?? []);
+  const replan = new Set((opts.replanDates ?? []).filter((d) => !frozenDates.has(d)));
   const sessionDate = (s: PlanSessionRow) => localDateInTz(new Date(s.startUtc), tz);
   const started = (s: PlanSessionRow) => s.status === "in_progress" || Date.parse(s.startUtc) <= asOfMs;
-  // 主人亲自指定位置的块（origin=user）与锁定块一样不被自动挪动
-  const isProtected = (s: PlanSessionRow) => started(s) || s.locked || s.origin === "user" || (Date.parse(s.startUtc) <= asOfMs + DAY_MS && !granted(sessionDate(s)) && !replan.has(sessionDate(s)));
+  // 主人亲自指定位置的块（origin=user）与锁定块一样不被自动挪动；主人说过不动的日子/对象同样冻结
+  const isProtected = (s: PlanSessionRow) => started(s) || s.locked || s.origin === "user" || frozenDates.has(sessionDate(s)) || frozenTasks.has(s.taskId) || (Date.parse(s.startUtc) <= asOfMs + DAY_MS && !granted(sessionDate(s)) && !replan.has(sessionDate(s)));
 
   // Admission overrides 24h protection for unstarted automatic blocks only.
   // Owner-positioned, locked and already-started work is preserved.
@@ -280,7 +285,7 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
   const part = rules.find((r) => r.kind === "preferred_window")?.value.part as string | undefined;
   const days: SchedDay[] = horizon.map((date) => {
     const ledger = base.get(date)!;
-    let free = subtractIntervals(ledger.w, keptPadded);
+    let free = frozenDates.has(date) ? [] : subtractIntervals(ledger.w, keptPadded);
     // 今天的新块从下一个整 5 分钟开始，不排出 14:52 这种零碎钟点
     if (date === fromLocal) free = free.map(([s, e]) => [Math.max(s, Math.ceil(asOfMs / 300_000) * 300_000), e] as Interval).filter(([s, e]) => e > s);
     const weekend = ledger.calendar.weekday >= 6;
@@ -296,6 +301,7 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
   const unscheduled: Unscheduled[] = [];
   const starters = new Set<string>();
   for (const t of tasks) {
+    if (frozenTasks.has(t.id)) continue;
     const k = keptTask.get(t.id) ?? { minutes: 0, blocks: 0 };
     const demand = remainingDemand(t, spent);
     if (demand === null) {

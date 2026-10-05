@@ -29,7 +29,7 @@ type Result = {
   undo: { available: boolean; batchIds: string[]; note: string };
   understanding?: { routedBy: "model" | "fast" | "rules" | null; fallbackReason: string | null; sources: string[] };
   error: { message: string; recoverable: boolean } | null;
-  goal?: { id: string; revision: number; current: boolean; state: string; objective: string } | null;
+  goal?: { id: string; revision: number; current: boolean; state: string; objective: string; constraints?: string[] } | null;
   verification?: { status: "verified" | "partial" | "needs_action" | "blocked" | "pending"; label: string; checks: Array<{ kind: string; ok: boolean | null; subject: string; detail: string }>; repairs: Array<{ reason: string; steps: string[] }> } | null;
 };
 type GoalRef = { id: string; revision: number; objective: string };
@@ -426,6 +426,9 @@ export default function UniversalIntake() {
                   {f.summary}
                 </p>
               ))}
+              {!ACTIVE.has(r.state) && r.goal?.current && (r.goal.constraints?.length ?? 0) > 0 && (
+                <p className={styles.when}>一直守着：{r.goal.constraints!.join("；")}</p>
+              )}
               {!ACTIVE.has(r.state) && r.verification && r.state !== "answered" && (
                 <p className={styles.followUp} data-state={["partial", "blocked"].includes(r.verification.status) ? "failed" : r.verification.status}>
                   {r.verification.label}

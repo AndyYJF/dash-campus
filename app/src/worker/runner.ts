@@ -18,7 +18,7 @@ import { sweepAgentDiagnostics } from "@/workflows/agent-trace";
 import { NOTICE_EXTRACTION_JOB_TYPE } from "@/contracts/notice-extraction";
 import { runNoticeExtractionJob } from "@/workflows/notice-extraction";
 import { INTAKE_JOB_TYPE } from "@/contracts/intake";
-import { runIntakeProcessJob } from "@/workflows/intake";
+import { reverifyAfterJob, runIntakeProcessJob } from "@/workflows/intake";
 
 import { DIGEST_JOB_TYPE, PLAN_MAINTENANCE_JOB_TYPE } from "@/contracts/digests";
 import { rebuildPlan } from "@/workflows/plan";
@@ -85,6 +85,14 @@ export async function runDueJobsOnce(limit = 1): Promise<RunOnceStats & { held?:
     const handler = HANDLERS[job.type];
     if (handler) {
       const outcome = await handler(job);
+      // 异步结果到了：等它的投递重新核验（不轮询）；核验出错不影响 worker 继续
+      if (job.type !== INTAKE_JOB_TYPE && outcome.kind !== "fenced") {
+        try {
+          reverifyAfterJob(job.id);
+        } catch (e) {
+          console.error("reverify failed", job.id, e);
+        }
+      }
       if (outcome.kind === "done" || outcome.kind === "fenced") stats.done++;
       else if (outcome.kind === "failed") stats.failed++;
       else stats.cancelled++;
@@ -128,6 +136,11 @@ export function recoverOnStartup(): { unknownDeliveries: number; requeuedJobs: n
     db.prepare(
       `UPDATE jobs SET status = 'done', result_json = ?, updated_at = ? WHERE id = ? AND status = 'running'`,
     ).run(JSON.stringify(result), new Date().toISOString(), job.id);
+    try {
+      reverifyAfterJob(job.id);
+    } catch (e) {
+      console.error("reverify failed", job.id, e);
+    }
   }
   return { unknownDeliveries, requeuedJobs };
 }

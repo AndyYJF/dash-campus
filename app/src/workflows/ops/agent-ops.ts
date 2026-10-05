@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { getDb } from "@/repositories/db";
 import { bumpPlanningRevision } from "@/repositories/proposals";
 import type { ChangeInput } from "@/repositories/journal";
@@ -25,7 +26,7 @@ const WEEKDAY = ["", "周一", "周二", "周三", "周四", "周五", "周六",
 const md = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
 
 /** 按需复盘：只生成复盘与建议，建议不会自动执行 */
-export function applyRequestReview(cmd: Cmd<"request_review">, ctx: CommandContext): { summary: string; effectBatchId: string } {
+export function applyRequestReview(cmd: Cmd<"request_review">, ctx: CommandContext): { summary: string; effectBatchId: string; effects: Array<{ kind: string; id: string }> } {
   const tz = instanceTimezone();
   const today = localDateInTz(ctx.now ?? nowDate(), tz);
   const monday = cmd.localMonday ? mondayOf(cmd.localMonday) : cmd.week === "this" ? mondayOf(today) : addDays(mondayOf(today), -7);
@@ -39,6 +40,7 @@ export function applyRequestReview(cmd: Cmd<"request_review">, ctx: CommandConte
       ? `${range} 这一周的复盘已经在生成了，完成后在「复盘」页看到`
       : `开始整理 ${range} 这一周的复盘：只用这一周已记录的事实，完成后在「复盘」页看到。里面的建议要你点头才会执行，不会自动改安排。`,
     effectBatchId: "",
+    effects: [{ kind: "review", id: r.review.id }, ...(r.jobId ? [{ kind: "job", id: r.jobId }] : [])],
   };
 }
 
@@ -88,7 +90,7 @@ export function applyConfigureExploration(cmd: Cmd<"configure_exploration">, _ct
 }
 
 /** 现在发一份摘要给主人本人：走既有的可靠投递，已发出的邮件不能撤回 */
-export function applyRequestOwnerDigest(cmd: Cmd<"request_owner_digest">, ctx: CommandContext): { summary: string; effectBatchId: string } {
+export function applyRequestOwnerDigest(cmd: Cmd<"request_owner_digest">, ctx: CommandContext): { summary: string; effectBatchId: string; effects: Array<{ kind: string; id: string }> } {
   if (isRestoredHold()) throw new HttpError(409, "RESTORED_HOLD", "实例刚从备份恢复，还在保持期：这段时间不对外发邮件");
   const cfg = getConfig();
   if (!(cfg.SMTP_HOST && cfg.SMTP_USER && cfg.SMTP_PASSWORD && cfg.MAIL_FROM && cfg.MAIL_TO)) {
@@ -97,13 +99,14 @@ export function applyRequestOwnerDigest(cmd: Cmd<"request_owner_digest">, ctx: C
   const now = ctx.now ?? nowDate();
   const tz = instanceTimezone();
   const date = localDateInTz(now, tz);
-  // 同一分钟内重复说只排一次
-  const dedupeKey = `digest:manual:${cmd.kind}:${date}:${new Date().toISOString().slice(0, 16)}`;
+  // 去重键是这一步的稳定身份：同一事项恢复重跑认领原任务；主人新说一次是新事项、新任务（不按分钟桶猜重复）
+  const dedupeKey = `digest:manual:${cmd.kind}:${date}:${ctx.itemId ?? crypto.randomUUID()}`;
   const existed = Boolean(getDb().prepare(`SELECT 1 FROM jobs WHERE dedupe_key = ?`).get(dedupeKey));
-  createJob({ type: DIGEST_JOB_TYPE, dedupeKey, runAt: new Date().toISOString(), payload: { kind: cmd.kind, date, manual: true } });
+  const job = createJob({ type: DIGEST_JOB_TYPE, dedupeKey, runAt: new Date().toISOString(), payload: { kind: cmd.kind, date, manual: true } });
   return {
     summary: `${existed ? "刚才已经安排过" : "已安排"}发送${cmd.kind === "weekly" ? "本周" : "今天的"}摘要，只发到你自己的邮箱。服务器接收不等于已进收件箱，投递状态在「通知」页可查；发出后不能撤回。`,
     effectBatchId: "",
+    effects: [{ kind: "job", id: job.id }],
   };
 }
 

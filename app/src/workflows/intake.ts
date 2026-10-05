@@ -39,7 +39,11 @@ import { bindIntents, commandsForStandaloneAnswer, completionHasTarget, fixedEve
 import { appendTurn, conversationExists, currentConversationId, reopenConversation, upsertAgentTurn, type EntityRef } from "@/repositories/conversations";
 import { HttpError } from "@/workflows/http";
 import { listChanges } from "@/repositories/journal";
-import { dependencyState, planHash, planOf, splitSteps, stepRefsFor } from "@/workflows/agent-steps";
+import { dependencyState, planFacts, planHash, planOf, splitSteps, stepRefsFor } from "@/workflows/agent-steps";
+import { gateCommand, gateKey, protectedSnapshot, type GateContext } from "@/workflows/agent-gate";
+import { describeFactsChange, describeImpact, factsHash, type Facts } from "@/workflows/command-facts";
+import { acceptConstraints, describeConstraint, type AcceptedConstraint, type ConstraintRelease, type ConstraintValue, type TrustedText } from "@/domain/constraints";
+import { inheritProtections, listGoalConstraints, recordGoalConstraints } from "@/repositories/goal-constraints";
 import { authorizeCommand } from "@/domain/authorization";
 import { followUpView, operationResultView, type OperationResultView } from "@/workflows/results";
 import { extractAttachment, extractPdf, fetchImageDataUrl, fetchUrl, listAttachments, markExtractionDone, materializeAttachment, recordFileDocument, recordUrlDocument, saveUrlImage } from "@/workflows/intake-files";
@@ -68,12 +72,13 @@ import { createSource, getMessage, getMessageByExternalId, getRevision, getSourc
 import { firstUnknownLeaf, normalizeCondition, normalizeProfileValue, PROFILE_LABEL } from "@/domain/identity";
 import { noticeOutcome } from "@/workflows/ops/notices";
 import type { z } from "zod";
-import { AGENT_DECIDE_WORKFLOW, AGENT_DECIDE_INSTRUCTIONS, agentDecisionSchema, decisionContext, decisionScope, decisionNeedsConfirmation, isFlexibleAdjustment, validateDecision, type AgentDecision } from "./agent-decide";
+import { AGENT_DECIDE_WORKFLOW, AGENT_DECIDE_INSTRUCTIONS, agentDecisionSchema, decisionContext, decisionScope, decisionNeedsConfirmation, isFlexibleAdjustment, validateDecision, type AgentDecision, type PendingProposal } from "./agent-decide";
 import { createGoal, getGoal, intakeRevisionCurrent, recentGoalInConversation, reviseGoal, updateGoalState, type GoalRow, type GoalState, type GoalSummary } from "@/repositories/goals";
 import { AGENT_ROUTE_WORKFLOW, agentRouteSchema, isReadOnlyAct, routeOwnerText, type RouteCall, type RoutedItem, type RouteResult } from "./agent-route";
 import type { ToolEnv } from "./agent-tools";
 import type { ToolRuntime } from "@/contracts/model";
-import { verifyAndRepair, type RepairHooks } from "./agent-run";
+import { reverifyAfterEffect, verifyAndRepair, type RepairHooks } from "./agent-run";
+import { intakesAwaitingEffect } from "@/repositories/step-executions";
 import { latestVerification } from "@/repositories/agent-runs";
 import {
   INTAKE_JOB_TYPE,
@@ -541,49 +546,88 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
       replies.push({ question: String(item.payload.decisionQuestionPrompt), answer: answer.rawText });
     }
     let decision = item.payload.pendingDecision as AgentDecision | undefined;
-    let confirmedHash: string | null | undefined;
+    let confirmedHashes: string[] | null | undefined;
+    let pending: PendingProposal | null = null;
     const goal = live.goalId ? getGoal(live.goalId) : null;
     // 同一目标上一版确认过的范围：这一版没说范围时沿用（“数学再少一点”仍是那一周）
     const inheritedScope = goal && (live.goalRevision ?? 1) > 1 ? goal.summary.scope ?? null : null;
+    const today = localDateInTz(nowDate(), intake.timezone);
+    const ownerText = String(item.payload.decisionText ?? item.evidence?.excerpt ?? "");
     if (decision?.kind === "act") {
-      const yes = latestAnswerForKey(String(item.payload.pendingConfirmKey ?? `decision-confirm:${item.id}`))?.structured?.yes;
-      if (yes === undefined) continue;
-      if (!yes) {
+      const ans = latestAnswerForKey(String(item.payload.pendingConfirmKey ?? `decision-confirm:${item.id}`));
+      if (!ans) continue;
+      const verdict = ans.structured ?? {};
+      if (verdict.revise === true) {
+        // 带条件、改口或犹豫的回答：不是同意。按整句修订同一目标（开新版本），带着原方案重新决策
+        if (replies.length >= 4) { updateItem(item.id, { state: "failed", waitingQuestionId: null, evidence: { ...item.evidence, error: "经过多轮仍没有定下方案；原话和回答已保留，没有修改安排。" } }); continue; }
+        const prompt = String(item.payload.pendingConfirmPrompt ?? "是否采用这份调整建议？");
+        replies.push({ question: prompt, answer: ans.rawText });
+        pending = { rationale: decision.rationale, intents: decision.intents, prompt, reply: ans.rawText };
+        const goalId = getIntake(intakeId)?.goalId;
+        if (goalId) db.transaction(() => reviseGoal(goalId, { intakeId, cause: "revise", ownerText: ans.rawText })).immediate();
+        decision = undefined;
+      } else if (verdict.yes === undefined) continue;
+      else if (!verdict.yes) {
         updateItem(item.id, { state: "applied", waitingQuestionId: null, payload: { ...item.payload, needsDecision: false, readOnly: true, applied: { batchId: null, summary: "已保留原来的规则和安排，没有执行这份建议。", noChange: true } } }); continue;
+      } else {
+        // 确认的是当时过门后的命令 + 相关事实 + 范围与保护：任何一项变了，旧确认作废，说明差异后按现在的事实重新问
+        const plan = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), item), decisionNeedsConfirmation(decision.intents), gateContextFor(intake, item));
+        if (plan.denied) { updateItem(item.id, { state: "failed", waitingQuestionId: null, evidence: { ...item.evidence, error: plan.denied, code: "GATE_REJECTED" } }); continue; }
+        if (item.payload.pendingPlanHash && plan.hash !== item.payload.pendingPlanHash) {
+          askDecisionConfirm(intake, item, decision, plan, replies, true); continue;
+        }
+        confirmedHashes = plan.bound ? plan.stepHashes : null;
       }
-      // 确认的是当时绑定的对象和版本：等待期间对象变了，旧确认作废，按现在的事实重新问
-      const plan = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), item), decisionNeedsConfirmation(decision.intents));
-      if (item.payload.pendingPlanHash && plan.hash !== item.payload.pendingPlanHash) {
-        askDecisionConfirm(intake, item, decision, plan.hash, replies, true); continue;
-      }
-      confirmedHash = plan.bound ? plan.hash : null;
-    } else {
-      const today = localDateInTz(nowDate(), intake.timezone);
-      const context = decisionContext({ text: String(item.payload.decisionText), date: today, now: nowDate(), selected: intake.context.selectedEntityRef ?? null, replies, goal: (live.goalRevision ?? 1) > 1 ? goal : null, conversationId: intake.conversationId, intakeId });
+    }
+    if (!decision) {
+      const ownerConstraints = [...(goal ? listGoalConstraints(goal.id).map((c) => ({ value: c.value, excerpt: c.excerpt })) : []), ...((item.payload.constraints as AcceptedConstraint[] | undefined) ?? []).map((c) => ({ value: c.value, excerpt: c.excerpt }))];
+      const context = decisionContext({ text: ownerText, date: today, now: nowDate(), selected: intake.context.selectedEntityRef ?? null, replies, goal: (live.goalRevision ?? 1) > 1 || pending ? goal : null, conversationId: intake.conversationId, intakeId, ownerConstraints, pendingProposal: pending, inheritedScope });
       const result = await callModel(AGENT_DECIDE_WORKFLOW, context, AGENT_DECIDE_INSTRUCTIONS, agentDecisionSchema, item.id);
       if (getJob(job.id)?.cancelRequested) return cancel();
       if (!leaseValid(job.id, token, job.generation, now())) return { kind: "fenced" };
       if (!result.ok) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: `没有修改安排：${result.error}` } }); continue; }
       decision = result.value;
     }
+    // 这轮决策带来的约束（引用必须是主人原话或回答）与范围先记在事项上，过门时一起生效
+    const accepted = acceptOnItem(item, decision.constraints ?? [], today, replies);
+    const own = accepted.constraints as AcceptedConstraint[];
+    const scope = decisionScope(scopeText([ownerText], own), today, replies.map((r) => ({ answer: scopeText([r.answer], own) })), inheritedScope);
+    const decidedScope = scope.explicit ? { dateFrom: scope.dateFrom, dateTo: scope.dateTo } : (inheritedScope ?? null);
+    updateItem(item.id, { payload: { ...item.payload, ...accepted, decisionScope: decidedScope, decisionReplies: replies, ...(pending ? { overrideInherited: false } : {}) } });
+    const row = getItem(item.id)!;
     if (decision.kind === "ask") {
       if (replies.length >= 3) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: "经过三轮仍未形成可执行调整；原话和回答已保留，没有修改安排。" } }); continue; }
       const key = `decision:${item.id}:${replies.length}`;
       const { question } = ensureOpenQuestion({ questionKey: key, intakeId, itemId: item.id, fieldPath: "adjustment.choice", purpose: "agent_clarification", prompt: decision.question, reason: decision.reason, options: decision.options, context: {}, conversationId: intake.conversationId });
-      updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, decisionReplies: replies, decisionQuestionKey: key, decisionQuestionPrompt: decision.question } });
+      updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...row.payload, pendingDecision: null, pendingPlanHash: null, decisionQuestionKey: key, decisionQuestionPrompt: decision.question } });
     } else {
-      // 决策输出按每个意图自己的日期语义与主人给定范围核对；路由给出、等待确认的意图已经过绑定与授权，不套决策专用的意图白名单
-      const today = localDateInTz(nowDate(), intake.timezone);
-      const scope = decisionScope(String(item.payload.decisionText ?? ""), today, replies, inheritedScope);
+      // 决策输出按每个意图自己的日期语义核对；范围与保护约束由统一门核对、收窄或拒绝
       const error = item.payload.decisionText ? validateDecision(decision.intents, today, scope) : null;
       if (error) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error } }); continue; }
-      if (confirmedHash === undefined) {
-        // 是否要确认按绑定后的命令做参数级授权：临时上限/临时重排直接执行，长期规则、具体块、截止要确认
-        const plan = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), item), decisionNeedsConfirmation(decision.intents));
-        if (plan.denied) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: `${plan.denied}，没有执行` } }); continue; }
-        if (plan.needsConfirm) { askDecisionConfirm(intake, item, decision, plan.hash, replies, false); continue; }
+      if (confirmedHashes === undefined) {
+        // 是否要确认按过门后的命令做参数级授权：临时上限/临时重排直接执行，长期规则、具体块、截止要确认
+        const plan = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), row), decisionNeedsConfirmation(decision.intents), gateContextFor(intake, row));
+        if (plan.denied && row.payload.overrideInherited !== true) {
+          const alt = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), row), true, gateContextFor(intake, row, true));
+          if (!alt.denied) {
+            const flagged = { ...row, payload: { ...row.payload, overrideInherited: true } };
+            updateItem(item.id, { payload: flagged.payload });
+            askDecisionConfirm(intake, flagged, decision, { ...alt, notes: [inheritedConflictNote(plan.denied), ...alt.notes] }, replies, false);
+            continue;
+          }
+          plan.denied = alt.denied;
+        }
+        if (plan.denied) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: plan.denied, code: "GATE_REJECTED" } }); continue; }
+        // 带条件的回答却得出和上一版一模一样的方案：条件没有改变任何东西，多半理解错了所指。照实说出来再问，不当作条件已满足
+        const prior = item.payload.pendingCommandsHash as string | undefined;
+        if (pending && prior && plan.bound && plan.commands.length && planHash(plan.commands, "") === prior) {
+          const heard = (accepted.constraints as AcceptedConstraint[]).filter((c) => pending!.reply.includes(c.excerpt)).map((c) => describeConstraint(c.value));
+          askDecisionConfirm(intake, row, decision, { ...plan, notes: [`你补充的“${pending.reply}”${heard.length ? `（我理解为：${heard.join("；")}）` : ""}没有改变这份方案，和上一版完全一样；如果你指的是下面要改的对象，请直接说不改它`, ...plan.notes] }, replies, false);
+          continue;
+        }
+        if (plan.needsConfirm) { askDecisionConfirm(intake, row, decision, plan, replies, false); continue; }
       }
-      updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...item.payload, intents: decision.intents, inferred: true, confirmed: confirmedHash !== undefined, confirmedCommandHash: confirmedHash ?? null, needsDecision: false, decisionRationale: decision.rationale, decisionReplies: replies, decisionQuestionKey: null, decisionScope: scope.explicit ? { dateFrom: scope.dateFrom, dateTo: scope.dateTo } : (inheritedScope ?? null) } });
+      updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...row.payload, intents: decision.intents, inferred: true, confirmed: confirmedHashes !== undefined, confirmedHashes: confirmedHashes ?? null, confirmedCommandHash: null, needsDecision: false, pendingDecision: null, decisionRationale: decision.rationale, decisionQuestionKey: null } });
     }
   }
 
@@ -964,7 +1008,7 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
   if (fresh && router && !materialOnly && !bareReply) {
     const hints = fastItems.map((f) => ({ clause: f.excerpt, intents: f.intents }));
     const goal = intake.goalId ? getGoal(intake.goalId) : intake.conversationId ? recentGoalInConversation(intake.conversationId) : null;
-    const currentGoal = goal ? { objective: goal.objective.slice(0, 500), revision: goal.revision, state: goal.state, lastResult: goal.summary.lastResult?.slice(0, 1000) ?? null, scope: goal.summary.scope ?? null } : null;
+    const currentGoal = goal ? { objective: goal.objective.slice(0, 500), revision: goal.revision, state: goal.state, lastResult: goal.summary.lastResult?.slice(0, 1000) ?? null, scope: goal.summary.scope ?? null, constraints: listGoalConstraints(goal.id).map((c) => ({ value: c.value, excerpt: c.excerpt })) } : null;
     route = await routeOwnerText(router, { text: textRest, env: toolEnvOf(intake), slot: intake.context.slot, hints, currentGoal, openQuestions: openQs.map((q) => ({ id: q.id, prompt: q.prompt.slice(0, 300), options: q.options ?? [] })) });
     const g = guard();
     if (g !== "ok") return g;
@@ -1073,6 +1117,21 @@ function resolveReplyItem(intake: IntakeRow, item: IntakeItemRow): void {
   updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, reply: { ...reply, locateKey: key, candidates: candidates.map((q) => q.id) } } });
 }
 
+/** 后台任务（复盘/探索/摘要）结束：引用了它的投递重新核验（只核验不修正），目标状态跟着刷新 */
+export function reverifyAfterJob(jobId: string): number {
+  let n = 0;
+  for (const id of intakesAwaitingEffect(jobId)) {
+    const intake = getIntake(id);
+    if (!intake || !intakeRevisionCurrent(id).current) continue;
+    getDb().transaction(() => {
+      reverifyAfterEffect(intake, nowDate());
+      syncGoalFromIntake(id);
+    }).immediate();
+    n++;
+  }
+  return n;
+}
+
 /** 目标状态与摘要随当前版本的投递刷新：旧版本的结果不再改写目标 */
 function syncGoalFromIntake(intakeId: string): void {
   const intake = getIntake(intakeId);
@@ -1115,9 +1174,16 @@ function syncGoalFromIntake(intakeId: string): void {
 /** 投递挂到目标上：模型判为对当前目标的改口/续办就在那个目标上开新版本，否则新建目标；已挂过的不动 */
 function attachGoal(intake: IntakeRow, continues: boolean): void {
   if (getIntake(intake.id)?.goalId || intake.channel === "source") return;
-  const recent = continues && intake.conversationId ? recentGoalInConversation(intake.conversationId) : null;
-  if (recent) reviseGoal(recent.id, { intakeId: intake.id, cause: "revise", ownerText: intake.text });
-  else createGoal({ conversationId: intake.conversationId, intakeId: intake.id, objective: intake.text.trim() || "（交来的材料）" });
+  const previous = intake.conversationId ? recentGoalInConversation(intake.conversationId) : null;
+  if (continues && previous) {
+    reviseGoal(previous.id, { intakeId: intake.id, cause: "revise", ownerText: intake.text });
+    return;
+  }
+  getDb().transaction(() => {
+    const goal = createGoal({ conversationId: intake.conversationId, intakeId: intake.id, objective: intake.text.trim() || "（交来的材料）" });
+    // 主人在这段对话里说过的“别动/别挪”不因被理解成新的一件事而丢失；12 小时以上的旧对话不沿用
+    if (previous && Date.now() - Date.parse(previous.updatedAt) < 12 * 3_600_000) inheritProtections(previous.id, goal.id, intake.id);
+  })();
 }
 
 type RouteOk = Extract<RouteResult, { ok: true }>;
@@ -1171,11 +1237,13 @@ function applyRouteOutcome(intake: IntakeRow, item: IntakeItemRow, it: RoutedIte
     updateItem(item.id, { state: "failed", waitingQuestionId: null, payload: base, evidence: { ...item.evidence, error: it.rejected ?? "回答后判断这段话是资料而不是要求；原话已保留，没有执行" } });
   } else if (outcome.kind === "act") {
     const corroborated = corroboratedByRules(outcome.intents, hints);
-    updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, intents: outcome.intents, inferred: !isReadOnlyAct(outcome) && !corroborated, ...(corroborated ? { ruleCorroborated: true } : {}), decisionRationale: outcome.rationale } });
+    const constraints = acceptOnItem({ ...item, payload: base }, outcome.constraints, intake.referenceDate);
+    updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, ...constraints, intents: outcome.intents, inferred: !isReadOnlyAct(outcome) && !corroborated, ...(corroborated ? { ruleCorroborated: true } : {}), decisionRationale: outcome.rationale } });
   } else if (outcome.kind === "reply") {
     updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, reply: { questionId: outcome.questionId, text: String(item.evidence?.excerpt ?? it.evidence.excerpt) } } });
   } else if (outcome.kind === "decide") {
-    updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, needsDecision: true, decisionText: [String(item.evidence?.excerpt ?? it.evidence.excerpt), ...replies.map((r) => r.answer)].join("\n"), objective: outcome.objective, decisionRationale: outcome.rationale, decisionReplies: [] } });
+    const constraints = acceptOnItem({ ...item, payload: base }, outcome.constraints, intake.referenceDate);
+    updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, ...constraints, needsDecision: true, decisionText: [String(item.evidence?.excerpt ?? it.evidence.excerpt), ...replies.map((r) => r.answer)].join("\n"), objective: outcome.objective, decisionRationale: outcome.rationale, decisionReplies: [] } });
   } else {
     if (replies.length >= 3) {
       updateItem(item.id, { state: "failed", waitingQuestionId: null, payload: base, evidence: { ...item.evidence, error: "经过三轮追问仍不清楚要做什么；原话和回答已保留，没有修改任何数据" } });
@@ -1215,6 +1283,65 @@ function bindEnvFor(intake: IntakeRow, itemId: string | null, now: Date, item?: 
   };
 }
 
+type Reply = { question: string; answer: string };
+
+/** 主人本人的话：这件事的原话片段与全部回答。资料、工具返回、文件内容不在这里，不能产生约束或授权 */
+function ownerTexts(item: IntakeItemRow, extra: Reply[] = []): TrustedText[] {
+  if (item.payload.explicit === false) return [];
+  const replies = [...((item.payload.decisionReplies as Reply[] | undefined) ?? []), ...((item.payload.routeReplies as Reply[] | undefined) ?? []), ...extra];
+  const texts: TrustedText[] = [{ text: String(item.evidence?.excerpt ?? ""), source: "owner_text" }, ...replies.map((r) => ({ text: r.answer, source: "owner_answer" as const }))];
+  return texts.filter((t) => t.text.trim());
+}
+
+/** 模型提出的约束候选 → 事项上接受的约束（引用必须出现在主人本人的话里）；同一事项多轮累积，解除的去掉 */
+function acceptOnItem(item: IntakeItemRow, raw: unknown[], today: string, extra: Reply[] = []): Record<string, unknown> {
+  const r = acceptConstraints(raw, ownerTexts(item, extra), today);
+  const same = (a: ConstraintValue, b: ConstraintValue) => JSON.stringify(a) === JSON.stringify(b);
+  const released = (v: ConstraintValue) => r.releases.some((rel) => rel.target === v.kind && (!rel.days || (v.kind === "protect_days" && v.days === rel.days)));
+  const prev = ((item.payload.constraints as AcceptedConstraint[] | undefined) ?? []).filter((p) => !released(p.value));
+  const merged = [...prev, ...r.accepted.filter((a) => !prev.some((p) => same(p.value, a.value)))];
+  return {
+    constraints: merged,
+    constraintReleases: [...((item.payload.constraintReleases as ConstraintRelease[] | undefined) ?? []), ...r.releases],
+    ...(r.rejected.length ? { constraintRejected: r.rejected.slice(0, 6) } : {}),
+  };
+}
+
+/** 推日期范围用的主人原话：去掉保护类约束引用的那几个字（“周末别动”说的是不动哪天，不是这件事的范围） */
+function scopeText(texts: string[], accepted: AcceptedConstraint[]): string {
+  const strip = accepted.filter((a) => a.value.kind !== "date_scope").map((a) => a.excerpt.trim()).filter(Boolean);
+  return texts.map((t) => strip.reduce((s, ex) => s.split(ex).join(" "), t)).join("\n");
+}
+
+/**
+ * 这一步过门的上下文：目标上生效的约束（含这件事新说的，先落到目标上）+ 这件事的日期范围。
+ * 范围：决策时定下的 → 原话/回答里明说的 → 主人说过的范围约束 → 同一目标上一版的范围；都没有则不限（只受保护约束）。
+ */
+/** 只和沿用来的保护冲突时，确认里写明冲突；照做只对这一步有效，那条保护仍守着这件事的其他步骤 */
+function inheritedConflictNote(reason: string): string {
+  return `和你前面说过的条件冲突：${reason.replace(/[，。；]?没有执行[。]?$/, "")}；确认就只在这一步不按那条执行`;
+}
+
+function gateContextFor(intake: IntakeRow, item: IntakeItemRow, skipInherited = item.payload.overrideInherited === true): GateContext {
+  const today = localDateInTz(nowDate(), intake.timezone);
+  const live = getIntake(intake.id) ?? intake;
+  const own = (item.payload.constraints as AcceptedConstraint[] | undefined) ?? [];
+  const releases = (item.payload.constraintReleases as ConstraintRelease[] | undefined) ?? [];
+  const goal = live.goalId ? getGoal(live.goalId) : null;
+  let values = own.map((a) => a.value);
+  if (goal) {
+    if (own.length || releases.length) recordGoalConstraints({ goalId: goal.id, revision: live.goalRevision ?? goal.revision, intakeId: intake.id, accepted: own, releases });
+    values = listGoalConstraints(goal.id).filter((c) => !(skipInherited && c.source === "inherited")).map((c) => c.value);
+  }
+  const decided = item.payload.decisionScope as { dateFrom: string; dateTo: string } | null | undefined;
+  const fromText = decisionScope(scopeText(ownerTexts(item).map((t) => t.text), own), today);
+  const stated = values.find((v): v is Extract<ConstraintValue, { kind: "date_scope" }> => v.kind === "date_scope");
+  const prior = goal && (live.goalRevision ?? 1) > 1 ? goal.summary.scope ?? null : null;
+  const inherited = prior && prior.dateTo >= today ? { dateFrom: prior.dateFrom < today ? today : prior.dateFrom, dateTo: prior.dateTo } : null;
+  const scope = decided ?? (fromText.explicit ? { dateFrom: fromText.dateFrom, dateTo: fromText.dateTo } : null) ?? (stated ? { dateFrom: stated.dateFrom, dateTo: stated.dateTo } : null) ?? inherited;
+  return { today, scope, constraints: values.filter((v) => v.kind !== "date_scope") };
+}
+
 /** 一个步骤：前序步骤没落库就先等（返回 false），失败就不执行，否则绑定 */
 function resolveStep(intake: IntakeRow, item: IntakeItemRow, now: Date): boolean {
   if (item.state === "failed") return true;
@@ -1229,22 +1356,34 @@ function resolveStep(intake: IntakeRow, item: IntakeItemRow, now: Date): boolean
 }
 
 /** 推断方案的确认：问题键带方案指纹，指纹变了就是另一个问题，旧回答不再适用 */
-function askDecisionConfirm(intake: IntakeRow, item: IntakeItemRow, decision: Extract<AgentDecision, { kind: "act" }>, hash: string, replies: unknown[], stale: boolean): void {
-  const key = `decision-confirm:${item.id}:${hash}`;
-  const lead = stale ? "确认前这份方案涉及的安排或任务已经变了，刚才的确认已作废。按现在的情况，" : "";
+type ConfirmPlan = { hash: string; commands: Array<Record<string, unknown>>; notes: string[] };
+
+/**
+ * 推断方案的确认：问题键带方案指纹（命令 + 相关事实 + 范围与保护约束），指纹变了就是另一个问题，旧回答不再适用。
+ * 确认的内容是过门后的实际方案：收窄了什么写在问题里；事实变了说明变了什么。
+ * 回答可以带条件（“可以，但……”）：按整句修订方案，不当成同意。
+ */
+function askDecisionConfirm(intake: IntakeRow, item: IntakeItemRow, decision: Extract<AgentDecision, { kind: "act" }>, plan: ConfirmPlan, replies: unknown[], stale: boolean): void {
+  const key = `decision-confirm:${item.id}:${plan.hash}:${replies.length}`;
+  const facts = planFacts(plan.commands);
+  const before = item.payload.pendingFacts as Facts[] | undefined;
+  const changed = stale && before ? before.flatMap((f, n) => describeFactsChange(f, facts[n] ?? {})) : [];
+  const lead = stale ? `确认前${changed.length ? `情况有变化（${[...new Set(changed)].join("；")}）` : "这份方案涉及的安排或任务已经变了"}，刚才的确认已作废。按现在的情况，` : "";
+  const kept = plan.notes.length ? `；${plan.notes.join("；")}` : "";
+  const impact = plan.commands.flatMap((c, n) => describeImpact(c, facts[n] ?? {}));
   const { question } = ensureOpenQuestion({
     questionKey: key,
     intakeId: intake.id,
     itemId: item.id,
     fieldPath: "adjustment.confirm",
     purpose: "confirm",
-    prompt: `${lead}调整建议：${decision.rationale}${decision.intents.some((i) => i.op === "no_study") ? "；不学习的时段内，未开始的手动或锁定块也会被让出" : ""}。是否采用？`,
-    reason: "涉及规则、具体块或截止的推断，需要你确认；当前尚未修改",
+    prompt: `${lead}调整建议：${decision.rationale}${kept}${decision.intents.some((i) => i.op === "no_study") ? "；不学习的时段内，未开始的手动或锁定块也会被让出" : ""}。${impact.length ? `\n实际修改：${impact.join("；")}。\n` : ""}是否采用？`,
+    reason: "涉及规则、具体块或截止的推断，需要你确认；当前尚未修改。可以直接说条件，比如只改哪部分",
     options: ["可以", "先不要"],
-    context: { proposedIntents: decision.intents, planHash: hash },
+    context: { proposedIntents: decision.intents, planHash: plan.hash, revisable: item.payload.explicit !== false, notes: plan.notes },
     conversationId: intake.conversationId,
   });
-  updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, needsDecision: true, pendingDecision: decision, pendingPlanHash: hash, pendingConfirmKey: key, decisionReplies: replies, decisionQuestionKey: null, confirmed: false, confirmedCommandHash: null } });
+  updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, needsDecision: true, pendingDecision: decision, pendingPlanHash: plan.hash, pendingCommandsHash: planHash(plan.commands, ""), pendingConfirmKey: key, pendingConfirmPrompt: question.prompt, pendingFacts: facts, decisionReplies: replies, decisionQuestionKey: null, confirmed: false, confirmedCommandHash: null, confirmedHashes: null, staleReconfirms: Number(item.payload.staleReconfirms ?? 0) + (stale ? 1 : 0) } });
 }
 
 /** 指令事项：重新读取当前事实绑定对象——唯一就绪，并列只问选哪一个，找不到如实失败 */
@@ -1261,19 +1400,37 @@ function resolveCommandItem(intake: IntakeRow, item: IntakeItemRow, env: BindEnv
       updateItem(item.id, { state: "failed", waitingQuestionId: null, evidence: { ...item.evidence, error: auth.reason, code: "NOT_AUTHORIZED", retryable: false } });
       return;
     }
-    if (auth.kind === "confirm") {
-      askDecisionConfirm(intake, item, { kind: "act", rationale: String(item.payload.decisionRationale ?? auth.reason), intents }, planHash([bound.command]), (item.payload.decisionReplies as unknown[] | undefined) ?? [], false);
-      return;
-    }
-    const confirmedHash = item.payload.confirmedCommandHash as string | null | undefined;
-    if (confirmedHash) {
-      const now = planHash([bound.command]);
-      if (now !== confirmedHash) {
-        askDecisionConfirm(intake, item, { kind: "act", rationale: String(item.payload.decisionRationale ?? ""), intents }, now, (item.payload.decisionReplies as unknown[] | undefined) ?? [], true);
+    // 统一门：所有入口绑定出的命令都按主人说过的范围与保护约束核对/收窄，再谈确认与执行
+    const ctx = gateContextFor(intake, item);
+    const gated = gateCommand(bound.command, bound.replanDates ?? [], ctx);
+    const replies = (item.payload.decisionReplies as unknown[] | undefined) ?? [];
+    if (gated.kind === "reject") {
+      const ownCtx = item.payload.overrideInherited === true ? null : gateContextFor(intake, item, true);
+      const alt = ownCtx ? gateCommand(bound.command, bound.replanDates ?? [], ownCtx) : null;
+      if (ownCtx && alt?.kind === "pass") {
+        const flagged = { ...item, payload: { ...item.payload, overrideInherited: true } };
+        updateItem(item.id, { payload: flagged.payload });
+        askDecisionConfirm(intake, flagged, { kind: "act", rationale: String(item.payload.decisionRationale ?? "按你这次的要求执行"), intents, constraints: [] }, { hash: planHash([alt.command], gateKey(ownCtx)), commands: [alt.command], notes: [inheritedConflictNote(gated.reason), ...alt.notes] }, replies, false);
         return;
       }
+      updateItem(item.id, { state: "failed", waitingQuestionId: null, evidence: { ...item.evidence, error: alt?.kind === "reject" ? alt.reason : gated.reason, code: "GATE_REJECTED", retryable: false } });
+      return;
     }
-    updateItem(item.id, { state: "ready", waitingQuestionId: null, payload: { ...item.payload, command: bound.command, replanDates: bound.replanDates ?? [] } });
+    const key = gateKey(ctx);
+    const hash = planHash([gated.command], key);
+    const confirmPlan: ConfirmPlan = { hash, commands: [gated.command], notes: gated.notes };
+    if (auth.kind === "confirm") {
+      askDecisionConfirm(intake, item, { kind: "act", rationale: String(item.payload.decisionRationale ?? auth.reason), intents, constraints: [] }, confirmPlan, replies, false);
+      return;
+    }
+    const legacy = item.payload.confirmedCommandHash as string | null | undefined;
+    const confirmedHashes = (item.payload.confirmedHashes as string[] | null | undefined) ?? (legacy ? [legacy] : null);
+    if (confirmedHashes && !confirmedHashes.includes(hash)) {
+      askDecisionConfirm(intake, item, { kind: "act", rationale: String(item.payload.decisionRationale ?? ""), intents, constraints: [] }, confirmPlan, replies, true);
+      return;
+    }
+    const gate = { ctx, notes: gated.notes, frozenDates: gated.frozenDates, frozenTaskIds: gated.frozenTaskIds, protectedBefore: protectedSnapshot(ctx), key };
+    updateItem(item.id, { state: "ready", waitingQuestionId: null, payload: { ...item.payload, command: gated.command, replanDates: gated.replanDates, gate, expectedFacts: item.payload.confirmed === true ? factsHash(gated.command) : null } });
   } else if (bound.kind === "ask") {
     const q = bound.question;
     const { question } = ensureOpenQuestion({ questionKey: q.key, intakeId: intake.id, itemId: item.id, fieldPath: q.fieldPath, prompt: q.prompt, options: q.options, purpose: q.purpose, reason: q.reason, context: q.context, conversationId: intake.conversationId });
@@ -1286,15 +1443,19 @@ function resolveCommandItem(intake: IntakeRow, item: IntakeItemRow, env: BindEnv
 /** 指令事项执行：注册操作 + 必要后续（重排），结果连同后续状态记在事项上 */
 function applyCommandItem(intake: IntakeRow, item: IntakeItemRow, now: Date): { unscheduled: Parameters<typeof raisePlanQuestions>[0]["unscheduled"]; conflicts: Parameters<typeof raisePlanQuestions>[0]["conflicts"] } | null {
   const command = item.payload.command as Record<string, unknown>;
+  const gate = item.payload.gate as { notes?: string[]; frozenDates?: string[]; frozenTaskIds?: string[]; key?: string } | undefined;
   const outcome = executeOperation(
     command,
-    { intakeId: intake.id, itemId: item.id, itemKey: item.stableItemKey, instanceEpoch: intake.instanceEpoch, evidence: (item.evidence?.excerpt as string) ?? "", explicit: item.payload.explicit !== false, inferred: item.payload.inferred === true, confirmed: item.payload.confirmed === true, conversationId: intake.conversationId, now },
-    { replanDates: (item.payload.replanDates as string[] | undefined) ?? [] },
+    { intakeId: intake.id, itemId: item.id, itemKey: item.stableItemKey, instanceEpoch: intake.instanceEpoch, evidence: (item.evidence?.excerpt as string) ?? "", explicit: item.payload.explicit !== false, inferred: item.payload.inferred === true, confirmed: item.payload.confirmed === true, conversationId: intake.conversationId, now, expectedFacts: (item.payload.expectedFacts as string | null | undefined) ?? null },
+    { replanDates: (item.payload.replanDates as string[] | undefined) ?? [], frozenDates: gate?.frozenDates ?? [], frozenTaskIds: gate?.frozenTaskIds ?? [] },
   );
   const view = operationResultView(String(command.command), outcome);
-  if (!outcome.result.ok && outcome.result.code === "NEEDS_CONFIRMATION") {
-    const intents = (item.payload.intents as Intent[] | undefined) ?? [];
-    askDecisionConfirm(intake, item, { kind: "act", rationale: String(item.payload.decisionRationale ?? outcome.result.error), intents }, planHash([command]), (item.payload.decisionReplies as unknown[] | undefined) ?? [], false);
+  const intents = (item.payload.intents as Intent[] | undefined) ?? [];
+  const replies = (item.payload.decisionReplies as unknown[] | undefined) ?? [];
+  if (!outcome.result.ok && (outcome.result.code === "NEEDS_CONFIRMATION" || outcome.result.code === "STALE_FACTS")) {
+    // 执行事务内发现确认依据的事实已变：不执行，说明差异后重新确认
+    const stale = outcome.result.code === "STALE_FACTS";
+    askDecisionConfirm(intake, item, { kind: "act", rationale: String(item.payload.decisionRationale ?? outcome.result.error), intents, constraints: [] }, { hash: planHash([command], gate?.key ?? ""), commands: [command], notes: gate?.notes ?? [] }, replies, stale);
     return null;
   }
   if (view.error) {
@@ -1302,7 +1463,8 @@ function applyCommandItem(intake: IntakeRow, item: IntakeItemRow, now: Date): { 
     return null;
   }
   const planBatchId = outcome.followUps.find((f) => f.kind === "plan")?.batchId ?? null;
-  updateItem(item.id, { state: "applied", payload: { ...item.payload, applied: { batchId: view.undo.batchId, summary: [item.payload.decisionRationale, view.summary].filter(Boolean).join("\n"), noChange: view.state === "no_change", planBatchId }, followUps: view.followUps } });
+  const effects = outcome.result.ok ? (outcome.result.effects ?? []) : [];
+  updateItem(item.id, { state: "applied", payload: { ...item.payload, applied: { batchId: view.undo.batchId, summary: [item.payload.decisionRationale, ...(gate?.notes ?? []), view.summary].filter(Boolean).join("\n"), noChange: view.state === "no_change", planBatchId, effects }, followUps: view.followUps } });
   const plan = outcome.followUps.find((f) => f.kind === "plan");
   return plan ? { unscheduled: plan.unscheduled, conflicts: plan.conflicts } : null;
 }
@@ -1313,10 +1475,12 @@ function repairHooks(intake: IntakeRow, now: Date): RepairHooks {
     replan(itemIds) {
       const items = itemIds.map((id) => getItem(id)).filter((i): i is IntakeItemRow => Boolean(i));
       const causedBy = items.map((i) => (i.payload.applied as { batchId?: string | null } | undefined)?.batchId).find(Boolean) ?? null;
-      const dates = items.flatMap((i) => (i.payload.replanDates as string[] | undefined) ?? []);
+      // 修正沿用原来授权的重排日期与冻结范围：不扩大、不丢掉原来要求重排的日子
+      const dates = [...new Set(items.flatMap((i) => (i.payload.replanDates as string[] | undefined) ?? []))];
+      const gates = items.map((i) => i.payload.gate as { frozenDates?: string[]; frozenTaskIds?: string[] } | undefined);
       const last = [...dates].sort().at(-1);
       const days = last ? Math.max(7, Math.ceil((Date.parse(last) - Date.parse(localDateInTz(now, intake.timezone))) / 86_400_000) + 1) : 7;
-      const plan = rebuildPlan(now, { horizonDays: days, causedBy, conversationId: intake.conversationId, intakeId: intake.id });
+      const plan = rebuildPlan(now, { horizonDays: days, causedBy, conversationId: intake.conversationId, intakeId: intake.id, replanDates: dates, frozenDates: [...new Set(gates.flatMap((g) => g?.frozenDates ?? []))], frozenTaskIds: [...new Set(gates.flatMap((g) => g?.frozenTaskIds ?? []))] });
       const view = followUpView({ kind: "plan", state: plan.changed ? "updated" : "unchanged", batchId: plan.batchId, placed: plan.placed, superseded: plan.superseded, unscheduled: plan.unscheduled, conflicts: plan.conflicts });
       for (const i of items) {
         const applied = i.payload.applied as Record<string, unknown> | undefined;
@@ -1705,8 +1869,17 @@ export function submitAnswer(input: { questionId: string; expectedVersion: numbe
     note = plan.note;
     let last: Parameters<typeof raisePlanQuestions>[0] | null = null;
     const batchIds: string[] = [];
+    // 回答直接落实的命令也过统一门：对话里当前目标上主人说过的保护约束照样生效
+    const goal = question.conversationId ? recentGoalInConversation(question.conversationId) : null;
+    const ctx: GateContext = { today: referenceDate, scope: null, constraints: goal ? listGoalConstraints(goal.id).map((c) => c.value).filter((v) => v.kind !== "date_scope") : [] };
     for (const command of plan.commands) {
-      const outcome = executeOperation(command, { intakeId: null, itemId: null, itemKey: "", instanceEpoch: getInstanceState().deploymentEpoch, evidence: `回答：${text}`, explicit: true, conversationId: question.conversationId, now }, { replanDates: plan.replanDates });
+      const gated = gateCommand(command, plan.replanDates, ctx);
+      if (gated.kind === "reject") {
+        results.push(operationResultView(String(command.command), { result: { ok: false, error: gated.reason, code: "GATE_REJECTED" }, followUps: [] }));
+        continue;
+      }
+      if (gated.notes.length) note = [note, ...gated.notes].filter(Boolean).join("；");
+      const outcome = executeOperation(gated.command, { intakeId: null, itemId: null, itemKey: "", instanceEpoch: getInstanceState().deploymentEpoch, evidence: `回答：${text}`, explicit: true, conversationId: question.conversationId, now }, { replanDates: gated.replanDates, frozenDates: gated.frozenDates, frozenTaskIds: gated.frozenTaskIds });
       const view = operationResultView(String(command.command), outcome);
       results.push(view);
       if (view.undo.batchId) batchIds.push(view.undo.batchId);

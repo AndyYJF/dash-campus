@@ -30,7 +30,8 @@ test("§5.1.1 必需覆盖的六种表达", () => {
 
 test("时间政策：持久规则、只这一次、时段边界、假期策略、偏好、授权", () => {
   const policy = parseInstruction("晚上十点后不排，工作日最多两小时", REF, NOW, TZ);
-  assert.deepEqual(policy.intents.map((i) => i.intent), [{ op: "window_end", time: "22:00" }, { op: "group_limit", group: "workday", limitMinutes: 120 }]);
+  assert.deepEqual(policy.intents.map((i) => i.intent), [{ op: "window_end", time: "22:00", days: "all" }, { op: "group_limit", group: "workday", limitMinutes: 120 }]);
+  assert.deepEqual(one("工作日晚上十点后不排"), { op: "window_end", time: "22:00", days: "workday" }, "点明工作日的只改工作日");
   assert.deepEqual(one("周三最多一小时"), { op: "weekday_limit", weekday: 3, limitMinutes: 60, persistent: false }, "没说“以后”：是不是长期规则要问");
   assert.deepEqual(one("这周三最多一小时"), { op: "date_limit", date: "2026-10-14", limitMinutes: 60 });
   assert.deepEqual(one("每天最多学三小时"), { op: "daily_limit", limitMinutes: 180 });

@@ -142,7 +142,7 @@ test("E24：首次材料含课表 → 只补学期锚点；生效后 Agent 主�
   const ok = await answer(again, "你按推荐安排");
   assert.equal(ok.status, 202);
   const body = (await ok.json()) as { results: Array<{ state: string; summary: string }> };
-  assert.equal(body.results[0]!.state, "applied");
+  assert.equal(body.results[0]!.state, "applied", JSON.stringify(body.results));
   assert.equal(getPrefs().status, "confirmed");
   assert.equal((await openQuestions()).length, 0, "回答后不再追问");
   assert.ok(blocks("分类基线").length >= 1, "不需要逐块挑时间或填参数");

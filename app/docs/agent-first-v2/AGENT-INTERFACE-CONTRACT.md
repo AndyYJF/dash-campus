@@ -218,3 +218,20 @@ HTTP 202 只表示 accepted，HTTP 200 不能代替领域成功判断。版本�
 ## 2026-10-05 试用指标（Agent增强 v1.1 P6）
 
 `GET /api/v2/agent-metrics?days=7`（仅主人，`days` 1–30，按实例时区的当地日期）返回 `metrics`：`window`、`intakes`（统一栏投递）、`routing {model, rules, fast, other, fallbackReasons}`、`asking {intakesAsked, rate, byPurpose}`、`feedback {total, byVerdict}`、`outcomes {verified, partial, needs_action, blocked, pending, unverified, failed, cancelled}`、`repairs {total, intakes, stoppedByLimit}`、`daily[{date, requests, errors, decisions, p50Ms, p95Ms}]`、`notes[]`。只读聚合已有表，不写库、不调模型；样本为 0 时比例为 `null`，`notes` 说明样本量与缺失数据的含义。
+
+## 2026-10-05 语义修复：约束、统一门、确认快照、步骤凭据（迁移 0033）
+
+任务见 [语义修复提示词](../../../Plan/dash-campus-AGENT-SEMANTIC-REPAIR-PROMPT-2026-10-05.md)，逐项证据见 [语义修复验收](./acceptance-semantic-repair-2026-10-05.md)。迁移 **0033**（schema 32 → 33，向前新增，不改已部署迁移）。HTTP 路由与请求体不变；结果视图只新增字段。
+
+- **目标约束**（`agent_goal_constraints`，`src/domain/constraints.ts` 的 zod 判别联合）：`date_scope {dateFrom, dateTo}`、`protect_days {days: weekend|workday}`、`protect_dates {dateFrom, dateTo}`、`protect_entity {ref}`、`no_study_after {time, days}`（表的 CHECK 预留了 `note`，当前不产生）。路由/决策只能**提出**候选（每条带 `excerpt`）；服务端只接受引用逐字出现在主人原话或回答里的候选（`source = owner_text | owner_answer | rule_parse`），资料、工具结果、模型理由里的“已确认/可以解除”不入库。解除（`release`）同样要主人原话。范围类以最新一版为准；保护类跨版本保留直到主人明说解除。
+- **同一对话沿用**：被理解成新的一件事时，新目标沿用同一对话上一件事（12 小时内）仍生效的**保护类**约束（`source = inherited`，引用保持主人原话）；范围与“几点后不排”会生成新规则，不沿用。主人这次的明确要求只和沿用来的保护冲突时，不替主人拒绝，改为确认（问题里写“和你前面说过的条件冲突……确认就只在这一步不按那条执行”）；同意只对这一步有效。
+- **统一门**（`src/workflows/agent-gate.ts` 的 `gateCommand`）：路由 act、决策、回答续办、按钮、恢复与修正绑定出的命令都先过门：日期有效、先限跨度再展开、与主人范围求交（越界拒绝）、按保护约束收窄（重排/临时规则避开受保护日子，`notes` 写明）或拒绝（改“每天都生效”的设置会连带受保护日子、挪受保护对象、约束把要做的事全部裁掉）。拒绝的事项 `evidence.code = "GATE_REJECTED"`，不落库。
+- **作息能力**：`window_end`/`window_start` 意图新增 `days: all|workday|weekend`（缺省 all），只改对应模板。
+- **完整回答**：确认问题的回答只有完整、无附加内容的同意/拒绝（`completeVerdict`）零模型处理；其余（条件、疑问、指代、改口）作为修订：同一目标开新版本、旧方案作废，整句与原方案一起交给决策。带条件的回答得出与上一版完全相同的方案时，不执行，重新确认并写明“没有改变这份方案”。
+- **确认快照**：确认问题的指纹 = 过门后的规范化命令 + 相关事实（作息单例、相关规则、对象版本，`command-facts.ts`）+ 范围与保护约束键（`gateKey`）；问题正文写实际修改（对象、修改前后、长期/临时、保护项、不能撤销或会发邮件）。确认后执行事务内再核对事实，变了返回 `STALE_FACTS`，重读并说明差异后重问（`staleReconfirms` 计数）；无关变化不重问。
+- **步骤凭据**（`agent_step_executions`，主键 `(item_id, command)`）：与领域写入/入队同一事务提交，`batch_id` 记变更批次，`effects_json` 记异步/产物引用（`job`、`exploration_run`、`review`、`export`；邮件经 job 关联现有投递状态机）。恢复重跑按凭据返回原结果（`replayed`），不再产生第二次副作用；主人新的要求是新事项、新凭据。
+- **异步核验**：`side_effect_status` 按凭据里的引用读真实状态：排队/进行中 → `ok: null`（核验 `pending`），失败/取消 → 不通过，完成按产物判断；邮件只核对到“服务器已接收”，`unknown` 不自动重发。后台任务结束时 worker 调 `reverifyAfterJob` 重新核验并更新目标状态，不轮询。新增检查 `constraints_hold`：主人说过不动的部分执行前后的事实指纹必须一致。没有主批次时也核对必要后续（要求的重排失败或缺失 → 不通过并可修正）。
+- **修正**：`replan` 修正带原 `replanDates` 与保护条件重跑，不退化成全局重算。
+- **结果视图**：`goal.constraints: string[]`（例：“周末的作息、规则和安排不动（你说“周末别动”）”，沿用的写“沿用你前面说的”）。
+- **计时口径**：原 `activeMs` 更名 `modelMs`，只统计模型 HTTP 时间；单份投递 180 秒上限按此口径，不含等待主人、排队与本地执行。
+- **指标**：`metrics.stages {understandFailed, clarified, confirmed, scopeRejected, staleReconfirmed, execFailed, asyncWaiting, verified, partial, repaired, ownerCorrected}` 与 `metrics.modelTime {p50Ms, p95Ms, maxMs}`（单份投递的模型 HTTP 耗时）。

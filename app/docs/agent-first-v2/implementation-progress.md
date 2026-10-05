@@ -8,6 +8,14 @@
 
 下文“尚未实施”“未部署”和旧测试数为当时记录，不是当前结论。
 
+## 语义修复复审后的修复（2026-10-05，已部署 `1c7792f`）
+
+复审基线 `c6b7b42`。逐项问题、修复与证据见 [语义修复验收 §8](./acceptance-semantic-repair-2026-10-05.md)，决策见 [decisions](../decisions.md)“语义修复复审后的决策”。
+
+- 改动：`domain/constraints.ts`（`releaseMatches`）、`repositories/goal-constraints.ts`（只收紧；`constraintsToRelease`、`releaseGoalConstraints`）、`workflows/intake.ts`（解除授权、指认问题、worker 计时检查点）、`workflows/agent-gate.ts`（`statedScope`、学习块落点、对象保护）、`workflows/command-facts.ts`（`commandEntities`）、`workflows/agent-verify.ts`（`goal_conditions_hold`）、`workflows/results.ts` 与 `UniversalIntake.tsx`（`in_background`）、`workflows/ai-budget.ts`（主动执行时间）、`agent-metrics.ts` 与设置页卡（`activeTime`）；迁移 `0034_intake_active_time.sql`。
+- 验证：`test/agent-semantic-review.test.ts` 8 项（修复前失败）；全套 428/428，`tsc` 0 错误，eslint 0 错误。真实模型（仅 `gemini-3.8-flash-high`）多轮目标流程 16/17。
+- 部署：停服备份（schema 33）→ 覆盖源码 → 构建 → 迁移 33 → 34 → 启动，health 正常，回退快照为 `fb9a642`；只读冒烟通过，生产无写入。
+
 ## Agent 语义修复 R01–R08 / S01–S20（2026-10-05）
 
 任务见 [语义修复提示词](../../../Plan/dash-campus-AGENT-SEMANTIC-REPAIR-PROMPT-2026-10-05.md)，逐项证据见 [语义修复验收映射](./acceptance-semantic-repair-2026-10-05.md)。迁移 `0033_agent_constraints_steps.sql`（目标约束表、步骤执行凭据表）。

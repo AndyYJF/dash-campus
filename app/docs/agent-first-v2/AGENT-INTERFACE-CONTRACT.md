@@ -200,7 +200,7 @@ HTTP 202 只表示 accepted，HTTP 200 不能代替领域成功判断。版本�
 
 - **目标**（迁移 0031 `agent_goals`/`agent_goal_revisions`，`intakes.goal_id/goal_revision`）：一次主人要求是一个目标；结果后的改口、回答后的续办、“继续这个目标”都在同一目标上提高 revision。目标是业务流程状态，随业务导出与恢复；原话与结果仍在对话与投递里，目标只存修订号、状态（active/awaiting_input/awaiting_confirmation/completed/partial/blocked/cancelled）和服务端核对过的摘要（范围、上一版方案、主人回答过的约束、最近结果、待答问题、已执行批次）。
 - **隐式续办**：路由在 `context.currentGoal`（当前对话最近的目标）存在时，可在事项上标 `continuesGoal:true`；服务端据此在那个目标上开新版本，否则新建目标。
-- **显式续办**：`POST /api/v2/intakes` 可带 `goalId` 与 `expectedGoalRevision`；目标不存在 404 `GOAL_NOT_FOUND`，版本不一致 409 `STALE_GOAL_REVISION`，两者都不落库。续办回到目标所在的对话。`GET /api/v2/goals?open=1&limit=` 列出最近目标（只读）。
+- **显式续办**：`POST /api/v2/intakes` 可带 `goalId` 与 `expectedGoalRevision`；目标不存在 404 `GOAL_NOT_FOUND`，版本不一致 409 `STALE_GOAL_REVISION`，两者都不落库。续办回到目标所在的对话。`GET /api/v2/goals?limit=` 按 `updated_at` 列出最近目标（只读）；`open=1` 只要未完结（active / awaiting_input / awaiting_confirmation / partial / blocked）。网页展开对话后的「最近的目标」走不带 `open` 的列表，去掉 `cancelled`，已完成的也可以继续。
 - **旧版本失效**：开新版本时，旧版本还没执行的事项、待答问题、待确认方案与仍在处理的投递一并作废；`executeCommand` 在写入事务内核对投递是不是目标当前版本，不是则返回 `STALE_GOAL_REVISION`，旧模型响应晚到也写不进来。已经生效的修改不自动撤回。
 - **“先别做”**：单独一句停止短语（先别做/停一下/取消吧……）在接收时即停止当前目标未执行的部分，不花模型请求；结果如实列出停了几项、哪些已经生效（撤销走原结果的撤销入口）。没有进行中的目标时如实说明。
 - **自然语言回答**：会话里有问题在等时，路由可给第五种结果 `{kind:'reply', questionId}`；“第一个/可以/选项原文”这类孤立短答由服务端确定性识别，不调路由。只有一个问题在等就直接作答（序号映射到选项）；多个时具体的选项原文唯一匹配才落位，否则新建 `locate` 问题（候选问题 + “作为新的要求”）先问清；没有问题在等时如实说明，不改数据。回答按原问题的解析规则核对。
@@ -232,7 +232,7 @@ HTTP 202 只表示 accepted，HTTP 200 不能代替领域成功判断。版本�
 - **步骤凭据**（`agent_step_executions`，主键 `(item_id, command)`）：与领域写入/入队同一事务提交，`batch_id` 记变更批次，`effects_json` 记异步/产物引用（`job`、`exploration_run`、`review`、`export`；邮件经 job 关联现有投递状态机）。恢复重跑按凭据返回原结果（`replayed`），不再产生第二次副作用；主人新的要求是新事项、新凭据。
 - **异步核验**：`side_effect_status` 按凭据里的引用读真实状态：排队/进行中 → `ok: null`（核验 `pending`），失败/取消 → 不通过，完成按产物判断；邮件只核对到“服务器已接收”，`unknown` 不自动重发。后台任务结束时 worker 调 `reverifyAfterJob` 重新核验并更新目标状态，不轮询。新增检查 `constraints_hold`：主人说过不动的部分执行前后的事实指纹必须一致。没有主批次时也核对必要后续（要求的重排失败或缺失 → 不通过并可修正）。
 - **修正**：`replan` 修正带原 `replanDates` 与保护条件重跑，不退化成全局重算。
-- **结果视图**：`goal.constraints: string[]`（例：“周末的作息、规则和安排不动（你说“周末别动”）”，沿用的写“沿用你前面说的”）。
+- **结果视图**：`goal.constraints: string[]`（例：“周末的作息、规则和安排不动（你说“周末别动”）”，沿用的写“沿用你前面说的”）。展开对话后「最近的目标」读 `GET /api/v2/goals?limit=5`（含已完成、去掉 cancelled）。
 - **计时口径**：`modelMs` 只统计模型 HTTP 时间。单份投递 180 秒上限按主动执行时间 `intakes.active_ms`（迁移 0034）计：worker 处理这份投递的实际时间（模型、查询、执行、核验与修正），模型调用后与处理结束时记检查点；不含排队与等主人回答。用完后不再请求模型，已完成的结果保留；每次模型调用的超时不超过剩余时间。进程崩溃最多丢最后一段未记下的时间。
 - **指标**：`metrics.stages {understandFailed, clarified, confirmed, scopeRejected, staleReconfirmed, execFailed, asyncWaiting, verified, partial, repaired, ownerCorrected}`、`metrics.modelTime {p50Ms, p95Ms, maxMs}`（单份投递的模型 HTTP 耗时）与 `metrics.activeTime {p50Ms, p95Ms, maxMs, samples}`（单份投递的主动执行时间；0034 之前的投递没有记录，不补算）。
 - **解除约束**：模型给的 `release` 只是候选。服务端按类型与点名字段（`days`/`dateFrom`/`dateTo`/`time`/`ref`）匹配到目标上具体的约束 ID（只匹配当前版本及以前的），确认问题点名要解除哪条；主人确认后记 `releaseAuthorized {ids, revision}`，目标版本变了即失效；该步执行成功后才把这些约束改为 `released`。不确认就仍按原约束过门。

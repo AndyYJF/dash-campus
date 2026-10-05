@@ -8,6 +8,18 @@
 
 下文“尚未实施”“未部署”和旧测试数为当时记录，不是当前结论。
 
+## Agent 语义修复 R01–R08 / S01–S20（2026-10-05）
+
+任务见 [语义修复提示词](../../../Plan/dash-campus-AGENT-SEMANTIC-REPAIR-PROMPT-2026-10-05.md)，逐项证据见 [语义修复验收映射](./acceptance-semantic-repair-2026-10-05.md)。迁移 `0033_agent_constraints_steps.sql`（目标约束表、步骤执行凭据表）。
+
+- 隔离：全套 **420/420**；`tsc --noEmit`、eslint 0 错误。真实模型（仅 `gemini-3.8-flash-high`）：验收集 55/58，多轮目标流程 16/17。网页：S02 与同一对话沿用保护走查通过。
+
+### 发布与生产冒烟（2026-10-05 09:26–09:30 +08）
+
+- 提交 `fb9a642` 推送 `main`；按 [deploy.md](../deploy.md) §4 发布：停桥接 timer 与 web/worker → 备份 `backups/production-20261005-sem-fb9a642`（schema32，sha256 `2967e888…`）→ 覆盖源码 → 构建 → 迁移 32 → 33 → 启动 → 恢复 timer。回退材料：`/opt/dash-campus-src-521aeaa.tgz` 与镜像 `dash-campus:rollback-521aeaa`；0033 只新建表，回退代码时旧代码不读这两张表，如需回到 schema32 用上述备份恢复。
+- 冒烟（只读）：health `schemaVersion 33`；`/login`、`/settings` 200；owner 接口未登录均 401；新源码在位；已部署代码的回答判定（“可以。”= yes、“先不要”= no、两句带条件/犹豫的 = null）与统一门越界 reject；只读副本上 `trialMetrics` 返回 `stages`/`modelTime`（副本用后删除）；两张新表存在且 CHECK 含 `inherited`，0 行；web healthy，worker 恢复 0 项，无错误日志。
+- 未验证：生产真实投递（需主人会话）、真实邮件、复杂视觉、主人试用。
+
 ## Agent增强 v1.1 · P6 文档、发布准备与试用指标（2026-10-05）
 
 方案见 [Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) §6 P6、§7。无迁移（schema 仍为 32）。逐项证据见 [G01–G12 验收映射](./acceptance-g01-g12.md)。

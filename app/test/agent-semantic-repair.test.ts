@@ -295,3 +295,99 @@ test("R08 修正沿用原日期：重新安排明天首次写入失败，修正�
     db().exec(`DROP TRIGGER IF EXISTS sr_plan_fail; DROP TRIGGER IF EXISTS sr_clear; DROP TABLE IF EXISTS sr_fail;`);
   }
 });
+
+/**
+ * 截止日被读成范围（真实模型 g05 的失败：“概率论大作业明天就要交了，帮我优先安排”）。
+ * 原话里唯一的日期是截止日，服务端的日期解析和模型的范围约束都把它读成“只涉及明天”，
+ * 于是从今天起的重排被统一门拒绝。同一个日期两种理解都说得通：先问一次，回答前什么都不改，按回答落实。
+ */
+const scopeQ = (id: string) => intakeResultById(id)!.questions.find((q) => q.purpose === "tradeoff" && q.prompt.includes("截止日"));
+const dueTask = (title: string) => op({ command: "create_or_update_task", title, taskKind: "study", estimateMinutes: 600, dueLocalDate: "2026-10-13" });
+const deadlineAct = (text: string, title: string) =>
+  act(text, [{ op: "set_due", ref: { kind: "named", text: title, date: null, part: "any" }, dueLocalDate: "2026-10-13", dueLocalTime: null }, { op: "prioritize", ref: { kind: "named", text: title, date: null, part: "any" } }, { op: "replan", dateFrom: "2026-10-12", dateTo: "2026-10-13" }], "截止在明天，优先安排", [{ kind: "date_scope", dateFrom: "2026-10-13", dateTo: "2026-10-13", excerpt: "明天" }]);
+const replanFromToday = () => (db().prepare(`SELECT COUNT(*) AS n FROM planning_policy_rules WHERE kind = 'auto_reschedule' AND status = 'active' AND date_from = '2026-10-12' AND date_to = '2026-10-13'`).get() as { n: number }).n;
+
+test("截止日被读成范围：先问截止还是只动那一天；答“截止前都可以排”后从今天起重排，不记成范围", async () => {
+  resetPrefs();
+  dueTask("概率论大作业");
+  const rules0 = replanFromToday();
+  const text = "概率论大作业明天就要交了，帮我优先安排";
+  onRoute = () => deadlineAct(text, "概率论大作业");
+  const r = await say(text);
+  const q = scopeQ(r.intakeId);
+  assert.ok(q, `应先问截止还是范围：${JSON.stringify(r)}`);
+  assert.equal(batchesOf(r.intakeId), 0, "回答前什么都不改");
+  assert.deepEqual(q!.options, ["从今天到截止前都可以排", "只调整 10/13 那一天", "先不要，什么都不改"]);
+
+  await answer(q!, "从今天到截止前都可以排");
+  const done = intakeResultById(r.intakeId)!;
+  assert.ok(!JSON.stringify(done).includes("超出了你说的范围"), JSON.stringify(done));
+  assert.ok(batchesOf(r.intakeId) > 0, `回答后执行：${JSON.stringify(done)}`);
+  assert.ok(replanFromToday() > rules0, "从今天到截止的重排授权写入了");
+  const goalScopes = done.goal ? (db().prepare(`SELECT value_json FROM agent_goal_constraints WHERE goal_id = ? AND kind = 'date_scope' AND status = 'accepted'`).all(done.goal.id) as Array<{ value_json: string }>) : [];
+  assert.deepEqual(goalScopes, [], "截止日没有被记成这件事的范围");
+});
+
+test("截止日被读成范围：答“只调整那一天”就只动 10/13，今天的安排不动；答“先不要”什么都不改", async () => {
+  resetPrefs();
+  dueTask("数理统计作业");
+  const today = autoSessionsOn("2026-10-12");
+  const text = "数理统计作业明天就要交了，帮我优先安排";
+  onRoute = () => deadlineAct(text, "数理统计作业");
+  const r = await say(text);
+  await answer(scopeQ(r.intakeId)!, "只调整 10/13 那一天");
+  assert.deepEqual(autoSessionsOn("2026-10-12"), today, "只动截止那一天：今天的自动安排没有被替换");
+
+  dueTask("运筹学作业");
+  const text2 = "运筹学作业明天就要交了，帮我优先安排";
+  onRoute = () => deadlineAct(text2, "运筹学作业");
+  const k = await say(text2);
+  await answer(scopeQ(k.intakeId)!, "先不要，什么都不改");
+  assert.equal(batchesOf(k.intakeId), 0);
+  assert.equal(scopeQ(k.intakeId), undefined, "问题已答完，没有再问");
+  assert.equal(intakeResultById(k.intakeId)!.questions.length, 0);
+});
+
+test("截止日被读成范围：不问的情况——范围覆盖今天、没有截止、或主人明说只动别的日子", async () => {
+  resetPrefs();
+  dueTask("实变函数作业");
+  const text = "实变函数作业明天交，今天和明天都帮我排一下";
+  onRoute = () => act(text, [{ op: "prioritize", ref: { kind: "named", text: "实变函数作业", date: null, part: "any" } }, { op: "replan", dateFrom: "2026-10-12", dateTo: "2026-10-13" }], "今天和明天", [{ kind: "date_scope", dateFrom: "2026-10-12", dateTo: "2026-10-13", excerpt: "今天和明天" }]);
+  const a = await say(text);
+  assert.equal(scopeQ(a.intakeId), undefined, "范围本来就从今天起，不问");
+
+  const text2 = "重新安排明天的学习";
+  onRoute = () => act(text2, [{ op: "replan", dateFrom: "2026-10-13", dateTo: "2026-10-13" }], "重新安排明天");
+  const b = await say(text2);
+  assert.equal(scopeQ(b.intakeId), undefined, "没有截止，“明天”就是范围");
+  assert.ok(batchesOf(b.intakeId) > 0);
+
+  // R04 不受影响：只重排今天，模型给下周 → 仍拒绝
+  const text3 = "只重新安排今天的学习时间";
+  onRoute = () => act(text3, [{ op: "replan", dateFrom: "2026-10-19", dateTo: "2026-10-25" }], "重新安排");
+  const c = await say(text3);
+  assert.equal(batchesOf(c.intakeId), 0);
+  assert.equal(scopeQ(c.intakeId), undefined);
+});
+
+test("截止日被读成范围（决策路径）：方案确认前先问；答“截止前都可以排”后重新决策，不带那一天的范围", async () => {
+  resetPrefs();
+  dueTask("复变函数作业");
+  const text = "复变函数作业明天就要交了，帮我看着安排";
+  onRoute = () => decide(text);
+  const plan = { kind: "act", rationale: "截止在明天，从今天起优先安排", intents: [{ op: "prioritize", ref: { kind: "named", text: "复变函数作业", date: null, part: "any" } }, { op: "replan", dateFrom: "2026-10-12", dateTo: "2026-10-13" }], constraints: [{ kind: "date_scope", dateFrom: "2026-10-13", dateTo: "2026-10-13", excerpt: "明天" }] };
+  decisions = [plan, plan];
+  const r = await say(text);
+  const q = scopeQ(r.intakeId);
+  assert.ok(q, `决策路径也先问：${JSON.stringify(r)}`);
+  assert.equal(confirmQ(r.intakeId), undefined, "还没到确认方案");
+  assert.equal(batchesOf(r.intakeId), 0);
+  const calls = decideCalls();
+  await answer(q!, "从今天到截止前都可以排");
+  assert.equal(decideCalls(), calls + 1, "按回答重新决策");
+  const c = confirmQ(r.intakeId);
+  if (c) await answer(c, "可以");
+  const done = intakeResultById(r.intakeId)!;
+  assert.ok(!JSON.stringify(done).includes("超出了你说的范围"), JSON.stringify(done));
+  assert.ok(batchesOf(r.intakeId) > 0, `执行了：${JSON.stringify(done)}`);
+});

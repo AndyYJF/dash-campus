@@ -12,6 +12,8 @@
 
 过期未反馈学习块（验收页 §9，无迁移，生产 `de8adff` → `962b120`）：已结束没反馈的块挂住需求不整段补排（`awaitingFeedbackSessions`，`src/workflows/plan.ts`），每段一个“这段做了吗，还剩多少？”问题（`askSessionFeedback`，`src/workflows/agent.ts`），回答走现有操作；回归 `test/session-feedback.test.ts`。剩余需求的报告时刻用真实写入时刻（`src/workflows/ops/tasks.ts`），和学习记录同一时钟比较先后，不要改回规划时钟 `ctx.now`。
 
+截止日与范围的歧义（验收页 §10，无迁移）：主人说的单日正好是截止日、本轮又要重排时，`deadlineScopeAmbiguity` / `askScopeChoice` / `takeScopeChoice`（`src/workflows/intake.ts`）在统一门与确认之前问“截止前都可以排 / 只调整那一天 / 先不要”；答“截止前”时 `decisionScope` 的 `notScope` 排除那一天（`src/workflows/agent-decide.ts`）。回归在 `test/agent-semantic-repair.test.ts` 末尾 4 项。不要靠放宽统一门或加“就要交了”之类关键词绕过。
+
 ## Agent增强 v1.1（已实施，2026-10-05）
 
 [Agent增强方案v1.1](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md)的模型优先路由、有界只读工具、多轮追问/改口/跨设备续办、执行后核验与有限修正、试用指标已实现。逐包实现与证据见[实施记录](./implementation-progress.md)，G01–G12 证据层见[验收映射](./acceptance-g01-g12.md)，接口见[契约](./AGENT-INTERFACE-CONTRACT.md)末三节。接手后优先补：登录态网页走查、主人七天试用（设置页“试用指标”）、真实邮件收件与复杂视觉材料。下列历史R0–R5说明用于理解既有系统，不要求重新实现。

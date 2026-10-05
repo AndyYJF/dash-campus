@@ -255,3 +255,11 @@ HTTP 202 只表示 accepted，HTTP 200 不能代替领域成功判断。版本�
 ## 2026-10-05 反馈记账补充
 
 `session_feedback` 回答中的 actualMinutes 不得由计划时长或完成比例推算。仅有“完成一半”时保留待答问题并追问；明确 remainingMinutes 可单独更新剩余。`set_session_state complete` 写入的实践使用已有 plan_session_id，需求抵扣只替代对应块；同日其他完成块不能被这条实际记录覆盖。无实际分钟的完成块只参与需求估算，不生成实际投入。无 schema/API 变更。
+
+## 2026-10-05 截止日与范围的歧义（无迁移）
+
+问题：“概率论大作业明天就要交了，帮我优先安排”里的“明天”是截止，不是“只动明天”的范围；原来模型或文字解析把它记成单日 `date_scope`，从今天起的重排被统一门以“超出了你说的范围”拒绝。
+
+- **判定**：`deadlineScopeAmbiguity`（`src/workflows/intake.ts`）。只在本轮意图含 `replan`/`schedule_at` 时检查；截止日来自本轮 `set_due`、`create_task.dueLocalDate`，以及 `prioritize`/`schedule_at` 点名的现有任务的截止。候选范围只取主人原话（文字解析的单日、主人原文摘录的单日 `date_scope`、单日 `decisionScope`）。某个候选日 D 晚于今天且正是某件事的截止 → 有歧义。主人回答里已说范围、或主人说的范围从今天覆盖到截止，都不问。
+- **问题**：`purpose: "tradeoff"`，`fieldPath: "adjustment.scope"`，`questionKey = scope-choice:{itemId}:{D}`；提示“你说的 M/D 是「任务」的截止日。这次安排是从今天到截止前都可以排，还是只调整 M/D 那一天？”，选项“从今天到截止前都可以排 / 只调整 M/D 那一天 / 先不要，什么都不改”。问在统一门与确认之前；决策路径答后重新决策，命令路径答后再走原步骤。
+- **回答**：`{choice}` 结构化处理，不交给模型二次理解。0 → `scopeChoice {date: D, mode: "deadline"}`：D 不再算范围（`decisionScope` 的 `notScope`、主人原文的单日 `date_scope` 去掉、不记到目标约束），默认范围与其他已说的范围照常生效；1 → `mode: "only"`，范围固定为 [D, D]；2 → 不执行，结果“按你说的先不改，原来的安排没有动”。同一项只问一次。

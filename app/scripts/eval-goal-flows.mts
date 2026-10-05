@@ -54,6 +54,8 @@ const snapshot = () => {
     facts: JSON.stringify([db.prepare(`SELECT id, status, version, priority, paused_until, due_local_date FROM tasks ORDER BY id`).all(), db.prepare(`SELECT id, start_utc, status, version, locked FROM plan_sessions ORDER BY id`).all()]),
     courses: JSON.stringify(db.prepare(`SELECT * FROM courses ORDER BY id`).all()),
     budget: JSON.stringify([db.prepare(`SELECT * FROM planning_policy_rules ORDER BY id`).all(), db.prepare(`SELECT * FROM planning_preferences`).all()]),
+    budgetCore: JSON.stringify([db.prepare(`SELECT * FROM planning_policy_rules WHERE kind <> 'auto_reschedule' ORDER BY id`).all(), db.prepare(`SELECT * FROM planning_preferences`).all()]),
+    replanWindows: JSON.stringify(db.prepare(`SELECT id, date_from, date_to FROM planning_policy_rules WHERE kind = 'auto_reschedule' AND status = 'active' ORDER BY id`).all()),
     weekend: protectedDays("2026-10-17", "2026-10-18"),
     nextWeekend: protectedDays("2026-10-24", "2026-10-25"),
   };
@@ -309,6 +311,8 @@ const FLOWS: Flow[] = [
   {
     id: "g05-deadline-gap", what: "P5 截止前排不下：给出具体取舍、核验不声称完成，不改截止/课程/学习预算",
     setup: [], live: "概率论大作业明天就要交了，帮我优先安排", confirm: true,
+    // 服务端若问“截止还是只动那一天”，像主人一样答截止；截止前排不下的取舍题不替主人答
+    pick: (prompt, options) => (prompt.includes("截止日") ? options.find((o) => o.startsWith("从今天到截止前")) ?? null : null),
     prepare: () => { executeOperation({ command: "create_or_update_task", title: "概率论大作业", taskKind: "study", estimateMinutes: 900, dueLocalDate: "2026-10-13" }, { intakeId: null, itemId: null, itemKey: "", instanceEpoch: 0, evidence: "", explicit: true, now: new Date(FIXTURE_NOW) }); },
     check: (c) => {
       const out: string[] = [];
@@ -317,9 +321,16 @@ const FLOWS: Flow[] = [
       const v = r?.verification ?? null;
       if (taskOf("概率论大作业")?.due_local_date !== "2026-10-13") out.push(`截止被改成 ${taskOf("概率论大作业")?.due_local_date}`);
       if (snapshot().courses !== c.before.courses) out.push("课程被改了");
-      if (snapshot().budget !== c.before.budget) out.push("规则或学习预算被改了");
+      const after = snapshot();
+      if (after.budgetCore !== c.before.budgetCore) out.push("学习预算或非重排规则被改了");
+      type Window = { id: string; date_from: string; date_to: string };
+      const known = new Set((JSON.parse(c.before.replanWindows!) as Window[]).map((w) => w.id));
+      for (const w of (JSON.parse(after.replanWindows) as Window[]).filter((x) => !known.has(x.id))) {
+        if (w.date_from < "2026-10-12" || w.date_to > "2026-10-13") out.push(`重排窗口越过今天到截止：${w.date_from}~${w.date_to}`);
+      }
       const tradeoff = listQuestionsForIntake(id).some((q) => q.purpose === "tradeoff" && (q.options?.length ?? 0) >= 2);
       if (r?.state === "applied" && v?.status === "verified") out.push("排不下却显示已完成且核验通过");
+      if (JSON.stringify(r ?? {}).includes("超出了你说的范围")) out.push("截止日被当成范围，从今天起的安排被拒绝");
       if (!tradeoff && v?.status !== "needs_action" && r?.state !== "needs_input") out.push(`没有给出取舍（state=${r?.state} 核验=${v?.status ?? "无"}）`);
       return out;
     },

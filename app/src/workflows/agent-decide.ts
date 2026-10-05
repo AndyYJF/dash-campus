@@ -37,7 +37,7 @@ export function isFlexibleAdjustment(text: string): boolean {
 export type DecisionScope = { dateFrom: string; dateTo: string; explicit: boolean; inherited?: boolean };
 
 /** 范围：原话或回答里明说的周/日优先；都没说时沿用同一目标上一版确认过的范围；再没有就默认未来七天 */
-export function decisionScope(text: string, date: string, replies: Array<{ answer: string }> = [], inherited?: { dateFrom: string; dateTo: string } | null): DecisionScope {
+export function decisionScope(text: string, date: string, replies: Array<{ answer: string }> = [], inherited?: { dateFrom: string; dateTo: string } | null, notScope: string[] = []): DecisionScope {
   for (const reply of [...replies].reverse()) {
     const scope = decisionScope(reply.answer, date);
     if (scope.explicit) return scope;
@@ -50,7 +50,8 @@ export function decisionScope(text: string, date: string, replies: Array<{ answe
     return { dateFrom: start < date ? date : start, dateTo: addDays(start, 6), explicit: true };
   }
   // 分句各取日期，取首尾：“明天别排了，后天重排一下”是明天到后天，不只是明天
-  const singles = text.split(/[，,。；;\n]/).map((s) => dateFromText(s, date)).filter((d): d is string => Boolean(d)).sort();
+  // notScope：主人已经说明是截止日、不是这件事范围的日期
+  const singles = text.split(/[，,。；;\n]/).map((s) => dateFromText(s, date)).filter((d): d is string => Boolean(d) && !notScope.includes(d!)).sort();
   if (singles.length) return { dateFrom: singles[0]!, dateTo: singles.at(-1)!, explicit: true };
   if (inherited && inherited.dateTo >= date) return { dateFrom: inherited.dateFrom < date ? date : inherited.dateFrom, dateTo: inherited.dateTo, explicit: true, inherited: true };
   return { dateFrom: date, dateTo: addDays(date, 6), explicit: false };

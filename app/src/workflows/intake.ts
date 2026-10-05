@@ -556,6 +556,8 @@ async function processIntakeJob(job: JobRow): Promise<{ kind: string }> {
     if (item.payload.explicit !== true) {
       updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: "资料内容不能授权调整" } }); continue;
     }
+    const scopeAnswer = takeScopeChoice(item);
+    if (scopeAnswer === "pending" || scopeAnswer === "keep") continue;
     const replies = [...((item.payload.decisionReplies as Array<{question:string;answer:string}> | undefined) ?? [])];
     if (item.payload.decisionQuestionKey) {
       const answer = latestAnswerForKey(String(item.payload.decisionQuestionKey));
@@ -648,7 +650,8 @@ async function processIntakeJob(job: JobRow): Promise<{ kind: string }> {
     // 这轮决策带来的约束（引用必须是主人原话或回答）与范围先记在事项上，过门时一起生效
     const accepted = acceptOnItem(item, decision.constraints ?? [], today, replies);
     const own = accepted.constraints as AcceptedConstraint[];
-    const scope = decisionScope(scopeText([ownerText], own), today, replies.map((r) => ({ answer: scopeText([r.answer], own) })), inheritedScope);
+    const choice = item.payload.scopeChoice as ScopeChoice | null | undefined;
+    const scope = decisionScope(scopeText([ownerText], own), today, replies.map((r) => ({ answer: scopeText([r.answer], own) })), inheritedScope, choice?.mode === "deadline" ? [choice.date] : []);
     const decidedScope = scope.explicit ? { dateFrom: scope.dateFrom, dateTo: scope.dateTo } : (inheritedScope ?? null);
     updateItem(item.id, { payload: { ...item.payload, ...accepted, decisionScope: decidedScope, decisionReplies: replies, ...(pending ? { overrideInherited: false, releaseProposed: null, releaseAuthorized: null } : {}) } });
     const row = getItem(item.id)!;
@@ -658,6 +661,10 @@ async function processIntakeJob(job: JobRow): Promise<{ kind: string }> {
       const { question } = ensureOpenQuestion({ questionKey: key, intakeId, itemId: item.id, fieldPath: "adjustment.choice", purpose: "agent_clarification", prompt: decision.question, reason: decision.reason, options: decision.options, context: {}, conversationId: intake.conversationId });
       updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...row.payload, pendingDecision: null, pendingPlanHash: null, decisionQuestionKey: key, decisionQuestionPrompt: decision.question } });
     } else {
+      if (confirmedHashes === undefined) {
+        const amb = deadlineScopeAmbiguity(intake, row, decision.intents);
+        if (amb) { askScopeChoice(intake, row, amb, { needsDecision: true, pendingDecision: null, pendingPlanHash: null, decisionQuestionKey: null }); continue; }
+      }
       // 决策输出按每个意图自己的日期语义核对；范围与保护约束由统一门核对、收窄或拒绝
       const error = item.payload.decisionText ? validateDecision(decision.intents, today, scope) : null;
       if (error) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error } }); continue; }
@@ -784,7 +791,14 @@ async function processIntakeJob(job: JobRow): Promise<{ kind: string }> {
       resolveTimetableItem(intakeId, item, intake.timezone);
     } else if (item.kind === "command") {
       if (item.payload.needsDecision || item.payload.routeAsk || item.payload.reply) continue;
-      resolveStep(intake, splitSteps(intakeId, item), planningNow);
+      const scopeAnswer = takeScopeChoice(item);
+      if (scopeAnswer === "pending" || scopeAnswer === "keep") continue;
+      const current = scopeAnswer === "set" ? getItem(item.id)! : item;
+      if (current.payload.confirmed !== true && !current.payload.stepKeys) {
+        const amb = deadlineScopeAmbiguity(intake, current, (current.payload.intents as unknown[] | undefined) ?? []);
+        if (amb) { askScopeChoice(intake, current, amb); continue; }
+      }
+      resolveStep(intake, splitSteps(intakeId, current), planningNow);
     } else if (item.kind === "calendar" || item.kind === "adjustment") {
       resolveCalendarItem(intake, item);
     } else if (item.kind === "notice" && item.payload.notice) {
@@ -1421,7 +1435,11 @@ function gateContextFor(intake: IntakeRow, item: IntakeItemRow, opts: { skipInhe
   const skipInherited = opts.skipInherited ?? item.payload.overrideInherited === true;
   const today = localDateInTz(nowDate(), intake.timezone);
   const live = getIntake(intake.id) ?? intake;
-  const own = (item.payload.constraints as AcceptedConstraint[] | undefined) ?? [];
+  // 主人说明过是截止日的那一天：按它读出的“只涉及那一天”不是这件事的范围，不记到目标上
+  const choice = item.payload.scopeChoice as ScopeChoice | null | undefined;
+  const notScope = choice?.mode === "deadline" ? [choice.date] : [];
+  const isNotScope = (s: { dateFrom: string; dateTo: string }) => notScope.includes(s.dateFrom) && s.dateFrom === s.dateTo;
+  const own = ((item.payload.constraints as AcceptedConstraint[] | undefined) ?? []).filter((c) => !(c.value.kind === "date_scope" && isNotScope(c.value)));
   const goal = live.goalId ? getGoal(live.goalId) : null;
   let values = own.map((a) => a.value);
   if (goal) {
@@ -1429,13 +1447,115 @@ function gateContextFor(intake: IntakeRow, item: IntakeItemRow, opts: { skipInhe
     const released = new Set([...authorizedReleaseIds(intake, item), ...(opts.release ?? [])]);
     values = listGoalConstraints(goal.id).filter((c) => !(skipInherited && c.source === "inherited") && !released.has(c.id)).map((c) => c.value);
   }
-  const decided = item.payload.decisionScope as { dateFrom: string; dateTo: string } | null | undefined;
-  const fromText = decisionScope(scopeText(ownerTexts(item).map((t) => t.text), own), today);
-  const stated = values.find((v): v is Extract<ConstraintValue, { kind: "date_scope" }> => v.kind === "date_scope");
+  const decidedRaw = item.payload.decisionScope as { dateFrom: string; dateTo: string } | null | undefined;
+  const decided = choice?.mode === "only" ? { dateFrom: choice.date, dateTo: choice.date } : decidedRaw && !isNotScope(decidedRaw) ? decidedRaw : null;
+  const fromText = decisionScope(scopeText(ownerTexts(item).map((t) => t.text), own), today, [], null, notScope);
+  const stated = values.find((v): v is Extract<ConstraintValue, { kind: "date_scope" }> => v.kind === "date_scope" && !isNotScope(v));
   const prior = goal && (live.goalRevision ?? 1) > 1 ? goal.summary.scope ?? null : null;
   const inherited = prior && prior.dateTo >= today ? { dateFrom: prior.dateFrom < today ? today : prior.dateFrom, dateTo: prior.dateTo } : null;
   const scope = decided ?? (fromText.explicit ? { dateFrom: fromText.dateFrom, dateTo: fromText.dateTo } : null) ?? (stated ? { dateFrom: stated.dateFrom, dateTo: stated.dateTo } : null) ?? inherited;
   return { today, scope, constraints: values.filter((v) => v.kind !== "date_scope"), ...(stated ? { statedScope: { dateFrom: stated.dateFrom, dateTo: stated.dateTo } } : {}) };
+}
+
+/** 主人对“这个日期是截止还是范围”的回答：deadline=只是截止日（范围从今天到截止都可以），only=这次只动那一天 */
+type ScopeChoice = { date: string; mode: "deadline" | "only" };
+
+const md = (d: string) => `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
+
+/** 这件事里出现的截止日：设截止/新建带截止的任务，以及要安排的已有任务本来的截止 */
+function deadlinesIn(intents: unknown[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const existing = (ref: unknown): { title: string; due: string } | null => {
+    const r = ref as { kind?: string; text?: string; entityKind?: string; id?: string } | null;
+    const row = r?.kind === "named" && r.text
+      ? getDb().prepare(`SELECT title, due_local_date FROM tasks WHERE title = ? AND archived_at IS NULL AND status IN ('todo','doing','blocked')`).get(r.text.trim())
+      : r?.kind === "id" && r.entityKind === "task" && r.id ? getDb().prepare(`SELECT title, due_local_date FROM tasks WHERE id = ?`).get(r.id) : undefined;
+    const t = row as { title: string; due_local_date: string | null } | undefined;
+    return t?.due_local_date ? { title: t.title, due: t.due_local_date } : null;
+  };
+  for (const raw of intents) {
+    const p = intentSchema.safeParse(raw);
+    if (!p.success) continue;
+    const i = p.data;
+    if (i.op === "set_due") out.set(i.dueLocalDate, i.ref.kind === "named" ? i.ref.text : (existing(i.ref)?.title ?? "这件事"));
+    else if (i.op === "create_task" && i.dueLocalDate) out.set(i.dueLocalDate, i.title);
+    else if (i.op === "prioritize" || (i.op === "schedule_at" && i.taskRef)) {
+      const t = existing(i.op === "prioritize" ? i.ref : i.taskRef);
+      if (t && !out.has(t.due)) out.set(t.due, t.title);
+    }
+  }
+  return out;
+}
+
+/**
+ * 截止日被读成范围：这件事要按日期安排（重排/排到某天），同时把某任务的截止定在（或本来就在）D，
+ * 而主人原话里能读出的范围只有 D 那一天——同一个日期既当截止又当范围，会把截止前今天起的日子全排除。
+ * 两种理解都说得通（“明天交，帮我安排”/“明天交，只排明天”），不替主人选，先问一次；回答过就按回答。
+ */
+function deadlineScopeAmbiguity(intake: IntakeRow, item: IntakeItemRow, intents: unknown[]): { date: string; title: string } | null {
+  if (item.payload.scopeChoice) return null;
+  if (!intents.some((i) => { const op = (i as { op?: string }).op; return op === "replan" || op === "schedule_at"; })) return null;
+  const deadlines = deadlinesIn(intents);
+  if (!deadlines.size) return null;
+  const today = localDateInTz(nowDate(), intake.timezone);
+  const own = ((item.payload.constraints as AcceptedConstraint[] | undefined) ?? []);
+  const texts = ownerTexts(item);
+  // 回答里明说的范围是主人对范围本身的表态，不再问
+  if (texts.some((t) => t.source === "owner_answer" && decisionScope(t.text, today).explicit)) return null;
+  if (own.some((c) => c.value.kind === "date_scope" && c.source === "owner_answer")) return null;
+  // 主人自己说的范围已经从今天起、盖到截止：没有被排除的日子
+  if (own.some((c) => c.value.kind === "date_scope" && c.value.dateFrom <= today && [...deadlines.keys()].some((d) => (c.value as { dateTo: string }).dateTo >= d))) return null;
+  const candidates: string[] = [];
+  const fromText = decisionScope(scopeText(texts.filter((t) => t.source === "owner_text").map((t) => t.text), own), today);
+  if (fromText.explicit && fromText.dateFrom === fromText.dateTo) candidates.push(fromText.dateFrom);
+  for (const c of own) if (c.value.kind === "date_scope" && c.source === "owner_text" && c.value.dateFrom === c.value.dateTo) candidates.push(c.value.dateFrom);
+  const decided = item.payload.decisionScope as { dateFrom: string; dateTo: string } | null | undefined;
+  if (decided && decided.dateFrom === decided.dateTo) candidates.push(decided.dateFrom);
+  const hit = candidates.find((d) => d > today && deadlines.has(d));
+  return hit ? { date: hit, title: deadlines.get(hit)! } : null;
+}
+
+function askScopeChoice(intake: IntakeRow, item: IntakeItemRow, amb: { date: string; title: string }, patch: Record<string, unknown> = {}): void {
+  const key = `scope-choice:${item.id}:${amb.date}`;
+  const { question } = ensureOpenQuestion({
+    questionKey: key,
+    intakeId: intake.id,
+    itemId: item.id,
+    fieldPath: "adjustment.scope",
+    purpose: "tradeoff",
+    prompt: `你说的 ${md(amb.date)} 是「${amb.title}」的截止日。这次安排是从今天到截止前都可以排，还是只调整 ${md(amb.date)} 那一天？`,
+    reason: "同一个日期既可能是截止，也可能是这次只改的那一天；两种理解安排出来差别很大，回答前什么都没有改",
+    options: ["从今天到截止前都可以排", `只调整 ${md(amb.date)} 那一天`, "先不要，什么都不改"],
+    context: { date: amb.date },
+    conversationId: intake.conversationId,
+  });
+  updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, ...patch, scopeQuestionKey: key, scopeQuestionDate: amb.date } });
+}
+
+/**
+ * 读取“截止还是范围”的回答：none=没在问；pending=还没答；keep=主人说先不改（已收尾）；set=记下选择，接着办。
+ * 选“截止”时，把原话里按那一天读出的范围约束从这件事上去掉，不让它记到目标上继续限制后面的步骤。
+ */
+function takeScopeChoice(item: IntakeItemRow): "none" | "pending" | "keep" | "set" {
+  const key = item.payload.scopeQuestionKey as string | null | undefined;
+  if (!key) return "none";
+  const ans = latestAnswerForKey(key);
+  if (!ans) return "pending";
+  const date = String(item.payload.scopeQuestionDate);
+  const choice = typeof ans.structured?.choice === "number" ? ans.structured.choice : -1;
+  const cleared = { ...item.payload, scopeQuestionKey: null, scopeQuestionDate: null };
+  if (choice !== 0 && choice !== 1) {
+    updateItem(item.id, { state: "applied", waitingQuestionId: null, payload: { ...cleared, needsDecision: false, readOnly: true, applied: { batchId: null, summary: "按你说的先不改，原来的安排没有动。", noChange: true } } });
+    return "keep";
+  }
+  const mode: ScopeChoice["mode"] = choice === 0 ? "deadline" : "only";
+  const own = (item.payload.constraints as AcceptedConstraint[] | undefined) ?? [];
+  const constraints = mode === "deadline" ? own.filter((c) => !(c.value.kind === "date_scope" && c.source === "owner_text" && c.value.dateFrom === date && c.value.dateTo === date)) : own;
+  const decided = item.payload.decisionScope as { dateFrom: string; dateTo: string } | null | undefined;
+  const decisionScopePatch = mode === "only" ? { decisionScope: { dateFrom: date, dateTo: date } } : decided && decided.dateFrom === date && decided.dateTo === date ? { decisionScope: null } : {};
+  item.payload = { ...cleared, constraints, ...decisionScopePatch, scopeChoice: { date, mode } satisfies ScopeChoice, scopeChoiceReply: ans.rawText };
+  updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: item.payload });
+  return "set";
 }
 
 /** 一个步骤：前序步骤没落库就先等（返回 false），失败就不执行，否则绑定 */

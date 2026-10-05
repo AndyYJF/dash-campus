@@ -151,11 +151,12 @@ export default function ItemDetail(props: { picked: Picked; date: string; timezo
         {s.origin === "user" ? " · 你指定的位置" : ""}
       </p>
       {s.reason && <p className={styles.why}>为什么排这里：{s.reason}</p>}
+      {s.awaitingFeedback && <p className={styles.why}>这段已经过去，还没记录做没做。没说之前不算完成，也不会整段补排；可以点下面的按钮，或直接说“这段做了 40 分钟，还剩 30 分钟”。</p>}
       {error && <p className={styles.error}>{error}</p>}
       {active && (
         <>
           <div className={styles.detailActions}>
-            {s.status !== "in_progress" && (
+            {s.status !== "in_progress" && !s.awaitingFeedback && (
               <button
                 type="button"
                 className={styles.btnPrimary}
@@ -178,7 +179,7 @@ export default function ItemDetail(props: { picked: Picked; date: string; timezo
               这一段完成
             </button>
             <button type="button" className={styles.btn} disabled={busy} onClick={() => act("skip")}>
-              稍后再排
+              {s.awaitingFeedback ? "没做，另排" : "稍后再排"}
             </button>
             <button type="button" className={styles.btn} disabled={busy} onClick={() => act(s.locked ? "unlock" : "lock")}>
               {s.locked ? "解除锁定" : "锁定"}

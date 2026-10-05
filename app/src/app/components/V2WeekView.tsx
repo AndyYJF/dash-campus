@@ -52,6 +52,7 @@ const REASON_LABEL: Record<string, string> = {
   blocked_dependency: "有前置依赖",
   no_contiguous_slot: "预算够，但缺连续空档",
   needs_remaining_estimate: "投入已达估时仍未完成，需要你说一下还剩多少",
+  awaiting_feedback: "之前那段已经过去、还没记录做没做；说一下结果再决定要不要另排",
 };
 const CONFLICT_LABEL: Record<string, string> = { overlaps_fixed: "和课程/固定活动撞了", outside_policy: "落在你说不安排学习的时段", over_budget: "超出了当天的学习预算" };
 const WEEKDAY = ["一", "二", "三", "四", "五", "六", "日"];

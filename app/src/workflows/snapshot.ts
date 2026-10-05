@@ -29,10 +29,12 @@ function sessionView(s: { id: string; taskId: string; startUtc: string; endUtc: 
   // 近期块受保护不会被自动改短；但任务有未解决的卡点时，这一段该做的是处理卡点，要说清楚
   const blocker = ["planned", "tentative", "in_progress"].includes(s.status) ? openBlocker(s.taskId) : "";
   const reason = blocker && !s.reason.includes(blocker.slice(0, 20)) ? `上次卡在“${blocker.slice(0, 40)}”，这一段先处理卡点${s.reason ? `；${s.reason}` : ""}` : s.reason;
+  const task = getDb().prepare(`SELECT title, status, archived_at FROM tasks WHERE id = ?`).get(s.taskId) as { title: string; status: string; archived_at: string | null } | undefined;
+  const taskOpen = Boolean(task && !task.archived_at && ["todo", "doing", "blocked"].includes(task.status));
   return {
     id: s.id,
     taskId: s.taskId,
-    title: (getDb().prepare(`SELECT title FROM tasks WHERE id = ?`).get(s.taskId) as { title: string } | undefined)?.title ?? "",
+    title: task?.title ?? "",
     startUtc: s.startUtc,
     endUtc: s.endUtc,
     minutes: Math.round((new Date(s.endUtc).getTime() - new Date(s.startUtc).getTime()) / 60000),
@@ -42,6 +44,8 @@ function sessionView(s: { id: string; taskId: string; startUtc: string; endUtc: 
     reason,
     kind: s.kind,
     origin: s.origin,
+    /** 已经结束、还没记录做没做：不是待执行，也不是已完成 */
+    awaitingFeedback: taskOpen && ["planned", "tentative", "in_progress"].includes(s.status) && Date.parse(s.endUtc) <= nowDate().getTime(),
   };
 }
 

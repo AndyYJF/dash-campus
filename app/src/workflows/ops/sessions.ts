@@ -9,7 +9,7 @@ import { insertPracticeEntry } from "@/repositories/practice";
 import crypto from "node:crypto";
 import { HttpError } from "@/workflows/http";
 import { nowDate } from "@/domain/clock";
-import { dayLedger, eventsForDay } from "@/workflows/plan";
+import { awaitingFeedbackSessions, dayLedger, eventsForDay } from "@/workflows/plan";
 
 /**
  * 学习块操作（REPAIR-PLAN §4.5/§5.1.1）：主人明确要求时可直接改近期甚至锁定的指定块；
@@ -195,5 +195,7 @@ export function applyScheduleSession(cmd: Cmd<"schedule_session">, ctx: CommandC
   const id = insertSession({ taskId, startUtc: new Date(start).toISOString(), endUtc: new Date(end).toISOString(), timezone: tz, batchId: "", reason: "你指定排在这里", origin: "user" });
   changes.push({ entityKind: "plan_session", entityId: id, action: "create", after: { taskId, startUtc: new Date(start).toISOString(), endUtc: new Date(end).toISOString() }, afterVersion: 1 });
   bumpPlanningRevision();
-  return `「${title}」排在 ${label(start, tz)}–${label(end, tz).slice(-5)}`;
+  const waiting = awaitingFeedbackSessions(now, taskId).map((s) => `${label(Date.parse(s.startUtc), tz)}–${label(Date.parse(s.endUtc), tz).slice(-5)}`);
+  const note = waiting.length ? `；之前 ${waiting.join("、")} 那段还没记录做没做，仍等你反馈，这段是另加的` : "";
+  return `「${title}」排在 ${label(start, tz)}–${label(end, tz).slice(-5)}${note}`;
 }

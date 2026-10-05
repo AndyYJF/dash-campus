@@ -8,7 +8,7 @@ import type { TrialMetrics } from "@/workflows/agent-metrics";
 
 /** 七天试用指标：只读聚合，打开设置页时计算，不调模型、不写库 */
 
-const PURPOSE: Record<string, string> = { confirm: "确认", agent_clarification: "追问", tradeoff: "取舍", locate: "指哪一个", conflict: "冲突" };
+const PURPOSE: Record<string, string> = { confirm: "确认", agent_clarification: "追问", tradeoff: "取舍", locate: "指哪一个", conflict: "冲突", session_feedback: "做没做" };
 const VERDICT: Record<string, string> = { wrong_intent: "意思理解错", wrong_object: "对象/时间找错", should_ask: "应该先问", should_not_ask: "不该问", other: "其他" };
 const pct = (n: number | null) => (n === null ? "—" : `${Math.round(n * 100)}%`);
 const sec = (ms: number | null) => (ms === null ? "—" : `${(ms / 1000).toFixed(1)}s`);

@@ -240,3 +240,15 @@ HTTP 202 只表示 accepted，HTTP 200 不能代替领域成功判断。版本�
 - **对象身份**：`commandEntities(command)` 统一解析命令点名的对象（固定对象字段 + 通用 `entityKind/entityId`），确认快照与 `protect_entity` 核对共用。
 - **结果状态**：新增 `in_background`——核验在等后台任务、而本身已写入或无需写入时使用；此时目标保持 `active`，后台结束后重新核验再定终态。
 - **指代不明**：带条件的回答新增了 `protect_entity`、方案却与上一版一模一样时，问题 `purpose: "tradeoff"`、`fieldPath: "adjustment.referent"`，选项为方案里动到已有对象的每一步 +“都不是，其余照这份方案执行”+“先不要，什么都不改”；回答 `{choice}`。指认某一步 → 对该对象记 `protect_entity`（id 引用，摘录为主人那句回答）并去掉这一步再确认；选“都不是”且方案指纹未变 → 视同确认。
+
+## 2026-10-05 过期未反馈的学习块（不迁移）
+
+问题：已经结束、仍是 `planned/tentative/in_progress` 的块不在“在途”查询里，也不算投入，重排把需求按完整估时重新补排（生产实例：用户指定 08:00–09:00 过去后，一次取消课程的重排又排了 10:20–11:20）。
+
+- **判定**（`awaitingFeedbackSessions`，`src/workflows/plan.ts`）：块已结束（`end_utc <= asOf`）、状态仍为计划/进行中、任务未结束未归档。排程、提问、页面共用这一份。
+- **排程**：这类块的分钟数**挂住**同一任务的需求——不算投入（`spentMinutes` 不变），也不当作没做；新增需要 = 剩余需求 − 在途块 − 挂住分钟。仍有缺口被挂住时，未排列表给 `reason: "awaiting_feedback"`（`missingMinutes` = 被挂住的部分）。共享账本照旧把已过去的部分算作暂占，不转成实际投入。
+- **问题**：每段一个持久问题，`purpose: "session_feedback"`、`fieldPath: "session.feedback"`、`questionKey = session.feedback:{sessionId}:{endUtc}`（刷新、重排、重试复用；块被挪走后再过期才是新问题）；`context {sessionId, taskId, plannedMinutes, startUtc, endUtc}`。同一任务同时只问一段，最多 3 个同时在问，不占其他问题的 3 个名额。块已有结果（别处记过、挪走、任务结束）时收回。重排后（`raisePlanQuestions`）与 worker 每轮都会检查。
+- **回答**：选项“做完了，这件事也完了 / 这段做完了，事情还没完 / 没做，帮我另排”，也可自然语言（输入栏点“回答”或问题接口）。解析结果 `{outcome, actualMinutes?, remainingMinutes?}`，只记主人说出口的分钟数；只说“没做完”或只给一个数会追问。落实走现有操作与统一门：`task_done` → `set_session_state complete` + `complete_task`；`session_done` → `complete`；`skipped` → `skip`（历史保留，重排按原需求再排一次）；`partial` → `complete`（带 `actualMinutes` 时写一条关联实践）+ 有剩余时 `create_or_update_task remainingMinutes`。只说“做完了”没说范围时：这段是该任务唯一的在途块、且剩余需求不超过这段才算整件事完成，否则只记这一段。落实前重读块状态，已有结果就不再写。
+- **剩余报告的时刻**：`remaining_reported_at` 之后的投入才从报告的剩余里扣，同一时刻记下的投入算在报告里（`>` 而非 `>=`），避免“做了 40、还剩 30”被扣成 0。
+- **主人另加一段**：`schedule_session` 照常允许；同一任务有待反馈块时，结果写明“之前 … 那段还没记录做没做，仍等你反馈，这段是另加的”。`reschedule_session` 挪过期块是原地移动（ID 不变，原因写“原 …”），对应问题随之收回。
+- **结果视图**：学习块新增 `awaitingFeedback: boolean`；时间轴标“待反馈”，详情页说明“没说之前不算完成，也不会整段补排”，按钮为“这一段完成 / 没做，另排 / 挪到…”。

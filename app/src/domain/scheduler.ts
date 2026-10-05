@@ -33,7 +33,8 @@ export type SchedDay = {
 /** 之前的日子为什么没排：预算不够一整段，或没有够长的连续空档 */
 export type SkipNote = { date: string; why: "budget" | "no_slot" | "busy_day" };
 export type Placement = { taskId: string; start: number; end: number; skipped: SkipNote[] };
-export type UnscheduledReason = "unknown_requirement" | "deadline_unfeasible" | "insufficient_capacity" | "no_contiguous_slot" | "needs_remaining_estimate";
+/** awaiting_feedback：之前的块已过去、没有反馈，这部分需求先挂着等主人说做没做 */
+export type UnscheduledReason = "unknown_requirement" | "deadline_unfeasible" | "insufficient_capacity" | "no_contiguous_slot" | "needs_remaining_estimate" | "awaiting_feedback";
 export type Unscheduled = { taskId: string; title: string; reason: UnscheduledReason; missingMinutes?: number };
 
 const GAP_MS = 10 * 60000;

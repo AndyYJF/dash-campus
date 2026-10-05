@@ -222,6 +222,7 @@ const REASON_TEXT: Record<string, string> = {
   unknown_requirement: "工作量还不清楚",
   no_contiguous_slot: "预算够，但缺连续空档",
   needs_remaining_estimate: "需要你说一下还差多少",
+  awaiting_feedback: "之前那段已经过去、还没记录做没做，先等你说",
 };
 
 function timeLabel(utc: string, tz: string): string {

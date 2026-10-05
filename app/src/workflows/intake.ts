@@ -2011,7 +2011,7 @@ export function submitAnswer(input: { questionId: string; expectedVersion: numbe
   // 不挂在投递上的问题（作息/剩余需求/取舍/冲突）：回答即落实，结果直接返回
   const results: OperationResultView[] = [];
   let note = "";
-  if (!waiting.length && structured && ["routine", "remaining", "tradeoff", "conflict", "info", "task_kind"].includes(question.purpose)) {
+  if (!waiting.length && structured && ["routine", "remaining", "tradeoff", "conflict", "info", "task_kind", "session_feedback"].includes(question.purpose)) {
     // 主人给了官方链接：立刻排一次核对（抓取在 worker 里做，这里不发外部请求）
     if (question.purpose === "info") createJob({ type: "calendar_sync", dedupeKey: `calendar_sync:answer:${question.id}`, runAt: new Date().toISOString(), payload: {} });
     const env: BindEnv = { intakeId: null, itemId: null, conversationId: question.conversationId, referenceDate, now, tz, selected: null, answer: () => null };

@@ -11,10 +11,10 @@ import { nowDate } from "@/domain/clock";
 import { agentTurnsBefore, type EntityRef } from "@/repositories/conversations";
 import { activePolicyRules } from "@/repositories/calendar-facts";
 import { getBatch } from "@/repositories/journal";
-import { getPrefs } from "@/repositories/plan";
+import { getPrefs, getSession } from "@/repositories/plan";
 import { ensureOpenQuestion, listOpenQuestions, questionEverAsked, type QuestionRow } from "@/repositories/questions";
 import { calendarDay } from "@/workflows/calendar";
-import type { RebuildResult } from "@/workflows/plan";
+import { awaitingFeedbackSessions, taskRemainingDemand, type RebuildResult } from "@/workflows/plan";
 import { noticeFilters } from "@/workflows/ops/notices";
 import { reminderPolicy } from "@/workflows/reminder-policy";
 import { isRestoredHold } from "@/repositories/instance";
@@ -838,6 +838,7 @@ export function parseAnswerByPurpose(q: QuestionRow, text: string, env: { refere
     const url = /https?:\/\/\S+/.exec(text)?.[0];
     return url ? { ok: true, structured: { url } } : { ok: false, hint: "贴一个链接；如果手上是通知原文或文件，直接放进上面的输入框就行" };
   }
+  if (q.purpose === "session_feedback") return parseSessionFeedback(text, options, Number(q.context.plannedMinutes ?? 0));
   if (q.purpose === "tradeoff" || q.purpose === "conflict" || q.purpose === "locate") {
     const i = optionIndex(text, options);
     return i >= 0 ? { ok: true, structured: { choice: i } } : { ok: false, hint: `选一个：${options.map((o, n) => `${n + 1}. ${o}`).join("；")}` };
@@ -845,9 +846,72 @@ export function parseAnswerByPurpose(q: QuestionRow, text: string, env: { refere
   return { ok: false, hint: "这个问题暂时没法用这句话回答" };
 }
 
+const FEEDBACK_HINT = "说一下这段的结果就行：“做完了”“这段做完了，事情还没完”“没做”；只做了一部分就说“做了 40 分钟，还剩 30 分钟”";
+
+/**
+ * “这段做了吗，还剩多少？”的回答。outcome：task_done 整件事完成 / session_done 这段做了、事情没完 /
+ * done 只说做完、没说范围（落实时按剩余需求判断）/ skipped 没做 / partial 做了一部分。
+ * 只有主人说出口的分钟数才记成实际投入；说不清的回到提示，不猜。
+ */
+function parseSessionFeedback(text: string, options: string[], planned: number): AnswerParse {
+  const t = text.trim();
+  const ordinal = /^第?\s*(\d+|[一二两三])\s*个?$/.exec(t);
+  const picked = ordinal ? parseNumber(ordinal[1]!) - 1 : options.indexOf(t);
+  const outcomeByOption = ["task_done", "session_done", "skipped"][picked];
+  if (outcomeByOption) return { ok: true, structured: { outcome: outcomeByOption } };
+  const minutesAfter = (re: RegExp) => {
+    const m = re.exec(t);
+    return m ? estimateFromText(m[1]!) : null;
+  };
+  const remaining = minutesAfter(/(?:还剩|还差|剩下?|还要|还需要?)\s*(?:大概|大约|差不多|约)?([^，,。；;！!]*)/);
+  let actual = minutesAfter(/(?:做了|学了|写了|花了|弄了|干了|看了|练了|用了)\s*(?:大概|大约|差不多|约)?([^，,。；;！!]*)/);
+  const half = /(做|写|学|完成)(了|到)?一半/.test(t);
+  if (actual === null && half && planned > 0) actual = Math.round(planned / 2);
+  const minutes = { ...(actual !== null ? { actualMinutes: actual } : {}), ...(remaining !== null ? { remainingMinutes: remaining } : {}) };
+  const notAtAll = /没(有)?(做|学|写|开始|动|弄|去|碰)(?!完)|忘了|跳过|没时间|没空|鸽了/.test(t);
+  const notFinished = half || /没(做|写|学|弄|干)?完|没完成|未完成|没结束|还没好|只做了|做了一部分|做了一些|做了点/.test(t);
+  const doneWord = /(做|写|学|弄|干)完|完成|搞定|弄好|做好/.test(t);
+  const sessionScoped = /(这段|这一段|这次|这块|这节)[^，,。；;]*((做|写|学|弄|干)完|完成|搞定)/.test(t);
+  const taskScoped = /(都|全部|全都|整个|事情|任务|作业|这件事|这个事)[^，,。；;]*((做|写|学|弄|干)完|完成|搞定|交了)/.test(t);
+  if (notAtAll && actual === null) return { ok: true, structured: { outcome: "skipped", ...minutes } };
+  if (remaining === 0) return { ok: true, structured: { outcome: "task_done", ...minutes } };
+  if (remaining !== null) return { ok: true, structured: { outcome: "partial", ...minutes } };
+  const doneScope = sessionScoped ? (taskScoped && !notFinished ? "task_done" : "session_done") : taskScoped && !notFinished ? "task_done" : "done";
+  if (actual !== null) return { ok: true, structured: { outcome: doneWord && (!notFinished || sessionScoped) ? doneScope : "partial", ...minutes } };
+  if (sessionScoped) return { ok: true, structured: { outcome: doneScope } };
+  if (notFinished) return { ok: false, hint: "这段做了大概多久、还剩多少？比如“做了 40 分钟，还剩 30 分钟”" };
+  if (doneWord || isCompletionReport(t)) return { ok: true, structured: { outcome: doneScope } };
+  if (/^(做了|学了|写了|弄了)[吧啊呀了。！!]*$/.test(t)) return { ok: true, structured: { outcome: "session_done" } };
+  return { ok: false, hint: FEEDBACK_HINT };
+}
+
+/** 待反馈块的回答落实成现有操作；块已经有了结果（别处记过、挪走了）就不再写 */
+function commandsForSessionFeedback(q: QuestionRow, structured: Record<string, unknown>, env: BindEnv): { commands: Array<Record<string, unknown>>; replanDates: string[]; note: string } {
+  const sessionId = q.context.sessionId as string;
+  const session = getSession(sessionId);
+  if (!session || !["planned", "tentative", "in_progress"].includes(session.status) || Date.parse(session.endUtc) > env.now.getTime()) return { commands: [], replanDates: [], note: "这段已经有了结果或被挪走了，没有重复记录" };
+  const planned = Math.round((Date.parse(session.endUtc) - Date.parse(session.startUtc)) / 60000);
+  const actual = typeof structured.actualMinutes === "number" ? structured.actualMinutes : null;
+  const remaining = typeof structured.remainingMinutes === "number" ? structured.remainingMinutes : null;
+  let outcome = structured.outcome as string;
+  if (outcome === "done") {
+    // 只说“做完了”：这段是这件事最后一段、剩余需求它盖得住才算整件事完成；否则只记这一段
+    const others = getDb().prepare(`SELECT 1 FROM plan_sessions WHERE task_id = ? AND id != ? AND status IN ('planned','tentative','in_progress')`).get(session.taskId, session.id);
+    const demand = taskRemainingDemand(session.taskId, env.now);
+    outcome = !others && demand !== null && demand <= planned ? "task_done" : "session_done";
+  }
+  const complete = { command: "set_session_state", sessionId, action: "complete", expectedVersion: session.version, actualMinutes: actual };
+  const reportRemaining = remaining !== null && remaining > 0 ? [{ command: "create_or_update_task", taskId: session.taskId, remainingMinutes: remaining }] : [];
+  if (outcome === "task_done") return { commands: [complete, { command: "complete_task", taskId: session.taskId }], replanDates: [], note: "" };
+  if (outcome === "skipped") return { commands: [{ command: "set_session_state", sessionId, action: "skip", expectedVersion: session.version }, ...reportRemaining], replanDates: [], note: "这段记为没做，保留在记录里，按原来的需求重新安排" };
+  if (outcome === "session_done") return { commands: [complete], replanDates: [], note: structured.outcome === "done" ? "这段记为完成；整件事有没有完成你没说，剩下的照常安排" : "" };
+  return { commands: [complete, ...reportRemaining], replanDates: [], note: remaining !== null ? `剩下的 ${remaining} 分钟重新安排` : "按做了的时间扣掉，剩下的重新安排" };
+}
+
 /** 不挂在某份投递上的问题（作息、剩余需求、取舍、冲突）：回答后直接落实成操作 */
 export function commandsForStandaloneAnswer(q: QuestionRow, structured: Record<string, unknown>, env: BindEnv): { commands: Array<Record<string, unknown>>; replanDates: string[]; note: string } {
   const taskId = q.context.taskId as string | undefined;
+  if (q.purpose === "session_feedback") return commandsForSessionFeedback(q, structured, env);
   if (q.purpose === "routine") {
     const bound = mergePolicy((structured.intents as Intent[]) ?? [{ op: "confirm_policy" }], env);
     if (bound.kind !== "run") return { commands: [], replanDates: [], note: "" };
@@ -884,9 +948,57 @@ export function commandsForStandaloneAnswer(q: QuestionRow, structured: Record<s
 // ===== 主动提问：只在影响安排的关键缺口上问，最多同时 3 个 =====
 
 const MAX_OPEN_QUESTIONS = 3;
+/** 待反馈问题单独计数：它们不挤掉截止/冲突问题，自己也最多同时 3 个、同一任务一次只问一段 */
+const MAX_OPEN_FEEDBACK = 3;
 
 function canAsk(): boolean {
-  return listOpenQuestions().length < MAX_OPEN_QUESTIONS;
+  return listOpenQuestions().filter((q) => q.purpose !== "session_feedback").length < MAX_OPEN_QUESTIONS;
+}
+
+function slotLabel(ms: number, tz: string): string {
+  const d = localDateInTz(new Date(ms), tz);
+  const t = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(ms));
+  return `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))} ${t}`;
+}
+
+/**
+ * 已经过去、没有反馈的学习块：每段一个持久问题“这段做了吗，还剩多少？”。
+ * 问题键带块的结束时间——刷新、重排、重试都复用同一个；块被挪走后再过期才算新的一段。
+ * 块已有结果（别处记过、挪走、任务结束）时收回问题。回答前排程只把这段挂着，不当完成也不整段补排。
+ */
+export function askSessionFeedback(env: { conversationId: string | null; tz: string }): QuestionRow[] {
+  const db = getDb();
+  const waiting = awaitingFeedbackSessions(nowDate());
+  const waitingKeys = new Set(waiting.map((s) => `session.feedback:${s.id}:${s.endUtc}`));
+  const open = listOpenQuestions().filter((q) => q.purpose === "session_feedback");
+  for (const q of open) if (!waitingKeys.has(q.questionKey)) supersedeQuestion(q.id);
+  const live = open.filter((q) => waitingKeys.has(q.questionKey));
+  const busyTasks = new Set(live.map((q) => q.context.taskId as string));
+  const asked: QuestionRow[] = [];
+  for (const s of waiting) {
+    if (live.length >= MAX_OPEN_FEEDBACK) break;
+    if (busyTasks.has(s.taskId)) continue;
+    const key = `session.feedback:${s.id}:${s.endUtc}`;
+    if (questionEverAsked(key)) continue;
+    const title = (db.prepare(`SELECT title FROM tasks WHERE id = ?`).get(s.taskId) as { title: string }).title;
+    const [start, end] = [Date.parse(s.startUtc), Date.parse(s.endUtc)];
+    const { question } = ensureOpenQuestion({
+      questionKey: key,
+      intakeId: null,
+      itemId: null,
+      fieldPath: "session.feedback",
+      prompt: `「${title}」${slotLabel(start, env.tz)}–${slotLabel(end, env.tz).slice(-5)} 这段已经过去了，还没记录结果。这段做了吗，还剩多少？没说之前我不会把它当成做完，也不会再整段补排。`,
+      options: ["做完了，这件事也完了", "这段做完了，事情还没完", "没做，帮我另排"],
+      purpose: "session_feedback",
+      reason: "这段的执行情况只有你知道：不问清楚，排程既不能当它做了，也不能当它没做",
+      context: { sessionId: s.id, taskId: s.taskId, plannedMinutes: Math.round((end - start) / 60000), startUtc: s.startUtc, endUtc: s.endUtc },
+      conversationId: env.conversationId,
+    });
+    live.push(question);
+    busyTasks.add(s.taskId);
+    asked.push(question);
+  }
+  return asked;
 }
 
 /**
@@ -930,18 +1042,14 @@ export function maybeAskRoutine(env: { intakeId: string | null; conversationId: 
 /** 重排后还有“必须问主人才能继续”的缺口：剩余需求未知、截止前排不下、近期安排有冲突 */
 export function raisePlanQuestions(plan: Pick<RebuildResult, "unscheduled" | "conflicts">, env: { conversationId: string | null; tz: string }): QuestionRow[] {
   const db = getDb();
-  const asked: QuestionRow[] = [];
+  const asked: QuestionRow[] = askSessionFeedback(env);
   const pendingUnknown = new Set(pendingTasks().filter((t) => t.kind === "unknown").map((t) => t.taskId));
   for (const q of listOpenQuestions()) {
     const taskId = q.context.taskId as string | undefined;
     if (!taskId) continue;
     if ((q.purpose === "task_kind" && !pendingUnknown.has(taskId)) || (["remaining", "tradeoff"].includes(q.purpose) && !taskAdmitted(taskId))) supersedeQuestion(q.id);
   }
-  const label = (ms: number) => {
-    const d = localDateInTz(new Date(ms), env.tz);
-    const t = new Intl.DateTimeFormat("en-GB", { timeZone: env.tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(ms));
-    return `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))} ${t}`;
-  };
+  const label = (ms: number) => slotLabel(ms, env.tz);
   // 按影响排序：截止不可达 → 近期冲突 → 剩余需求未知
   for (const u of plan.unscheduled.filter((x) => x.reason === "deadline_unfeasible")) {
     if (!canAsk()) return asked;

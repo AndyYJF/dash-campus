@@ -194,6 +194,9 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
   const active = (db
     .prepare(`SELECT * FROM plan_sessions WHERE status IN ('tentative','planned','in_progress') AND end_utc > ? ORDER BY start_utc, id`)
     .all(asOf.toISOString()) as Array<Record<string, unknown>>).map(sessionFromRow);
+  // 已经结束却没有反馈的块：做没做、做了多少都不知道。不算投入，也不当作没做而整段补排——这部分需求先挂着，等主人说
+  const awaitingTask = new Map<string, number>();
+  for (const s of awaitingFeedbackSessions(asOf)) awaitingTask.set(s.taskId, (awaitingTask.get(s.taskId) ?? 0) + (Date.parse(s.endUtc) - Date.parse(s.startUtc)) / 60000);
 
   // 1) 决定保留哪些旧块。受保护（已开始/锁定/24h 内）一律保留；其余只在仍然有效时保留。
   const base = new Map(horizon.map((date) => [date, dayLedger(date, asOf, prefs, tz, [])] as const));
@@ -271,7 +274,7 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
     const minutes = (end - start) / 60000;
     if (task.dueAtMs != null && end > task.dueAtMs) return false;
     const demand = remainingDemand(task, spent);
-    if (demand !== null && (keptTask.get(task.id)?.minutes ?? 0) + minutes > demand) return false;
+    if (demand !== null && (keptTask.get(task.id)?.minutes ?? 0) + (awaitingTask.get(task.id) ?? 0) + minutes > demand) return false;
     if (kept.some((k) => Date.parse(k.startUtc) < end && Date.parse(k.endUtc) > start)) return false;
     const date = localDateInTz(new Date(start), tz);
     const ledger = base.get(date);
@@ -303,9 +306,14 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
   for (const t of tasks) {
     if (frozenTasks.has(t.id)) continue;
     const k = keptTask.get(t.id) ?? { minutes: 0, blocks: 0 };
+    const held = awaitingTask.get(t.id) ?? 0;
     const demand = remainingDemand(t, spent);
     if (demand === null) {
       if (k.blocks > 0) continue;
+      if (held > 0) {
+        unscheduled.push({ taskId: t.id, title: t.title, reason: "awaiting_feedback" });
+        continue;
+      }
       // 工作量未知：只安排一次有产出的起步块；做过之后要结合反馈才知道下一步，不无限续排
       if (hadStarter(t.id) || (spent.get(t.id) ?? 0) > 0) needs.push({ ...t, estimateMinutes: null });
       else {
@@ -319,7 +327,9 @@ function rebuildInTx(asOf: Date, opts: RebuildOptions): RebuildResult {
       if (t.effortMode === "deliverable" || openBlocker(t.id)) unscheduled.push({ taskId: t.id, title: t.title, reason: "needs_remaining_estimate" });
       continue;
     }
-    const need = Math.round(demand - k.minutes);
+    const open = Math.round(demand - k.minutes);
+    if (held > 0 && open > 0) unscheduled.push({ taskId: t.id, title: t.title, reason: "awaiting_feedback", missingMinutes: Math.round(Math.min(open, held)) });
+    const need = Math.round(open - held);
     if (need > 0) needs.push({ ...t, estimateMinutes: need, maxNewBlocks: Math.max(0, MAX_BLOCKS_PER_TASK - k.blocks) });
   }
   const placed = placeTasks(needs, days, { minBlock: prefs.minBlockMinutes, maxBlock: 90 });
@@ -387,6 +397,20 @@ function placementReason(task: PlanTask, p: { start: number; end: number; skippe
   return parts.join("；");
 }
 
+/**
+ * 待反馈的块：已经结束、仍是计划/进行中状态、任务还开着。执行情况未知——
+ * 排程不把它算成投入，也不当作没做；待反馈问题、页面与重排都用这一份判断。
+ */
+export function awaitingFeedbackSessions(asOf: Date, taskId?: string): PlanSessionRow[] {
+  return (getDb()
+    .prepare(
+      `SELECT s.* FROM plan_sessions s JOIN tasks t ON t.id = s.task_id
+       WHERE s.status IN ('tentative','planned','in_progress') AND s.end_utc <= ? AND t.status IN ('todo','doing','blocked') AND t.archived_at IS NULL ${taskId ? "AND s.task_id = ?" : ""}
+       ORDER BY s.end_utc, s.id`,
+    )
+    .all(...[asOf.toISOString(), ...(taskId ? [taskId] : [])]) as Array<Record<string, unknown>>).map(sessionFromRow);
+}
+
 /** 这个任务是否已经排过起步块（被替换的不算） */
 function hadStarter(taskId: string): boolean {
   return Boolean(getDb().prepare(`SELECT 1 FROM plan_sessions WHERE task_id = ? AND kind = 'starter' AND status != 'superseded'`).get(taskId));
@@ -394,7 +418,7 @@ function hadStarter(taskId: string): boolean {
 
 /**
  * 已确认投入：任务关联的学习记录 + 没有对应实际记录的已完成块（同一任务同一天只取其一）。
- * since 给出时只算那之后的投入（主人报告过剩余需求）。
+ * since 给出时只算那之后的投入（主人报告过剩余需求）；和报告同一时刻记下的投入算在报告里，不再另扣。
  */
 function spentMinutes(taskId: string, since: string | null): number {
   const db = getDb();
@@ -404,12 +428,12 @@ function spentMinutes(taskId: string, since: string | null): number {
   const practice = db.prepare(`SELECT occurred_on, actual_minutes, created_at FROM practice_entries WHERE task_id = ? AND actual_minutes IS NOT NULL AND category = 'study'`).all(taskId) as Array<{ occurred_on: string; actual_minutes: number; created_at: string }>;
   for (const p of practice) {
     daysWithActual.add(p.occurred_on);
-    if (!since || p.created_at >= since) total += p.actual_minutes;
+    if (!since || p.created_at > since) total += p.actual_minutes;
   }
   const done = db.prepare(`SELECT start_utc, end_utc, updated_at FROM plan_sessions WHERE task_id = ? AND status = 'completed'`).all(taskId) as Array<{ start_utc: string; end_utc: string; updated_at: string }>;
   for (const s of done) {
     if (daysWithActual.has(localDateInTz(new Date(s.start_utc), tz))) continue;
-    if (since && s.updated_at < since) continue;
+    if (since && s.updated_at <= since) continue;
     total += (Date.parse(s.end_utc) - Date.parse(s.start_utc)) / 60000;
   }
   return total;
@@ -440,6 +464,14 @@ function remainingDemand(task: PlanTask, spent: Map<string, number>): number | n
   if (task.remainingMinutes !== null) return Math.max(0, task.remainingMinutes - used);
   if (task.estimateMinutes === null) return null;
   return Math.max(0, task.estimateMinutes - used);
+}
+
+/** 某个任务按排程口径还差多少分钟（未知为 null；不在可排任务里也为 null） */
+export function taskRemainingDemand(taskId: string, asOf: Date): number | null {
+  const tz = instanceTimezone();
+  const task = listSchedulableTasks(tz, localDateInTz(asOf, tz)).find((t) => t.id === taskId);
+  if (!task) return null;
+  return remainingDemand(task, new Map([[task.id, spentMinutes(task.id, task.remainingReportedAt)]]));
 }
 
 function closedTaskIds(ids: string[]): Set<string> {

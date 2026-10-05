@@ -19,7 +19,7 @@ export type TimelineEvent = {
   sourceDate: string | null;
   origin: string | null;
 };
-export type TimelineSession = { id: string; taskId: string; title: string; startUtc: string; endUtc: string; minutes: number; status: string; locked: boolean; version: number; reason: string; kind: string; origin: string };
+export type TimelineSession = { id: string; taskId: string; title: string; startUtc: string; endUtc: string; minutes: number; status: string; locked: boolean; version: number; reason: string; kind: string; origin: string; awaitingFeedback?: boolean };
 export type TimelineSlot = { date: string; start: string; end: string; minutes: number };
 export type Picked = { type: "event"; event: TimelineEvent } | { type: "session"; session: TimelineSession } | { type: "slot"; slot: TimelineSlot };
 
@@ -179,6 +179,7 @@ export default function DayTimeline(props: {
         }
         if (b.pick.type !== "session") return null;
         const s = b.pick.session;
+        const tag = s.awaitingFeedback ? "待反馈" : (STATUS_TAG[s.status] ?? "学习");
         return (
           <button
             key={b.key}
@@ -186,11 +187,11 @@ export default function DayTimeline(props: {
             className={`${styles.block} ${styles.session}${height < 58 ? ` ${styles.compact}` : ""}${s.status === "completed" ? ` ${styles.done}` : ""}${s.status === "in_progress" ? ` ${styles.live}` : ""}${props.selectedKey === b.key ? ` ${styles.selected}` : ""}`}
             style={{ top: top(b.start), height, width, left }}
             onClick={() => props.onPick(b.pick, b.key)}
-            aria-label={`${STATUS_TAG[s.status] ?? "学习"}：${s.title}，${hm(b.start)} 到 ${hm(b.end)}${s.locked ? "，已锁定" : ""}`}
+            aria-label={`${tag}：${s.title}，${hm(b.start)} 到 ${hm(b.end)}${s.locked ? "，已锁定" : ""}${s.awaitingFeedback ? "，已经过去，还没记录做没做" : ""}`}
           >
             {height >= 34 && (
               <span className={styles.tag}>
-                {STATUS_TAG[s.status] ?? "学习"}
+                {tag}
                 {s.locked ? " · 锁" : ""}
               </span>
             )}

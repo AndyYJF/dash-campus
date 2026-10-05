@@ -4,7 +4,7 @@
 
 ## 2026-10-05：同步反馈后页面刷新
 
-统一栏的同步answered回答补发共享刷新事件，旧PlanView也订阅总线，避免后端已完成/撤回而时间轴仍待反馈。独立真实浏览器today/week/plan走查通过，类型及改动文件eslint通过；无迁移，schema34。生产补发准备中，见 [即时刷新记录](feedback-refresh-fix-2026-10-05.md)。
+统一栏的同步answered回答补发共享刷新事件，旧PlanView也订阅总线，避免后端已完成/撤回而时间轴仍待反馈。业务 **`3895aa3` 已部署生产**，无迁移，schema34。独立真实浏览器today/week/plan走查、类型及改动文件eslint、Linux生产构建通过；新鲜备份及591源文件/460容器运行时文件核验通过，web healthy/worker running/0重启，Todo保持运行。主人先前回答的任务done、旧块completed/superseded状态未改。见 [即时刷新记录](feedback-refresh-fix-2026-10-05.md)。
 
 ## 2026-10-05：反馈记账复审修复
 

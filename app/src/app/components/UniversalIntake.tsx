@@ -239,6 +239,8 @@ export default function UniversalIntake() {
       setContext(null);
       setGoal(null);
       await load();
+      // Answers can apply operations synchronously without an active intake to poll.
+      if (body?.answered) emitChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : "网络异常，内容保留在输入框，可重试");
     } finally {

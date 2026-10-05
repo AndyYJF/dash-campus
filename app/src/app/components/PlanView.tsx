@@ -6,6 +6,7 @@ import TaskEditor from "./TaskEditor";
 import ManagedTasks from "./ManagedTasks";
 import PlanningEntities from "./PlanningEntities";
 import CalendarSettings from "./CalendarSettings";
+import { useDashRefresh } from "./dashBus";
 import Duration from "./Duration";
 import { formatMinutes } from "./WeekStatusStrip";
 import styles from "./dash.module.css";
@@ -43,6 +44,7 @@ export default function PlanView() {
   }, [date]);
 
   useEffect(refresh, [refresh]);
+  useDashRefresh(refresh);
   useEffect(() => {
     if (!plan || initialAnchorScrolled.current || window.location.hash !== "#unplanned-tasks") return;
     // The anchor is absent while async data loads, so the router's initial scroll can miss it.

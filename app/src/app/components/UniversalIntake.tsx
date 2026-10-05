@@ -33,6 +33,7 @@ type Result = {
   verification?: { status: "verified" | "partial" | "needs_action" | "blocked" | "pending"; label: string; checks: Array<{ kind: string; ok: boolean | null; subject: string; detail: string }>; repairs: Array<{ reason: string; steps: string[] }> } | null;
 };
 type GoalRef = { id: string; revision: number; objective: string };
+type OpenGoal = { id: string; revision: number; objective: string; state: string; lastResult: string | null };
 
 function understandingLine(u: Result["understanding"]): string | null {
   if (!u?.routedBy) return null;
@@ -86,6 +87,7 @@ export default function UniversalIntake() {
   const [files, setFiles] = useState<File[]>([]);
   const [context, setContext] = useState<ComposeDetail | null>(null);
   const [goal, setGoal] = useState<GoalRef | null>(null);
+  const [openGoals, setOpenGoals] = useState<OpenGoal[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<Result[]>([]);
@@ -108,15 +110,17 @@ export default function UniversalIntake() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (): Promise<Result[]> => {
-    const [page, q] = await Promise.all([
+    const [page, q, goals] = await Promise.all([
       api<{ intakes: Result[]; nextCursor: string | null }>("/api/v2/intakes?limit=6").catch(() => null),
       api<{ questions: Question[] }>("/api/v2/questions").catch(() => null),
+      api<{ goals: OpenGoal[] }>("/api/v2/goals?limit=5").catch(() => null),
     ]);
     if (page) {
       setResults(page.intakes);
       setNextCursor(page.nextCursor);
     }
     if (q) setQuestions(q.questions.map((x) => ({ ...x, options: x.options ?? [] })));
+    if (goals) setOpenGoals(goals.goals.filter((g) => g.state !== "cancelled"));
     return page?.intakes ?? [];
   }, []);
 
@@ -403,6 +407,22 @@ export default function UniversalIntake() {
 
       {feedback && <p className={styles.feedback} role="status">{feedback}</p>}
       {expanded && <div className={styles.transcript} aria-label="Agent 对话与结果">
+      {openGoals.length > 0 && (
+        <div className={styles.recover} aria-label="最近的目标">
+          <span>最近的目标</span>
+          {openGoals.map((g) => (
+            <button
+              key={g.id}
+              type="button"
+              className={styles.linkBtn}
+              title={g.lastResult ?? g.objective}
+              onClick={() => { setGoal({ id: g.id, revision: g.revision, objective: g.objective }); boxRef.current?.focus(); }}
+            >
+              继续：{g.objective}
+            </button>
+          ))}
+        </div>
+      )}
       {questions.length > 0 && (
         <div className={styles.questions}>
           {questions.map((q) => (

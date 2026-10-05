@@ -24,6 +24,7 @@ import { intakeResultById } from "../src/workflows/results";
 import { getQuestion, listQuestionsForIntake } from "../src/repositories/questions";
 import { getIntake } from "../src/repositories/intakes";
 import { getGoal } from "../src/repositories/goals";
+import { listGoalConstraints } from "../src/repositories/goal-constraints";
 import { INTAKE_JOB_TYPE } from "../src/contracts/intake";
 import { executeOperation } from "../src/workflows/commands";
 import type { ChatMessage } from "../src/integrations/model-json";
@@ -43,7 +44,8 @@ type Ctx = { setup: string[]; live: string; lives: string[]; question: (setupInd
  */
 /** approve：模拟会看确认内容的主人，返回 false 时回答“先不要”；不给则每个确认都答“可以” */
 /** pick：主人怎么回答“你说的是哪一项”这类选项问题（返回选项原文）；不给则不回答这类问题 */
-type Flow = { id: string; what: string; setup: Setup[]; live: string | string[]; answer?: string; confirm?: boolean; approve?: (prompt: string) => boolean; pick?: (prompt: string, options: string[]) => string | null; seed?: () => void; prepare?: () => void; check: (c: Ctx) => string[] };
+/** continueGoal：像点「继续这个目标」一样带 goalId；newSession+shiftMs：换会话并拨钟（S17） */
+type Flow = { id: string; what: string; setup: Setup[]; live: string | string[]; answer?: string; confirm?: boolean; confirmSetup?: boolean; continueGoal?: boolean; newSession?: boolean; shiftMs?: number; approve?: (prompt: string) => boolean; pick?: (prompt: string, options: string[]) => string | null; seed?: () => void; prepare?: () => void; check: (c: Ctx) => string[] };
 
 const thisWeek = { kind: "act", rationale: "按课程与预算重排本周剩余时间", intents: [{ op: "replan", dateFrom: "2026-10-12", dateTo: "2026-10-18" }] };
 const ask = (question: string, options: string[]) => ({ kind: "ask", question, reason: "几种安排差别明显", options });
@@ -335,6 +337,31 @@ const FLOWS: Flow[] = [
       return out;
     },
   },
+  {
+    id: "s17-continue-goal",
+    what: "S17 六小时后换会话点「继续这个目标」再说「再优化一下」= 同一目标、周末保护仍在",
+    setup: [{ text: "下周的学习重新安排一下，周末别动", decide: { kind: "act", rationale: "重排下周", intents: [{ op: "replan", dateFrom: "2026-10-19", dateTo: "2026-10-25" }], constraints: [{ kind: "protect_days", days: "weekend", excerpt: "周末别动" }] } }],
+    live: "再优化一下",
+    confirm: true,
+    confirmSetup: true,
+    continueGoal: true,
+    newSession: true,
+    shiftMs: 6 * 3600_000,
+    seed: weekendSessions,
+    check: (c) => {
+      const out: string[] = [];
+      const goal = goalOf(c.setup[0]!);
+      if (!goal) out.push("前置没有目标");
+      if (goalOf(c.live) !== goal) out.push(`续办没有绑到同一目标（${goalOf(c.live)}）`);
+      const g = getGoal(goal!);
+      if (!g || g.revision < 2) out.push(`续办后修订号 ${g?.revision}，期望至少 2`);
+      const kinds = listGoalConstraints(goal!).map((x) => x.value.kind);
+      if (!kinds.includes("protect_days")) out.push(`续办后保护约束丢失：${JSON.stringify(kinds)}`);
+      if (protectedDays("2026-10-24", "2026-10-25") !== c.before.nextWeekend) out.push("下周末作息/规则/学习块被改了");
+      if (stateOf(c.live) === "failed") out.push(`失败：${intakeResultById(c.live)?.summary}`);
+      return out;
+    },
+  },
 ];
 
 const caps = await probeModelCapabilities({ endpoint: MODEL_ENDPOINT, apiKey: MODEL_API_KEY, model: MODEL_NAME });
@@ -350,9 +377,9 @@ for (const flow of FLOWS.filter((f) => !only || only.has(f.id))) {
   fs.copyFileSync(template, file);
   switchDb(file);
   setNowForTests(new Date(FIXTURE_NOW));
-  const s = createSession(1);
-  const post = async (text: string) => {
-    const res = await POST(new NextRequest("http://localhost/api/v2/intakes", { method: "POST", headers: { cookie: `${SESSION_COOKIE}=${s.token}`, "x-csrf-token": s.session.csrfToken, "content-type": "application/json", "idempotency-key": `goal-${seq++}` }, body: JSON.stringify({ text }) }));
+  let session = createSession(1);
+  const post = async (text: string, extra: Record<string, unknown> = {}) => {
+    const res = await POST(new NextRequest("http://localhost/api/v2/intakes", { method: "POST", headers: { cookie: `${SESSION_COOKIE}=${session.token}`, "x-csrf-token": session.session.csrfToken, "content-type": "application/json", "idempotency-key": `goal-${seq++}` }, body: JSON.stringify({ text, ...extra }) }));
     if (res.status !== 202) throw new Error(`投递被拒 ${res.status}：${(await res.text()).slice(0, 200)}`);
     const { intakeId } = (await res.json()) as { intakeId: string };
     for (let k = 0; k < 6; k++) await runDueJobsOnce();
@@ -376,7 +403,34 @@ for (const flow of FLOWS.filter((f) => !only || only.has(f.id))) {
   }
   flow.prepare?.();
   const questionIds = setupIds.map((id) => listQuestionsForIntake(id).find((q) => q.status === "open")?.id ?? null);
+  const reply = async (qid: string, version: number, text: string) => {
+    const res = await answerRoute(new NextRequest(`http://localhost/api/v2/questions/${qid}/answers`, { method: "POST", headers: { cookie: `${SESSION_COOKIE}=${session.token}`, "x-csrf-token": session.session.csrfToken, "content-type": "application/json", "idempotency-key": `goal-${seq++}` }, body: JSON.stringify({ text, expectedVersion: version }) }), { params: Promise.resolve({ id: qid }) });
+    if (res.status >= 300) throw new Error(`回答被拒 ${res.status}：${(await res.text()).slice(0, 200)}`);
+    for (let k = 0; k < 6; k++) await runDueJobsOnce();
+  };
+  const prompts: string[] = [];
+  const confirmAll = async (id: string) => {
+    for (let n = 0; (flow.confirm || flow.confirmSetup) && n < 6; n++) {
+      const open = listQuestionsForIntake(id).filter((x) => x.status === "open");
+      const choose = flow.pick ? open.find((x) => x.purpose === "tradeoff") : undefined;
+      const picked = choose ? flow.pick!(choose.prompt, choose.options ?? []) : null;
+      if (choose && picked) {
+        prompts.push(`${choose.prompt} ${JSON.stringify(choose.options ?? [])} → ${picked}`);
+        await reply(choose.id, choose.version, picked);
+        continue;
+      }
+      const q = open.find((x) => x.purpose === "confirm");
+      if (!q) break;
+      prompts.push(q.prompt);
+      await reply(q.id, q.version, !flow.approve || flow.approve(q.prompt) ? "可以" : "先不要");
+    }
+  };
+  if (flow.confirmSetup) {
+    for (const id of setupIds) await confirmAll(id);
+  }
   const before = snapshot();
+  if (flow.shiftMs) setNowForTests(new Date(new Date(FIXTURE_NOW).getTime() + flow.shiftMs));
+  if (flow.newSession) session = createSession(1);
   let calls = 0;
   const counted = (async (u: string | URL | Request, init?: RequestInit) => { calls++; return fetch(u, init); }) as typeof fetch;
   setProvidersForTests({ model: { mode: "real", provider: new OpenAIChatProvider(cfg, counted) } });
@@ -384,37 +438,21 @@ for (const flow of FLOWS.filter((f) => !only || only.has(f.id))) {
   let failures: string[];
   let liveId = "";
   const lives: string[] = [];
-  const prompts: string[] = [];
   try {
-    const reply = async (qid: string, version: number, text: string) => {
-      const res = await answerRoute(new NextRequest(`http://localhost/api/v2/questions/${qid}/answers`, { method: "POST", headers: { cookie: `${SESSION_COOKIE}=${s.token}`, "x-csrf-token": s.session.csrfToken, "content-type": "application/json", "idempotency-key": `goal-${seq++}` }, body: JSON.stringify({ text, expectedVersion: version }) }), { params: Promise.resolve({ id: qid }) });
-      if (res.status >= 300) throw new Error(`回答被拒 ${res.status}：${(await res.text()).slice(0, 200)}`);
-      for (let k = 0; k < 6; k++) await runDueJobsOnce();
-    };
     if (flow.answer) {
       const q = questionIds[0] ? getQuestion(questionIds[0]) : null;
       if (!q) throw new Error("前置没有待答问题");
       await reply(q.id, q.version, flow.answer);
     }
     // 多句改口时每句之后都像点按钮一样确认，再说下一句
-    const confirmAll = async (id: string) => {
-      for (let n = 0; flow.confirm && n < 6; n++) {
-        const open = listQuestionsForIntake(id).filter((x) => x.status === "open");
-        const choose = flow.pick ? open.find((x) => x.purpose === "tradeoff") : undefined;
-        const picked = choose ? flow.pick!(choose.prompt, choose.options ?? []) : null;
-        if (choose && picked) {
-          prompts.push(`${choose.prompt} ${JSON.stringify(choose.options ?? [])} → ${picked}`);
-          await reply(choose.id, choose.version, picked);
-          continue;
-        }
-        const q = open.find((x) => x.purpose === "confirm");
-        if (!q) break;
-        prompts.push(q.prompt);
-        await reply(q.id, q.version, !flow.approve || flow.approve(q.prompt) ? "可以" : "先不要");
-      }
+    const extra = (): Record<string, unknown> => {
+      if (!flow.continueGoal) return {};
+      const goalId = goalOf(setupIds[0]!);
+      const g = goalId ? getGoal(goalId) : null;
+      return g ? { goalId: g.id, expectedGoalRevision: g.revision } : {};
     };
     for (const text of typeof flow.live === "string" ? [flow.live] : flow.live) {
-      const id = await post(text);
+      const id = await post(text, extra());
       lives.push(id);
       await confirmAll(id);
     }

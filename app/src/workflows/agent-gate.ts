@@ -1,7 +1,7 @@
 import { getDb } from "@/repositories/db";
-import { addDays, instanceTimezone, localDateInTz } from "@/domain/time";
+import { addDays, instanceTimezone, localDateInTz, tzOffsetMs } from "@/domain/time";
 import { dayClassOf, describeConstraint, protectingConstraint, type ConstraintValue } from "@/domain/constraints";
-import { hashOf } from "./command-facts";
+import { commandEntities, hashOf } from "./command-facts";
 
 /**
  * 统一约束与授权门（语义修复 W2/R01/R04）：所有入口（直接执行、决策、回答、按钮、恢复、修正）绑定出的命令
@@ -17,6 +17,8 @@ export type GateContext = {
   today: string;
   /** 这件事的日期范围（主人明说的，或沿用同一目标上一版的） */
   scope: { dateFrom: string; dateTo: string } | null;
+  /** 主人明说、带原话引用的范围（date_scope 约束）：具体学习块的新增与挪动也不能越出 */
+  statedScope?: { dateFrom: string; dateTo: string } | null;
   constraints: ConstraintValue[];
 };
 
@@ -26,7 +28,7 @@ export type GateResult =
 
 /** 授权范围与保护约束的指纹：进入确认指纹，约束变了旧确认作废 */
 export function gateKey(ctx: GateContext): string {
-  return hashOf({ s: ctx.scope, c: ctx.constraints });
+  return hashOf({ s: ctx.scope, c: ctx.constraints, ...(ctx.statedScope ? { ss: ctx.statedScope } : {}) });
 }
 
 const ALL_DAY_BASE = ["dailyLimitMinutes", "minBlockMinutes", "bufferPercent", "commuteMinutes", "meals"];
@@ -85,6 +87,83 @@ function sessionInfo(id: unknown): { date: string; taskId: string } | null {
   if (typeof id !== "string") return null;
   const s = getDb().prepare(`SELECT start_utc, task_id FROM plan_sessions WHERE id = ?`).get(id) as { start_utc: string; task_id: string } | undefined;
   return s ? { date: localDateInTz(new Date(s.start_utc), instanceTimezone()), taskId: s.task_id } : null;
+}
+
+/** 命令点名的对象里有没有主人说过不动的：任务按 ID/名称，其他对象按 ID */
+function protectedEntityHit(command: Record<string, unknown>, ctx: GateContext, frozenTaskIds: string[]): ConstraintValue | null {
+  const ents = commandEntities(command);
+  for (const c of ctx.constraints) {
+    if (c.kind !== "protect_entity") continue;
+    for (const e of ents) {
+      if (e.kind === "task" && frozenTaskIds.includes(e.id)) return c;
+      if (c.ref.kind === "id" && c.ref.entityKind === e.kind && c.ref.id === e.id) return c;
+      if (c.ref.kind === "named" && e.kind !== "task" && c.ref.text.trim().length >= 2) {
+        const row = getDb().prepare(`SELECT * FROM ${e.table} WHERE id = ?`).get(e.id) as { title?: string; name?: string } | undefined;
+        const t = row?.title ?? row?.name ?? "";
+        if (t && (t.includes(c.ref.text.trim()) || c.ref.text.includes(t))) return c;
+      }
+    }
+  }
+  return null;
+}
+
+const toMin = (hm: string) => Number(hm.slice(0, 2)) * 60 + Number(hm.slice(3, 5));
+const toHm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+/** 学习块现在的位置（本地日期、起止分钟；跨零点的结束按当天 24:00 之后计） */
+function sessionPlace(id: unknown): { date: string; start: number; end: number } | null {
+  if (typeof id !== "string") return null;
+  const s = getDb().prepare(`SELECT start_utc, end_utc FROM plan_sessions WHERE id = ?`).get(id) as { start_utc: string; end_utc: string } | undefined;
+  if (!s) return null;
+  const tz = instanceTimezone();
+  const at = new Date(s.start_utc);
+  const local = new Date(at.getTime() + tzOffsetMs(at, tz)).toISOString();
+  const start = toMin(local.slice(11, 16));
+  return { date: localDateInTz(at, tz), start, end: start + Math.round((Date.parse(s.end_utc) - at.getTime()) / 60_000) };
+}
+
+/**
+ * 具体学习块这一步实际占用的位置：新增的块、挪动前后、改时长后的块。
+ * 起止不确定（只说挪到哪天、由排程找空档）的只给日期，收工时间留给执行后核验读回。
+ */
+export function blockPlacements(command: Record<string, unknown>): Array<{ date: string; start: number | null; end: number | null; moving: "new" | "from" | "to" }> {
+  if (command.command === "schedule_session" && typeof command.date === "string" && typeof command.startLocalTime === "string") {
+    const start = toMin(command.startLocalTime);
+    return [{ date: command.date, start, end: start + Number(command.durationMinutes ?? 0), moving: "new" }];
+  }
+  if (command.command !== "reschedule_session") return [];
+  const s = sessionPlace(command.sessionId);
+  if (!s) return [];
+  const date = typeof command.targetDate === "string" ? command.targetDate : s.date;
+  const minutes = typeof command.durationMinutes === "number" ? command.durationMinutes : s.end - s.start;
+  const inPlace = typeof command.targetDate !== "string" && (command.part ?? "any") === "any";
+  const start = typeof command.startLocalTime === "string" ? toMin(command.startLocalTime) : inPlace ? s.start : null;
+  return [{ ...s, moving: "from" }, { date, start, end: start === null ? null : start + minutes, moving: "to" }];
+}
+
+/** 主人说过的范围与“几点后不排”：具体学习块越界就拒绝（不擅自换成别的时间） */
+function placementProblem(command: Record<string, unknown>, ctx: GateContext): string | null {
+  const stated = ctx.statedScope;
+  for (const p of blockPlacements(command)) {
+    if (stated && (p.date < stated.dateFrom || p.date > stated.dateTo)) {
+      const range = stated.dateFrom === stated.dateTo ? stated.dateFrom : `${stated.dateFrom} 至 ${stated.dateTo}`;
+      return `这一步会${p.moving === "from" ? "动到" : "把学习排到"} ${p.date}，超出了你说的范围（${range}），没有执行`;
+    }
+    if (p.moving === "from" || p.end === null || p.start === null) continue;
+    const inScope = !ctx.scope || (ctx.scope.dateFrom <= p.date && p.date <= ctx.scope.dateTo);
+    for (const c of ctx.constraints) {
+      if (c.kind !== "no_study_after" || !inScope || (c.days !== "all" && dayClassOf(p.date) !== c.days)) continue;
+      if (p.end > toMin(c.time)) return `这一步把学习排到 ${p.date} ${toHm(p.start)}–${toHm(Math.min(p.end, 24 * 60 - 1))}，你说过“${quote(c)}”，没有执行`;
+    }
+  }
+  return null;
+}
+
+/** 已落库的学习块是否仍满足这些条件（核验读回用；不满足返回原因） */
+export function sessionConditionProblem(sessionId: string, ctx: GateContext): string | null {
+  const s = sessionPlace(sessionId);
+  if (!s) return null;
+  return placementProblem({ command: "schedule_session", date: s.date, startLocalTime: toHm(s.start), durationMinutes: s.end - s.start }, ctx)?.replace(/^这一步/, "这个学习块").replace(/，没有执行$/, "") ?? null;
 }
 
 function ruleTouchesProtected(rule: { kind: string; weekday?: number | null; dateFrom?: string | null; dateTo?: string | null; value?: Record<string, unknown> }, ctx: GateContext): boolean {
@@ -199,6 +278,11 @@ export function gateCommand(command: Record<string, unknown>, replanDates: strin
       return { kind: "reject", reason: `这一步会动到你说过不动的对象（${quote(ent)}），没有执行` };
     }
   }
+  // 按对象身份（注册表里的对象字段，含归档的 entityKind/entityId）核对“这个别动”
+  const hit = protectedEntityHit(command, ctx, frozenTaskIds);
+  if (hit) return { kind: "reject", reason: `这一步会动到你说过不动的对象（${quote(hit)}），没有执行` };
+  const placed = placementProblem(command, ctx);
+  if (placed) return { kind: "reject", reason: placed };
   return { kind: "pass", command, replanDates: dates, frozenDates, frozenTaskIds, notes };
 }
 

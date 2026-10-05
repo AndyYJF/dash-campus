@@ -19,8 +19,42 @@ import { writeTrace, type TraceStatus } from "@/workflows/agent-trace";
 
 /** 每次模型决策最多 4 次 HTTP（首次、工具后续、结构修复与重试合计） */
 export const PER_DECISION_MAX_REQUESTS = MAX_REQUESTS_PER_DECISION;
-/** 同一投递累计的模型 HTTP 时间（已结算请求的 duration_ms 之和，跨 worker 恢复）；不含排队、工具查询、业务写入与等待主人 */
-export const INTAKE_MODEL_MS_LIMIT = 180_000;
+/**
+ * 同一投递的主动执行时间上限：worker 实际处理它的累计时间（模型请求、只读工具、绑定、写入、核验与修正），
+ * 跨恢复累计（intakes.active_ms + 本进程正在进行的这一段）；不含排队、等主人回答和两次处理之间的空闲。
+ */
+export const INTAKE_ACTIVE_MS_LIMIT = 180_000;
+
+/** 本进程里正在处理的投递：从哪一刻起的时间还没记进 active_ms */
+const runningSince = new Map<string, number>();
+
+/** worker 开始/记完检查点时调用：since=null 表示这段处理已结束 */
+export function markIntakeRun(intakeId: string, since: number | null): void {
+  if (since === null) runningSince.delete(intakeId);
+  else runningSince.set(intakeId, since);
+}
+
+/** 检查点：把从上一个检查点到现在的处理时间记进 active_ms（进程退出只丢最后一段） */
+export function checkpointIntakeRun(intakeId: string): void {
+  const since = runningSince.get(intakeId);
+  if (since === undefined) return;
+  const t = Date.now();
+  getDb().prepare(`UPDATE intakes SET active_ms = active_ms + ? WHERE id = ?`).run(Math.max(0, t - since), intakeId);
+  runningSince.set(intakeId, t);
+}
+
+/** 主动执行时间：已记下的 + 本进程正在进行、尚未记下的那一段 */
+export function intakeActiveMs(intakeId: string): number {
+  const row = getDb().prepare(`SELECT active_ms FROM intakes WHERE id = ?`).get(intakeId) as { active_ms: number } | undefined;
+  const since = runningSince.get(intakeId);
+  return (row?.active_ms ?? 0) + (since === undefined ? 0 : Math.max(0, Date.now() - since));
+}
+
+/** 剩余的主动执行时间：每次模型调用的超时不超过它 */
+export function intakeActiveRemainingMs(intakeId: string): number {
+  const u = intakeRequestUsage(intakeId);
+  return INTAKE_ACTIVE_MS_LIMIT - Math.max(u.activeMs, u.modelMs);
+}
 
 export function getAiBudget(): { budget: AiBudget; version: number } {
   const { value, version } = getSetting(AI_BUDGET_SETTINGS_KEY);
@@ -86,20 +120,26 @@ function dailyMessage(used: number, limit: number): string {
   return `今日模型调用已达上限（${used}/${limit}），非必要 AI 任务已暂停；截止提醒不受影响`;
 }
 
-export type IntakeRequestUsage = { requests: number; modelMs: number; limit: number };
+/** modelMs：模型 HTTP 时间；activeMs：主动执行时间（含模型时间）。旧投递没有 active_ms 记录，按两者较大者计 */
+export type IntakeRequestUsage = { requests: number; modelMs: number; activeMs: number; limit: number };
 
 export function intakeRequestUsage(intakeId: string): IntakeRequestUsage {
   const row = getDb()
     .prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(duration_ms), 0) AS ms FROM ai_request_ledger WHERE intake_id = ? AND status <> 'released'`)
     .get(intakeId) as { n: number; ms: number };
-  return { requests: row.n, modelMs: row.ms, limit: getAiBudget().budget.perIntakeModelRequests };
+  return { requests: row.n, modelMs: row.ms, activeMs: intakeActiveMs(intakeId), limit: getAiBudget().budget.perIntakeModelRequests };
 }
 
-/** 单份投递的预检：请求数与累计执行时间 */
+/** 主动执行时间是否已用完（与模型时间取较大者） */
+export function intakeTimeSpent(u: IntakeRequestUsage): boolean {
+  return Math.max(u.activeMs, u.modelMs) >= INTAKE_ACTIVE_MS_LIMIT;
+}
+
+/** 单份投递的预检：请求数与累计主动执行时间 */
 export function intakeBudgetCheck(intakeId: string): { ok: true } | { ok: false; message: string } {
   const u = intakeRequestUsage(intakeId);
   if (u.requests >= u.limit) return { ok: false, message: intakeCountMessage(u.limit) };
-  if (u.modelMs >= INTAKE_MODEL_MS_LIMIT) return { ok: false, message: intakeTimeMessage() };
+  if (intakeTimeSpent(u)) return { ok: false, message: intakeTimeMessage() };
   return { ok: true };
 }
 
@@ -107,7 +147,7 @@ function intakeCountMessage(limit: number): string {
   return `这份投递已用完单次处理的模型请求额度（${limit} 次），剩余部分已保留；可以明确要求继续，或分开投递`;
 }
 function intakeTimeMessage(): string {
-  return `这份投递的模型处理已累计 ${INTAKE_MODEL_MS_LIMIT / 1000} 秒，剩余部分已保留；可以明确要求继续，或分开投递`;
+  return `这份投递的处理已累计 ${INTAKE_ACTIVE_MS_LIMIT / 1000} 秒（模型请求、查询与执行，不含排队和等你回答），已完成的部分保留，剩余部分没有继续；可以明确要求继续，或分开投递`;
 }
 
 export type RequestScope = { decisionId: string; workflow: string; intakeId: string | null; related: { type: string; id: string } | null };
@@ -130,7 +170,7 @@ export function reserveRequest(scope: RequestScope, attempt: number, force = fal
         if (scope.intakeId) {
           const u = intakeRequestUsage(scope.intakeId);
           if (u.requests >= budget.perIntakeModelRequests) return { ok: false, message: intakeCountMessage(budget.perIntakeModelRequests) };
-          if (u.modelMs >= INTAKE_MODEL_MS_LIMIT) return { ok: false, message: intakeTimeMessage() };
+          if (intakeTimeSpent(u)) return { ok: false, message: intakeTimeMessage() };
         }
       }
       const id = crypto.randomUUID();

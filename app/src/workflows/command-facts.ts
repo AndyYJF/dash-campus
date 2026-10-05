@@ -30,19 +30,37 @@ function relatedRules(rules: RuleLike[], revokeIds: string[]): Array<{ id: strin
     .map((r) => ({ id: r.id, version: r.version, status: r.status }));
 }
 
+const FIELD_KIND: Record<string, string> = { taskId: "task", sessionId: "plan_session", projectId: "project", goalId: "goal", eventId: "fixed_event", practiceId: "practice_entry", candidateId: "candidate" };
+/** 通用对象字段（entityKind + entityId，如归档）能指向的对象类型与表 */
+const ENTITY_TABLE: Record<string, string> = { task: "tasks", goal: "goals", course_set: "course_sets", plan_session: "plan_sessions", project: "projects" };
+
+/**
+ * 命令点名的对象（类型 + ID）：固定的对象字段，加上通用的 entityKind/entityId。
+ * 确认快照与“这个别动”的核对用同一份解析，不会一处认得、另一处漏掉。
+ */
+export function commandEntities(command: Record<string, unknown>): Array<{ kind: string; id: string; table: string; key: string }> {
+  const out: Array<{ kind: string; id: string; table: string; key: string }> = [];
+  for (const [field, table] of Object.entries(VERSIONED)) {
+    const id = command[field];
+    if (typeof id === "string") out.push({ kind: FIELD_KIND[field]!, id, table, key: `${field}:${id}` });
+  }
+  const kind = command.entityKind;
+  const id = command.entityId;
+  if (typeof kind === "string" && typeof id === "string" && ENTITY_TABLE[kind]) out.push({ kind, id, table: ENTITY_TABLE[kind]!, key: `${kind}:${id}` });
+  return out;
+}
+
 /** 命令依赖的事实：点名对象版本、要改的作息字段当前值、同类或日期重叠的规则 */
 export function commandFacts(command: Record<string, unknown>): Facts {
   const name = command.command as Command["command"];
   const sets: FactSet[] = OPERATIONS[name]?.facts ?? ["entity"];
   const db = getDb();
   const out: Facts = {};
-  for (const [field, table] of Object.entries(VERSIONED)) {
-    const id = command[field];
-    if (typeof id !== "string") continue;
+  for (const e of commandEntities(command)) {
     try {
-      out[`${field}:${id}`] = (db.prepare(`SELECT version FROM ${table} WHERE id = ?`).get(id) as { version: number } | undefined)?.version ?? null;
+      out[e.key] = (db.prepare(`SELECT version FROM ${e.table} WHERE id = ?`).get(e.id) as { version: number } | undefined)?.version ?? null;
     } catch {
-      out[`${field}:${id}`] = null;
+      out[e.key] = null;
     }
   }
   if (sets.includes("preferences")) {

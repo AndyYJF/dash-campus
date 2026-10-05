@@ -18,7 +18,7 @@ type Result = {
   intakeId: string;
   createdAt: string;
   text: string;
-  state: "accepted" | "working" | "needs_input" | "applied" | "partly_applied" | "no_change" | "answered" | "failed" | "cancelled";
+  state: "accepted" | "working" | "needs_input" | "in_background" | "applied" | "partly_applied" | "no_change" | "answered" | "failed" | "cancelled";
   summary: string;
   links?: Array<{ label: string; href: string }>;
   items: Array<{ id: string; kind: string; state: string; summary: string; error: string | null }>;
@@ -45,6 +45,7 @@ const STATE_LABEL: Record<Result["state"], string> = {
   accepted: "已收到",
   working: "整理中…",
   needs_input: "需要你回答",
+  in_background: "后台处理中",
   applied: "已更新",
   partly_applied: "部分完成",
   no_change: "已保存",
@@ -138,6 +139,20 @@ export default function UniversalIntake() {
     }, 2000);
     return () => clearInterval(timer);
   }, [hasActive, load]);
+
+  // 后台任务（复盘、探索、邮件）可能要几分钟：放慢到 15 秒看一次，终态核验回来就停
+  const hasBackground = !hasActive && results.some((r) => r.state === "in_background");
+  useEffect(() => {
+    if (!hasBackground) return;
+    const timer = setInterval(async () => {
+      const next = await load();
+      if (!next.some((r) => r.state === "in_background")) {
+        clearInterval(timer);
+        emitChanged();
+      }
+    }, 15000);
+    return () => clearInterval(timer);
+  }, [hasBackground, load]);
 
   useEffect(() => { draftRef.current = { text, files, context, busy }; }, [text, files, context, busy]);
 

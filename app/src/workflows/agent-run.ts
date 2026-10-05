@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { appendVerification, listVerifications, recordRepairOutcome, type CheckRecord, type RepairRecord, type VerificationRow } from "@/repositories/agent-runs";
-import { intakeRequestUsage, INTAKE_MODEL_MS_LIMIT } from "@/workflows/ai-budget";
+import { intakeRequestUsage, intakeTimeSpent, INTAKE_ACTIVE_MS_LIMIT } from "@/workflows/ai-budget";
 import type { IntakeRow } from "@/repositories/intakes";
 import { verifyIntake } from "./agent-verify";
 
@@ -51,7 +51,7 @@ export function verifyAndRepair(intake: IntakeRow, hooks: RepairHooks, now: Date
     if (fingerprint) {
       if (tried.has(fingerprint)) stop = "修正后仍是同样的问题，不再重复尝试";
       else if (repairs >= MAX_REPAIRS) stop = `已自动修正 ${MAX_REPAIRS} 次仍未通过，不再继续`;
-      else if (intakeRequestUsage(intake.id).modelMs >= INTAKE_MODEL_MS_LIMIT) stop = `这份投递的模型请求已累计 ${INTAKE_MODEL_MS_LIMIT / 1000} 秒，没有继续修正`;
+      else if (intakeTimeSpent(intakeRequestUsage(intake.id))) stop = `这份投递的处理已累计 ${INTAKE_ACTIVE_MS_LIMIT / 1000} 秒（含模型请求、查询与执行），没有继续修正`;
     }
     if (stop) {
       status = "blocked";

@@ -55,6 +55,7 @@ export default function AgentTrialMetricsCard() {
         经历的环节（一条可计入多项）：理解失败 {m.stages.understandFailed} · 追问 {m.stages.clarified} · 确认 {m.stages.confirmed} · 范围/保护拒绝 {m.stages.scopeRejected} · 情况变化重新确认 {m.stages.staleReconfirmed} · 执行失败 {m.stages.execFailed} · 等后台任务 {m.stages.asyncWaiting} · 核验通过 {m.stages.verified} · 部分完成 {m.stages.partial} · 自动修正 {m.stages.repaired} · 你改口 {m.stages.ownerCorrected}
       </p>
       <p className={styles.muted}>单条投递模型耗时 p50 {sec(m.modelTime.p50Ms)} · p95 {sec(m.modelTime.p95Ms)} · 最长 {sec(m.modelTime.maxMs)}（只计模型请求）</p>
+      <p className={styles.muted}>单条投递主动执行时间 p50 {sec(m.activeTime.p50Ms)} · p95 {sec(m.activeTime.p95Ms)} · 最长 {sec(m.activeTime.maxMs)}（模型、查询、执行与核验，不含排队和等你回答；{m.activeTime.samples} 条有记录；180 秒上限按它计）</p>
       <table className={styles.table}>
         <thead>
           <tr>

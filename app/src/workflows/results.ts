@@ -159,8 +159,8 @@ export type IntakeResultView = {
   conversationId: string | null;
   createdAt: string;
   text: string;
-  /** accepted 已收到 / working 处理中 / needs_input 等你回答 / applied 已更新 / partly_applied 部分完成 / no_change 只存了资料 / failed / cancelled */
-  state: "accepted" | "working" | "needs_input" | "applied" | "partly_applied" | "no_change" | "answered" | "failed" | "cancelled";
+  /** accepted 已收到 / working 处理中 / needs_input 等你回答 / in_background 已受理、等后台任务完成 / applied 已更新 / partly_applied 部分完成 / no_change 只存了资料 / failed / cancelled */
+  state: "accepted" | "working" | "needs_input" | "in_background" | "applied" | "partly_applied" | "no_change" | "answered" | "failed" | "cancelled";
   summary: string;
   links: Array<{ label: string; href: string }>;
   items: Array<{ id: string; kind: string; state: string; summary: string; error: string | null; routedBy: string | null; rationale: string | null; sources: string[] }>;
@@ -194,16 +194,23 @@ const VERIFICATION_LABEL: Record<string, string> = {
   partial: "部分完成：有的步骤没有达成",
   needs_action: "已执行，但还差一步需要你决定",
   blocked: "受阻：自动修正后仍未达成，已停下",
-  pending: "已执行的部分核对过，还有步骤在等你",
+  pending: "已执行的部分核对过，还有步骤在等你回答",
 };
+
+/** 核验在等的是后台任务（排队/进行中的复盘、探索、邮件等），不是等主人 */
+const waitsOnBackground = (checks: Array<{ kind: string; ok: boolean | null }>) => checks.some((c) => c.kind === "side_effect_status" && c.ok === null);
 
 function verificationView(intakeId: string): IntakeResultView["verification"] {
   const rounds = listVerifications(intakeId);
   const last = rounds.at(-1);
   if (!last) return null;
+  const label =
+    last.status === "verified" && last.checks.length > 0 && last.checks.every((c) => c.kind === "read_only") ? "只查看，没有改动任何东西"
+    : last.status === "pending" && waitsOnBackground(last.checks) ? "已受理，后台还在处理；完成后会自动再核对"
+    : VERIFICATION_LABEL[last.status] ?? last.status;
   return {
     status: last.status,
-    label: last.status === "verified" && last.checks.length > 0 && last.checks.every((c) => c.kind === "read_only") ? "只查看，没有改动任何东西" : VERIFICATION_LABEL[last.status] ?? last.status,
+    label,
     checks: last.checks.map((c) => ({ kind: c.kind, ok: c.ok, subject: c.subject, detail: c.detail })).slice(0, 20),
     repairs: rounds.filter((r) => r.repair).map((r) => ({ reason: r.repair!.reason, steps: r.repair!.steps.map((s) => s.detail) })),
   };
@@ -357,7 +364,9 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
                   ? "applied"
                   : "no_change";
   // 执行了但核验没通过：不显示为全部完成
-  const state: IntakeResultView["state"] = unmet && baseState === "applied" ? "partly_applied" : verification?.status === "needs_action" && decisionOpen && baseState === "applied" ? "needs_input" : baseState;
+  // 命令已受理不等于目标已完成：后台任务还没结束时是“后台处理中”，终态回来再核验后才转为完成/部分完成
+  const background = verification?.status === "pending" && waitsOnBackground(verification.checks) && (baseState === "applied" || baseState === "no_change");
+  const state: IntakeResultView["state"] = unmet && baseState === "applied" ? "partly_applied" : verification?.status === "needs_action" && decisionOpen && baseState === "applied" ? "needs_input" : background ? "in_background" : baseState;
   const unmetLines = verification && verification.status !== "verified" && verification.status !== "pending" ? verification.checks.filter((c) => c.ok === false).slice(0, 3).map((c) => `${verification.status === "needs_action" ? "需要你决定" : "核对未通过"}：${c.subject ? `${c.subject}——` : ""}${c.detail}`) : [];
   const done = items.filter((i) => i.state === "applied").map((i) => (i.payload.applied as { summary?: string } | undefined)?.summary).filter((x): x is string => Boolean(x));
   const saved = items.filter((i) => i.state === "ready" && (i.kind === "note" || i.kind === "notice"));

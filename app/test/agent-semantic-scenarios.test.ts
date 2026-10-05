@@ -325,7 +325,7 @@ test("S05 路由把“再优化一下”当成新的一件事：同一对话里�
   assert.equal(daysSnapshot("2026-10-17", "2026-10-18"), afterAdd, `照做只对那一步有效，周末仍不动：${JSON.stringify(intakeResultById(r4.intakeId))}`);
 });
 
-test("带条件的回答没改变方案（所指理解错了）：照实说“和上一版完全一样”再问，不当作条件已满足去执行", async () => {
+test("带条件的回答没改变方案（所指理解错了）：照实说理解成了什么、方案没碰到它，请主人从方案对象里指认，不当作条件已满足去执行", async () => {
   resetPrefs();
   const seeded = op({ command: "schedule_session", title: "线代复习", date: "2026-10-20", startLocalTime: "21:00", durationMinutes: 60 });
   const sessionId = (seeded.result as { ok: true; effects?: Array<{ entity: { kind: string; id: string } }> }).effects?.find((e) => e.entity.kind === "plan_session")?.entity.id
@@ -342,11 +342,13 @@ test("带条件的回答没改变方案（所指理解错了）：照实说“�
   decisions = [{ kind: "act", rationale: "照旧挪到十点", intents: move, constraints: [{ kind: "protect_entity", ref: { kind: "named", text: "微积分复习", date: null, part: "any" }, excerpt: "刚才那门课别挪" }] }];
   await answer(q1, "好，不过刚才那门课别挪");
   assert.equal(startOf(), before0, "没有当作条件已满足去执行");
-  const q2 = confirmQ(r.intakeId);
-  assert.ok(q2 && q2.id !== q1.id, JSON.stringify(intakeResultById(r.intakeId)));
-  assert.match(q2.prompt, /你补充的“好，不过刚才那门课别挪”.*没有改变这份方案，和上一版完全一样/, q2.prompt);
-  assert.match(q2.prompt, /挪动学习块：「线代复习」/, "确认里仍写清这次要挪的对象");
-  await answer(q2, "先不要");
+  const view = intakeResultById(r.intakeId)!;
+  assert.ok(!confirmQ(r.intakeId), "不拿同一份方案再问一次“是否采用”");
+  const q2 = view.questions.find((q) => q.purpose === "tradeoff");
+  assert.ok(q2 && q2.id !== q1.id, JSON.stringify(view));
+  assert.match(q2.prompt, /你补充的“好，不过刚才那门课别挪”，我理解为「微积分复习」不动，但这份方案没有动到它/, q2.prompt);
+  assert.match(q2.options![0]!, /挪动学习块：「线代复习」/, "选项写清方案实际要挪的对象");
+  await answer(q2, "先不要，什么都不改");
   assert.equal(startOf(), before0);
   assert.equal(batchesOf(r.intakeId), 0);
 });
@@ -458,5 +460,6 @@ test("指标区分各环节：确认、范围/保护拒绝、主人改口、核�
   assert.ok(m.stages.ownerCorrected >= 1, "待确认时带条件的回答算主人改口");
   assert.ok(m.stages.verified >= 1);
   assert.equal(m.stages.understandFailed, m.routing.rules);
-  assert.ok(m.notes.some((n) => /只统计模型 HTTP 时间/.test(n)), "说明 180 秒上限只按模型请求计");
+  assert.ok(m.notes.some((n) => /模型耗时只统计模型 HTTP 时间/.test(n) && /180 秒上限按主动执行时间计/.test(n)), "两种计时口径分开说明，180 秒按主动执行时间");
+  assert.ok(m.activeTime.samples >= 1 && (m.activeTime.p50Ms ?? 0) > 0, `经过 worker 处理的投递都有主动执行时间：${JSON.stringify(m.activeTime)}`);
 });

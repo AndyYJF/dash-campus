@@ -27,7 +27,7 @@ import {
 import { createJob, getJob, leaseValid, renewLease, completeJob, failJob, completeCancellation, listJobs, requestCancel } from "@/repositories/jobs";
 import { getInstanceState } from "@/repositories/instance";
 import { resolveModelProvider } from "@/integrations";
-import { budgetCheck, intakeBudgetCheck, meteredModel } from "@/workflows/ai-budget";
+import { budgetCheck, checkpointIntakeRun, intakeActiveRemainingMs, intakeBudgetCheck, markIntakeRun, meteredModel } from "@/workflows/ai-budget";
 import { instanceTimezone, localDateInTz, mondayOf, addDays } from "@/domain/time";
 import { parseTimetable, TimetableError } from "@/domain/timetable";
 import { executeCommand, executeOperation } from "@/workflows/commands";
@@ -35,15 +35,15 @@ import { rebuildPlan } from "@/workflows/plan";
 import { dueFromText, estimateFromText, isCompletionReport, matchTask, pickCandidate, type TaskRef } from "@/domain/task-text";
 import { intentSchema, parseInstruction, type Intent } from "@/domain/intent";
 import { nowDate } from "@/domain/clock";
-import { bindIntents, commandsForStandaloneAnswer, completionHasTarget, fixedEventRefs, isPolicyIntent, maybeAskRoutine, parseAnswerByPurpose, raisePlanQuestions, topicRefs, type BindEnv } from "@/workflows/agent";
+import { bindIntents, commandsForStandaloneAnswer, completionHasTarget, fixedEventRefs, isPolicyIntent, maybeAskRoutine, parseAnswerByPurpose, raisePlanQuestions, stepGroups, stepRefsOf, topicRefs, type BindEnv } from "@/workflows/agent";
 import { appendTurn, conversationExists, currentConversationId, reopenConversation, upsertAgentTurn, type EntityRef } from "@/repositories/conversations";
 import { HttpError } from "@/workflows/http";
 import { listChanges } from "@/repositories/journal";
 import { dependencyState, planFacts, planHash, planOf, splitSteps, stepRefsFor } from "@/workflows/agent-steps";
 import { gateCommand, gateKey, protectedSnapshot, type GateContext } from "@/workflows/agent-gate";
-import { describeFactsChange, describeImpact, factsHash, type Facts } from "@/workflows/command-facts";
+import { commandEntities, describeFactsChange, describeImpact, factsHash, type Facts } from "@/workflows/command-facts";
 import { acceptConstraints, describeConstraint, type AcceptedConstraint, type ConstraintRelease, type ConstraintValue, type TrustedText } from "@/domain/constraints";
-import { inheritProtections, listGoalConstraints, recordGoalConstraints } from "@/repositories/goal-constraints";
+import { constraintsToRelease, inheritProtections, listGoalConstraints, recordGoalConstraints, releaseGoalConstraints, type GoalConstraintRow } from "@/repositories/goal-constraints";
 import { authorizeCommand } from "@/domain/authorization";
 import { followUpView, operationResultView, type OperationResultView } from "@/workflows/results";
 import { extractAttachment, extractPdf, fetchImageDataUrl, fetchUrl, listAttachments, markExtractionDone, materializeAttachment, recordFileDocument, recordUrlDocument, saveUrlImage } from "@/workflows/intake-files";
@@ -361,7 +361,21 @@ function excerptInText(excerpt: string, text: string): boolean {
   return squash(text).includes(squash(excerpt));
 }
 
+/** 处理一份投递：这次处理的时间（不含排队和等主人）计入主动执行时间，模型调用后与结束时各记一次检查点 */
 export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }> {
+  const parsed = intakeJobPayloadSchema.safeParse(job.payload);
+  if (!parsed.success) return processIntakeJob(job);
+  const { intakeId } = parsed.data;
+  markIntakeRun(intakeId, Date.now());
+  try {
+    return await processIntakeJob(job);
+  } finally {
+    checkpointIntakeRun(intakeId);
+    markIntakeRun(intakeId, null);
+  }
+}
+
+async function processIntakeJob(job: JobRow): Promise<{ kind: string }> {
   const db = getDb();
   const token = job.leaseToken!;
   const now = () => new Date().toISOString();
@@ -442,7 +456,9 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
       if (!renewLease(job.id, token, job.generation, now())) controller.abort();
     }, JOB_RENEW_INTERVAL_MS);
     try {
-      const result = await meteredModel(model.provider, { type: "intake", id: intakeId }, { itemId, conversationId: intake?.conversationId ?? null, routedBy: workflow === AGENT_ROUTE_WORKFLOW ? "model" : null }).call({ workflow, context, outputSchemaVersion: 1, timeoutMs: JOB_EXTERNAL_TIMEOUT_MS, instructions, schema, signal: controller.signal, ...(tools ? { tools } : {}) });
+      // 每次调用的超时不超过这份投递剩余的主动执行时间
+      const timeoutMs = Math.max(1_000, Math.min(JOB_EXTERNAL_TIMEOUT_MS, intakeActiveRemainingMs(intakeId)));
+      const result = await meteredModel(model.provider, { type: "intake", id: intakeId }, { itemId, conversationId: intake?.conversationId ?? null, routedBy: workflow === AGENT_ROUTE_WORKFLOW ? "model" : null }).call({ workflow, context, outputSchemaVersion: 1, timeoutMs, instructions, schema, signal: controller.signal, ...(tools ? { tools } : {}) });
       if (!result.ok) {
         const message = result.error.code === "BUDGET_EXCEEDED" ? result.error.message.replace(/^BUDGET_EXCEEDED:\s*/, "") : result.error.message;
         return { ok: false, error: `${result.error.code}：${message}` };
@@ -454,6 +470,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
       return { ok: false, error: e instanceof Error ? e.message : "模型请求失败，原文已保留" };
     } finally {
       clearInterval(interval);
+      checkpointIntakeRun(intakeId);
     }
   }
 
@@ -553,7 +570,41 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
     const inheritedScope = goal && (live.goalRevision ?? 1) > 1 ? goal.summary.scope ?? null : null;
     const today = localDateInTz(nowDate(), intake.timezone);
     const ownerText = String(item.payload.decisionText ?? item.evidence?.excerpt ?? "");
-    if (decision?.kind === "act") {
+    if (decision?.kind === "act" && item.payload.referentQuestionKey) {
+      const ra = latestAnswerForKey(String(item.payload.referentQuestionKey));
+      if (!ra) continue;
+      const targets = (item.payload.referentTargets as ReferentTarget[] | undefined) ?? [];
+      const reply = String(item.payload.referentReply ?? "");
+      const choice = typeof ra.structured?.choice === "number" ? ra.structured.choice : -1;
+      replies.push({ question: "你说别动的是方案里的哪一项？", answer: ra.rawText });
+      item.payload = { ...item.payload, referentQuestionKey: null, referentTargets: null, referentReply: null, decisionReplies: replies };
+      const keep = (summary: string) => {
+        updateItem(item.id, { state: "applied", waitingQuestionId: null, payload: { ...item.payload, needsDecision: false, readOnly: true, applied: { batchId: null, summary, noChange: true } } });
+        gateContextFor(intake, getItem(item.id)!);
+      };
+      if (choice < 0 || choice > targets.length) { keep("已保留原来的安排，没有执行这份建议。"); continue; }
+      if (choice < targets.length) {
+        // 主人指认的对象记成这件事的保护（引用他那句回答），去掉动它的步骤；剩下的按新方案再确认
+        const t = targets[choice]!;
+        const protect = t.entities.map((e) => ({ value: { kind: "protect_entity", ref: { kind: "id", entityKind: e.kind, id: e.id } }, excerpt: reply, source: "owner_answer" }) as AcceptedConstraint);
+        item.payload = { ...item.payload, constraints: [...((item.payload.constraints as AcceptedConstraint[] | undefined) ?? []), ...protect] };
+        const remaining = decision.intents.filter((_, i) => !t.intents.includes(i));
+        if (!remaining.length) { keep(`按你说的，没有做这一步（${t.label}）；这份方案只有这一步，所以什么都没有改。`); continue; }
+        if (remaining.some((i) => stepRefsOf(i).length)) { keep(`按你说的，没有做这一步（${t.label}）；剩下的步骤依赖前面的步骤，没有单独执行，需要的话请重新说一下。`); continue; }
+        decision = { ...decision, intents: remaining };
+        updateItem(item.id, { payload: item.payload });
+        const narrowed = planOf(remaining, bindEnvFor(intake, item.id, nowDate(), item), true, gateContextFor(intake, item));
+        if (narrowed.denied) { updateItem(item.id, { state: "failed", waitingQuestionId: null, evidence: { ...item.evidence, error: narrowed.denied, code: "GATE_REJECTED" } }); continue; }
+        askDecisionConfirm(intake, item, decision, { ...narrowed, notes: [`按你说的，不做这一步：${t.label}`, ...narrowed.notes] }, replies, false);
+        continue;
+      }
+      // 都不是：主人看过方案要改的每一项后选了照做，等同确认这份方案；事实变了就按现在的情况重问
+      updateItem(item.id, { payload: item.payload });
+      const plan = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), item), decisionNeedsConfirmation(decision.intents), gateContextFor(intake, item));
+      if (plan.denied) { updateItem(item.id, { state: "failed", waitingQuestionId: null, evidence: { ...item.evidence, error: plan.denied, code: "GATE_REJECTED" } }); continue; }
+      if (plan.hash !== item.payload.pendingPlanHash) { askDecisionConfirm(intake, item, decision, plan, replies, true); continue; }
+      confirmedHashes = plan.bound ? plan.stepHashes : null;
+    } else if (decision?.kind === "act") {
       const ans = latestAnswerForKey(String(item.payload.pendingConfirmKey ?? `decision-confirm:${item.id}`));
       if (!ans) continue;
       const verdict = ans.structured ?? {};
@@ -571,6 +622,12 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
         updateItem(item.id, { state: "applied", waitingQuestionId: null, payload: { ...item.payload, needsDecision: false, readOnly: true, applied: { batchId: null, summary: "已保留原来的规则和安排，没有执行这份建议。", noChange: true } } }); continue;
       } else {
         // 确认的是当时过门后的命令 + 相关事实 + 范围与保护：任何一项变了，旧确认作废，说明差异后按现在的事实重新问
+        // 确认里点名过的解除，这时才算主人授权（仍绑定约束身份与目标版本，执行成功后才生效）
+        const proposed = item.payload.releaseProposed as { ids: string[]; revision: number } | null | undefined;
+        if (proposed?.ids.length) {
+          item.payload = { ...item.payload, releaseAuthorized: proposed, releaseProposed: null };
+          updateItem(item.id, { payload: item.payload });
+        }
         const plan = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), item), decisionNeedsConfirmation(decision.intents), gateContextFor(intake, item));
         if (plan.denied) { updateItem(item.id, { state: "failed", waitingQuestionId: null, evidence: { ...item.evidence, error: plan.denied, code: "GATE_REJECTED" } }); continue; }
         if (item.payload.pendingPlanHash && plan.hash !== item.payload.pendingPlanHash) {
@@ -593,7 +650,7 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
     const own = accepted.constraints as AcceptedConstraint[];
     const scope = decisionScope(scopeText([ownerText], own), today, replies.map((r) => ({ answer: scopeText([r.answer], own) })), inheritedScope);
     const decidedScope = scope.explicit ? { dateFrom: scope.dateFrom, dateTo: scope.dateTo } : (inheritedScope ?? null);
-    updateItem(item.id, { payload: { ...item.payload, ...accepted, decisionScope: decidedScope, decisionReplies: replies, ...(pending ? { overrideInherited: false } : {}) } });
+    updateItem(item.id, { payload: { ...item.payload, ...accepted, decisionScope: decidedScope, decisionReplies: replies, ...(pending ? { overrideInherited: false, releaseProposed: null, releaseAuthorized: null } : {}) } });
     const row = getItem(item.id)!;
     if (decision.kind === "ask") {
       if (replies.length >= 3) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: "经过三轮仍未形成可执行调整；原话和回答已保留，没有修改安排。" } }); continue; }
@@ -607,8 +664,18 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
       if (confirmedHashes === undefined) {
         // 是否要确认按过门后的命令做参数级授权：临时上限/临时重排直接执行，长期规则、具体块、截止要确认
         const plan = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), row), decisionNeedsConfirmation(decision.intents), gateContextFor(intake, row));
+        const toRelease = pendingReleases(intake, row);
+        if (toRelease.length) {
+          const relPlan = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), row), true, gateContextFor(intake, row, { release: toRelease.map((c) => c.id) }));
+          if (!relPlan.denied) {
+            const flagged = { ...row, payload: { ...row.payload, releaseProposed: { ids: toRelease.map((c) => c.id), revision: live.goalRevision ?? 1 } } };
+            updateItem(item.id, { payload: flagged.payload });
+            askDecisionConfirm(intake, flagged, decision, { ...relPlan, notes: [releaseNote(toRelease), ...relPlan.notes] }, replies, false);
+            continue;
+          }
+        }
         if (plan.denied && row.payload.overrideInherited !== true) {
-          const alt = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), row), true, gateContextFor(intake, row, true));
+          const alt = planOf(decision.intents, bindEnvFor(intake, item.id, nowDate(), row), true, gateContextFor(intake, row, { skipInherited: true }));
           if (!alt.denied) {
             const flagged = { ...row, payload: { ...row.payload, overrideInherited: true } };
             updateItem(item.id, { payload: flagged.payload });
@@ -621,7 +688,11 @@ export async function runIntakeProcessJob(job: JobRow): Promise<{ kind: string }
         // 带条件的回答却得出和上一版一模一样的方案：条件没有改变任何东西，多半理解错了所指。照实说出来再问，不当作条件已满足
         const prior = item.payload.pendingCommandsHash as string | undefined;
         if (pending && prior && plan.bound && plan.commands.length && planHash(plan.commands, "") === prior) {
-          const heard = (accepted.constraints as AcceptedConstraint[]).filter((c) => pending!.reply.includes(c.excerpt)).map((c) => describeConstraint(c.value));
+          const fromReply = (accepted.constraints as AcceptedConstraint[]).filter((c) => pending!.reply.includes(c.excerpt));
+          const heard = fromReply.map((c) => describeConstraint(c.value));
+          // 说了“某个对象别动”却没碰到方案里的任何对象：所指多半理解错了，先请主人指认
+          const targets = fromReply.some((c) => c.value.kind === "protect_entity") ? planTargets(decision.intents, bindEnvFor(intake, item.id, nowDate(), row), gateContextFor(intake, row)) : [];
+          if (targets.length) { askReferent(intake, row, decision, plan, replies, pending.reply, heard, targets); continue; }
           askDecisionConfirm(intake, row, decision, { ...plan, notes: [`你补充的“${pending.reply}”${heard.length ? `（我理解为：${heard.join("；")}）` : ""}没有改变这份方案，和上一版完全一样；如果你指的是下面要改的对象，请直接说不改它`, ...plan.notes] }, replies, false);
           continue;
         }
@@ -1150,6 +1221,7 @@ function syncGoalFromIntake(intakeId: string): void {
     : verified?.status === "blocked" ? "blocked"
     : verified?.status === "needs_action" ? "awaiting_input"
     : verified?.status === "partial" ? "partial"
+    : verified?.status === "pending" ? "active"
     : status === "completed" ? "completed"
     : status === "partially_applied" ? "partial"
     : status === "failed" ? "blocked"
@@ -1293,12 +1365,14 @@ function ownerTexts(item: IntakeItemRow, extra: Reply[] = []): TrustedText[] {
   return texts.filter((t) => t.text.trim());
 }
 
-/** 模型提出的约束候选 → 事项上接受的约束（引用必须出现在主人本人的话里）；同一事项多轮累积，解除的去掉 */
+/**
+ * 模型提出的约束候选 → 事项上接受的约束（引用必须出现在主人本人的话里）；同一事项多轮累积。
+ * 解除候选只记下来，不在这里去掉任何约束：要点名到目标上的具体约束并经主人确认（见 pendingReleases）。
+ */
 function acceptOnItem(item: IntakeItemRow, raw: unknown[], today: string, extra: Reply[] = []): Record<string, unknown> {
   const r = acceptConstraints(raw, ownerTexts(item, extra), today);
   const same = (a: ConstraintValue, b: ConstraintValue) => JSON.stringify(a) === JSON.stringify(b);
-  const released = (v: ConstraintValue) => r.releases.some((rel) => rel.target === v.kind && (!rel.days || (v.kind === "protect_days" && v.days === rel.days)));
-  const prev = ((item.payload.constraints as AcceptedConstraint[] | undefined) ?? []).filter((p) => !released(p.value));
+  const prev = (item.payload.constraints as AcceptedConstraint[] | undefined) ?? [];
   const merged = [...prev, ...r.accepted.filter((a) => !prev.some((p) => same(p.value, a.value)))];
   return {
     constraints: merged,
@@ -1322,16 +1396,38 @@ function inheritedConflictNote(reason: string): string {
   return `和你前面说过的条件冲突：${reason.replace(/[，。；]?没有执行[。]?$/, "")}；确认就只在这一步不按那条执行`;
 }
 
-function gateContextFor(intake: IntakeRow, item: IntakeItemRow, skipInherited = item.payload.overrideInherited === true): GateContext {
+/** 解除之前的条件：确认里点名是哪一条、原话是什么，确认后这条不再生效 */
+function releaseNote(rows: GoalConstraintRow[]): string {
+  return `这会解除你之前说的${rows.map((r) => `“${r.excerpt}”（${describeConstraint(r.value)}）`).join("、")}；确认后${rows.length > 1 ? "这几条" : "这条"}不再生效，不确认就仍按${rows.length > 1 ? "它们" : "它"}执行`;
+}
+
+/** 主人确认过的解除：绑定约束身份与目标版本，版本变了不再算数 */
+function authorizedReleaseIds(intake: IntakeRow, item: IntakeItemRow): string[] {
+  const a = item.payload.releaseAuthorized as { ids: string[]; revision: number } | null | undefined;
+  const live = getIntake(intake.id) ?? intake;
+  return a && a.revision === (live.goalRevision ?? 1) ? a.ids : [];
+}
+
+/** 模型说主人要解除、但主人还没确认的约束（目标上仍生效的具体那几条） */
+function pendingReleases(intake: IntakeRow, item: IntakeItemRow): GoalConstraintRow[] {
+  const live = getIntake(intake.id) ?? intake;
+  const releases = (item.payload.constraintReleases as ConstraintRelease[] | undefined) ?? [];
+  if (!live.goalId || !releases.length) return [];
+  const done = authorizedReleaseIds(intake, item);
+  return constraintsToRelease(live.goalId, releases, live.goalRevision ?? 1).filter((c) => !done.includes(c.id));
+}
+
+function gateContextFor(intake: IntakeRow, item: IntakeItemRow, opts: { skipInherited?: boolean; release?: string[] } = {}): GateContext {
+  const skipInherited = opts.skipInherited ?? item.payload.overrideInherited === true;
   const today = localDateInTz(nowDate(), intake.timezone);
   const live = getIntake(intake.id) ?? intake;
   const own = (item.payload.constraints as AcceptedConstraint[] | undefined) ?? [];
-  const releases = (item.payload.constraintReleases as ConstraintRelease[] | undefined) ?? [];
   const goal = live.goalId ? getGoal(live.goalId) : null;
   let values = own.map((a) => a.value);
   if (goal) {
-    if (own.length || releases.length) recordGoalConstraints({ goalId: goal.id, revision: live.goalRevision ?? goal.revision, intakeId: intake.id, accepted: own, releases });
-    values = listGoalConstraints(goal.id).filter((c) => !(skipInherited && c.source === "inherited")).map((c) => c.value);
+    if (own.length) recordGoalConstraints({ goalId: goal.id, revision: live.goalRevision ?? goal.revision, intakeId: intake.id, accepted: own });
+    const released = new Set([...authorizedReleaseIds(intake, item), ...(opts.release ?? [])]);
+    values = listGoalConstraints(goal.id).filter((c) => !(skipInherited && c.source === "inherited") && !released.has(c.id)).map((c) => c.value);
   }
   const decided = item.payload.decisionScope as { dateFrom: string; dateTo: string } | null | undefined;
   const fromText = decisionScope(scopeText(ownerTexts(item).map((t) => t.text), own), today);
@@ -1339,7 +1435,7 @@ function gateContextFor(intake: IntakeRow, item: IntakeItemRow, skipInherited = 
   const prior = goal && (live.goalRevision ?? 1) > 1 ? goal.summary.scope ?? null : null;
   const inherited = prior && prior.dateTo >= today ? { dateFrom: prior.dateFrom < today ? today : prior.dateFrom, dateTo: prior.dateTo } : null;
   const scope = decided ?? (fromText.explicit ? { dateFrom: fromText.dateFrom, dateTo: fromText.dateTo } : null) ?? (stated ? { dateFrom: stated.dateFrom, dateTo: stated.dateTo } : null) ?? inherited;
-  return { today, scope, constraints: values.filter((v) => v.kind !== "date_scope") };
+  return { today, scope, constraints: values.filter((v) => v.kind !== "date_scope"), ...(stated ? { statedScope: { dateFrom: stated.dateFrom, dateTo: stated.dateTo } } : {}) };
 }
 
 /** 一个步骤：前序步骤没落库就先等（返回 false），失败就不执行，否则绑定 */
@@ -1386,6 +1482,43 @@ function askDecisionConfirm(intake: IntakeRow, item: IntakeItemRow, decision: Ex
   updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, needsDecision: true, pendingDecision: decision, pendingPlanHash: plan.hash, pendingCommandsHash: planHash(plan.commands, ""), pendingConfirmKey: key, pendingConfirmPrompt: question.prompt, pendingFacts: facts, decisionReplies: replies, decisionQuestionKey: null, confirmed: false, confirmedCommandHash: null, confirmedHashes: null, staleReconfirms: Number(item.payload.staleReconfirms ?? 0) + (stale ? 1 : 0) } });
 }
 
+type ReferentTarget = { intents: number[]; entities: Array<{ kind: string; id: string }>; label: string };
+
+/** 方案里动到已有对象的每一步：哪些意图、动到哪些对象、给主人看的实际修改 */
+function planTargets(intents: Intent[], env: BindEnv, ctx: GateContext): ReferentTarget[] {
+  const out: ReferentTarget[] = [];
+  for (const group of stepGroups(intents)) {
+    const p = planOf(group.map((i) => intents[i]!), env, true, ctx);
+    if (p.commands.length !== 1) continue;
+    const command = p.commands[0]!;
+    const entities = commandEntities(command).map((e) => ({ kind: e.kind, id: e.id }));
+    if (!entities.length) continue;
+    out.push({ intents: group, entities, label: describeImpact(command, planFacts([command])[0] ?? {}).join("；") });
+  }
+  return out;
+}
+
+/**
+ * 带条件的回答说了“某个对象别动”，理解出的对象却不在方案里：不能拿同一份方案再问一次“可以吗”，
+ * 先请主人从方案实际要动的对象里指认（或说明确实指的是别的、或先不改）。回答前什么都不改。
+ */
+function askReferent(intake: IntakeRow, item: IntakeItemRow, decision: Extract<AgentDecision, { kind: "act" }>, plan: ConfirmPlan, replies: unknown[], reply: string, heard: string[], targets: ReferentTarget[]): void {
+  const key = `decision-referent:${item.id}:${plan.hash}:${replies.length}`;
+  const { question } = ensureOpenQuestion({
+    questionKey: key,
+    intakeId: intake.id,
+    itemId: item.id,
+    fieldPath: "adjustment.referent",
+    purpose: "tradeoff",
+    prompt: `你补充的“${reply}”${heard.length ? `，我理解为${heard.join("；")}` : ""}，但这份方案没有动到它。你说别动的是方案里的哪一项？`,
+    reason: "你说的对象和方案要改的对象对不上，先问清楚；回答前什么都没有改",
+    options: [...targets.map((t) => `${t.label}——这个别动`), "都不是，其余照这份方案执行", "先不要，什么都不改"],
+    context: { planHash: plan.hash, targets },
+    conversationId: intake.conversationId,
+  });
+  updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, needsDecision: true, pendingDecision: decision, pendingPlanHash: plan.hash, pendingCommandsHash: planHash(plan.commands, ""), pendingFacts: planFacts(plan.commands), referentQuestionKey: key, referentTargets: targets, referentReply: reply, decisionReplies: replies, decisionQuestionKey: null, confirmed: false, confirmedHashes: null } });
+}
+
 /** 指令事项：重新读取当前事实绑定对象——唯一就绪，并列只问选哪一个，找不到如实失败 */
 function resolveCommandItem(intake: IntakeRow, item: IntakeItemRow, env: BindEnv): void {
   const intents = (item.payload.intents as Intent[] | undefined) ?? [];
@@ -1404,8 +1537,21 @@ function resolveCommandItem(intake: IntakeRow, item: IntakeItemRow, env: BindEnv
     const ctx = gateContextFor(intake, item);
     const gated = gateCommand(bound.command, bound.replanDates ?? [], ctx);
     const replies = (item.payload.decisionReplies as unknown[] | undefined) ?? [];
+    const actDecision = (rationale: string) => ({ kind: "act" as const, rationale: String(item.payload.decisionRationale ?? rationale), intents, constraints: [] });
+    // 要解除之前说过的条件：放宽授权，先点名问主人；确认前按原条件，不改约束状态
+    const toRelease = pendingReleases(intake, item);
+    if (toRelease.length) {
+      const relCtx = gateContextFor(intake, item, { release: toRelease.map((c) => c.id) });
+      const alt = gateCommand(bound.command, bound.replanDates ?? [], relCtx);
+      if (alt.kind === "pass") {
+        const flagged = { ...item, payload: { ...item.payload, releaseProposed: { ids: toRelease.map((c) => c.id), revision: (getIntake(intake.id) ?? intake).goalRevision ?? 1 } } };
+        updateItem(item.id, { payload: flagged.payload });
+        askDecisionConfirm(intake, flagged, actDecision("按你这次的要求执行"), { hash: planHash([alt.command], gateKey(relCtx)), commands: [alt.command], notes: [releaseNote(toRelease), ...alt.notes] }, replies, false);
+        return;
+      }
+    }
     if (gated.kind === "reject") {
-      const ownCtx = item.payload.overrideInherited === true ? null : gateContextFor(intake, item, true);
+      const ownCtx = item.payload.overrideInherited === true ? null : gateContextFor(intake, item, { skipInherited: true });
       const alt = ownCtx ? gateCommand(bound.command, bound.replanDates ?? [], ownCtx) : null;
       if (ownCtx && alt?.kind === "pass") {
         const flagged = { ...item, payload: { ...item.payload, overrideInherited: true } };
@@ -1429,7 +1575,7 @@ function resolveCommandItem(intake: IntakeRow, item: IntakeItemRow, env: BindEnv
       askDecisionConfirm(intake, item, { kind: "act", rationale: String(item.payload.decisionRationale ?? ""), intents, constraints: [] }, confirmPlan, replies, true);
       return;
     }
-    const gate = { ctx, notes: gated.notes, frozenDates: gated.frozenDates, frozenTaskIds: gated.frozenTaskIds, protectedBefore: protectedSnapshot(ctx), key };
+    const gate = { ctx, notes: gated.notes, frozenDates: gated.frozenDates, frozenTaskIds: gated.frozenTaskIds, protectedBefore: protectedSnapshot(ctx), key, releaseIds: authorizedReleaseIds(intake, item) };
     updateItem(item.id, { state: "ready", waitingQuestionId: null, payload: { ...item.payload, command: gated.command, replanDates: gated.replanDates, gate, expectedFacts: item.payload.confirmed === true ? factsHash(gated.command) : null } });
   } else if (bound.kind === "ask") {
     const q = bound.question;
@@ -1462,6 +1608,10 @@ function applyCommandItem(intake: IntakeRow, item: IntakeItemRow, now: Date): { 
     updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: view.error.message, code: view.error.code, retryable: false } });
     return null;
   }
+  // 主人确认过的解除在这一步成功后才生效；失败、拒绝、旧版本重放都不解除
+  const releaseIds = (item.payload.gate as { releaseIds?: string[] } | undefined)?.releaseIds ?? [];
+  const live = getIntake(intake.id) ?? intake;
+  if (outcome.result.ok && releaseIds.length && live.goalId) releaseGoalConstraints(live.goalId, releaseIds, live.goalRevision ?? 1);
   const planBatchId = outcome.followUps.find((f) => f.kind === "plan")?.batchId ?? null;
   const effects = outcome.result.ok ? (outcome.result.effects ?? []) : [];
   updateItem(item.id, { state: "applied", payload: { ...item.payload, applied: { batchId: view.undo.batchId, summary: [item.payload.decisionRationale, ...(gate?.notes ?? []), view.summary].filter(Boolean).join("\n"), noChange: view.state === "no_change", planBatchId, effects }, followUps: view.followUps } });

@@ -22,6 +22,8 @@ export type TrialMetrics = {
   stages: { understandFailed: number; clarified: number; confirmed: number; scopeRejected: number; staleReconfirmed: number; execFailed: number; asyncWaiting: number; verified: number; partial: number; repaired: number; ownerCorrected: number };
   /** 每条投递的模型 HTTP 累计耗时（ai_request_ledger.duration_ms 之和）；不含排队、工具查询、业务写入与等待主人 */
   modelTime: { p50Ms: number | null; p95Ms: number | null; maxMs: number | null };
+  /** 每条投递的主动执行时间（intakes.active_ms：模型、查询、执行、核验与修正，不含排队和等主人）；samples 是有记录的投递数，旧投递没有记录不计入 */
+  activeTime: { p50Ms: number | null; p95Ms: number | null; maxMs: number | null; samples: number };
   daily: Array<{ date: string; requests: number; errors: number; decisions: number; p50Ms: number | null; p95Ms: number | null }>;
   notes: string[];
 };
@@ -111,6 +113,8 @@ export function trialMetrics(opts: { days?: number; now?: Date } = {}): TrialMet
   };
   const perIntakeMs = (inIds(`SELECT intake_id, SUM(COALESCE(duration_ms, 0)) AS ms FROM ai_request_ledger WHERE status <> 'released' AND intake_id IN (?) GROUP BY intake_id`) as Array<{ ms: number }>).map((r) => r.ms).sort((a, b) => a - b);
   const modelTime = { p50Ms: percentile(perIntakeMs, 50), p95Ms: percentile(perIntakeMs, 95), maxMs: perIntakeMs.at(-1) ?? null };
+  const perIntakeActive = (inIds(`SELECT active_ms FROM intakes WHERE active_ms > 0 AND id IN (?)`) as Array<{ active_ms: number }>).map((r) => r.active_ms).sort((a, b) => a - b);
+  const activeTime = { p50Ms: percentile(perIntakeActive, 50), p95Ms: percentile(perIntakeActive, 95), maxMs: perIntakeActive.at(-1) ?? null, samples: perIntakeActive.length };
 
   const ledger = db.prepare(`SELECT local_date, COUNT(*) AS n, SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS e FROM ai_request_ledger WHERE status <> 'released' AND local_date BETWEEN ? AND ? GROUP BY local_date`).all(from, to) as Array<{ local_date: string; n: number; e: number }>;
   const traces = db.prepare(`SELECT local_date, latency_ms FROM agent_traces WHERE workflow IN ('agent_route', 'agent_decide') AND local_date BETWEEN ? AND ?`).all(from, to) as Array<{ local_date: string; latency_ms: number }>;
@@ -127,7 +131,8 @@ export function trialMetrics(opts: { days?: number; now?: Date } = {}): TrialMet
   if (outcomes.unverified) notes.push(`${outcomes.unverified} 条没有核验记录：纯回答问题、只存资料、没有可执行的内容，或在执行核验上线前提交`);
   if (routing.other) notes.push(`${routing.other} 条没有经过路由：短答续答、“先别做”、文件或空白投递`);
   notes.push("延迟是单次理解/决策的模型耗时（含工具与重试），不含排队与执行；请求数含探测、复盘等非投递用途");
-  notes.push("单条投递的模型耗时只统计模型 HTTP 时间；单份投递 180 秒的处理上限也按这个口径计，不是整条流程的执行时间");
+  notes.push("模型耗时只统计模型 HTTP 时间；主动执行时间是 worker 实际处理投递的时间（模型、查询、执行、核验与修正），不含排队和等你回答。单份投递 180 秒上限按主动执行时间计");
+  if (activeTime.samples < intakes.length) notes.push(`${intakes.length - activeTime.samples} 条投递没有主动执行时间记录（计时上线前提交或没有经过 worker 处理），不补算`);
   if (!feedback.length) notes.push("没有“理解错了”反馈不等于没有误解，只说明主人没有点");
 
   return {
@@ -140,6 +145,7 @@ export function trialMetrics(opts: { days?: number; now?: Date } = {}): TrialMet
     repairs: { total: repairRows.length, intakes: new Set(repairRows.map((r) => r.intake_id)).size, stoppedByLimit },
     stages,
     modelTime,
+    activeTime,
     daily,
     notes,
   };

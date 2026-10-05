@@ -42,7 +42,8 @@ type Ctx = { setup: string[]; live: string; lives: string[]; question: (setupInd
  * confirm 时像点结果卡上的按钮一样逐个确认“可以”；seed 在前置之前建数据，prepare 在前置之后
  */
 /** approve：模拟会看确认内容的主人，返回 false 时回答“先不要”；不给则每个确认都答“可以” */
-type Flow = { id: string; what: string; setup: Setup[]; live: string | string[]; answer?: string; confirm?: boolean; approve?: (prompt: string) => boolean; seed?: () => void; prepare?: () => void; check: (c: Ctx) => string[] };
+/** pick：主人怎么回答“你说的是哪一项”这类选项问题（返回选项原文）；不给则不回答这类问题 */
+type Flow = { id: string; what: string; setup: Setup[]; live: string | string[]; answer?: string; confirm?: boolean; approve?: (prompt: string) => boolean; pick?: (prompt: string, options: string[]) => string | null; seed?: () => void; prepare?: () => void; check: (c: Ctx) => string[] };
 
 const thisWeek = { kind: "act", rationale: "按课程与预算重排本周剩余时间", intents: [{ op: "replan", dateFrom: "2026-10-12", dateTo: "2026-10-18" }] };
 const ask = (question: string, options: string[]) => ({ kind: "ask", question, reason: "几种安排差别明显", options });
@@ -243,9 +244,10 @@ const FLOWS: Flow[] = [
     },
   },
   {
-    id: "gen-dont-move-that", what: "泛化（holdout）待确认挪动时回答“好，不过刚才那门课别挪”= 那个学习块不被挪",
+    id: "gen-dont-move-that", what: "泛化（holdout）待确认挪动时回答“好，不过刚才那门课别挪”= 那个学习块不被挪；主人对确认一律答“可以”，被问“指哪一项”时指认刚才那门课（高数复习）",
     setup: [{ text: "高数复习改到晚上七点", decide: { kind: "act", rationale: "挪到 19:00", intents: [{ op: "move_session", ref: { kind: "named", text: "高数复习", date: "2026-10-18", part: "any" }, targetDate: "2026-10-18", startLocalTime: "19:00" }] } }],
     live: [], answer: "好，不过刚才那门课别挪", confirm: true,
+    pick: (_prompt, options) => options.find((o) => /高数复习/.test(o)) ?? null,
     seed: () => { executeOperation({ command: "schedule_session", title: "高数复习", date: "2026-10-18", startLocalTime: "15:00", durationMinutes: 60 }, OWNER); },
     check: (c) => {
       const out: string[] = [];
@@ -386,7 +388,15 @@ for (const flow of FLOWS.filter((f) => !only || only.has(f.id))) {
     // 多句改口时每句之后都像点按钮一样确认，再说下一句
     const confirmAll = async (id: string) => {
       for (let n = 0; flow.confirm && n < 6; n++) {
-        const q = listQuestionsForIntake(id).find((x) => x.status === "open" && x.purpose === "confirm");
+        const open = listQuestionsForIntake(id).filter((x) => x.status === "open");
+        const choose = flow.pick ? open.find((x) => x.purpose === "tradeoff") : undefined;
+        const picked = choose ? flow.pick!(choose.prompt, choose.options ?? []) : null;
+        if (choose && picked) {
+          prompts.push(`${choose.prompt} ${JSON.stringify(choose.options ?? [])} → ${picked}`);
+          await reply(choose.id, choose.version, picked);
+          continue;
+        }
+        const q = open.find((x) => x.purpose === "confirm");
         if (!q) break;
         prompts.push(q.prompt);
         await reply(q.id, q.version, !flow.approve || flow.approve(q.prompt) ? "可以" : "先不要");

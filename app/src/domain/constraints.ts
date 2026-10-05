@@ -6,6 +6,7 @@ import { addDays } from "./time";
  * 目标约束（语义修复 W1）：主人在要求、回答和改口里说过的条件，变成有类型、可核对的结构。
  * 模型只能提出候选（每条带逐字引用）；引用必须出现在主人本人的话里才接受，资料/工具结果/文件里的文字不算。
  * 范围类（date_scope）以最新一版为准；保护类跨版本保留，直到主人明说解除（release）。
+ * 解除是放宽授权：引用只证明话是主人说的，不证明说的是解除哪一条，所以解除要点名到具体约束、经主人确认、执行成功后才生效。
  */
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -28,7 +29,16 @@ export const constraintValueSchema = z.discriminatedUnion("kind", [
 ]);
 export type ConstraintValue = z.infer<typeof constraintValueSchema>;
 
-const releaseSchema = z.object({ kind: z.literal("release"), target: z.enum(["date_scope", "protect_days", "protect_dates", "protect_entity", "no_study_after"]), days: dayClassSchema.optional() });
+/** 解除某条已有条件：target 是类型，其余字段点名是哪一条（不点名就是这一类全部，确认时逐条列出） */
+const releaseSchema = z.object({
+  kind: z.literal("release"),
+  target: z.enum(["date_scope", "protect_days", "protect_dates", "protect_entity", "no_study_after"]),
+  days: dayClassSchema.optional(),
+  dateFrom: dateStr.optional(),
+  dateTo: dateStr.optional(),
+  time: timeStr.optional(),
+  ref: refSchema.optional(),
+});
 
 /** 模型提出的候选：约束或解除，都要带主人原话里的逐字引用 */
 export const constraintCandidateSchema = z.union([constraintValueSchema, releaseSchema]).and(z.object({ excerpt }));
@@ -36,7 +46,21 @@ export type ConstraintCandidate = z.infer<typeof constraintCandidateSchema>;
 
 export type ConstraintSource = "owner_text" | "owner_answer" | "rule_parse" | "inherited";
 export type AcceptedConstraint = { value: ConstraintValue; excerpt: string; source: ConstraintSource };
-export type ConstraintRelease = { target: z.infer<typeof releaseSchema>["target"]; days?: DayClass; excerpt: string; source: ConstraintSource };
+export type ConstraintRelease = Omit<z.infer<typeof releaseSchema>, "kind"> & { excerpt: string; source: ConstraintSource };
+
+const sameRef = (a: z.infer<typeof refSchema>, b: z.infer<typeof refSchema>) =>
+  a.kind === "named" && b.kind === "named" ? a.text.trim() === b.text.trim() : JSON.stringify(a) === JSON.stringify(b);
+
+/** 这条解除指的是不是这条约束：类型相同，点名的字段都对得上 */
+export function releaseMatches(rel: Omit<ConstraintRelease, "excerpt" | "source">, c: ConstraintValue): boolean {
+  if (rel.target !== c.kind) return false;
+  if (rel.days && (!("days" in c) || c.days !== rel.days)) return false;
+  if (rel.dateFrom && (!("dateFrom" in c) || c.dateFrom !== rel.dateFrom)) return false;
+  if (rel.dateTo && (!("dateTo" in c) || c.dateTo !== rel.dateTo)) return false;
+  if (rel.time && (c.kind !== "no_study_after" || c.time !== rel.time)) return false;
+  if (rel.ref && (c.kind !== "protect_entity" || !sameRef(rel.ref, c.ref))) return false;
+  return true;
+}
 
 /** 主人本人的话：原话片段与回答。资料、工具返回、文件内容不在这里 */
 export type TrustedText = { text: string; source: "owner_text" | "owner_answer" };
@@ -72,7 +96,16 @@ export function acceptConstraints(raw: unknown[], trusted: TrustedText[], today:
       continue;
     }
     if (c.kind === "release") {
-      releases.push({ target: c.target, ...(c.days ? { days: c.days } : {}), excerpt: c.excerpt, source: from.source });
+      releases.push({
+        target: c.target,
+        ...(c.days ? { days: c.days } : {}),
+        ...(c.dateFrom ? { dateFrom: c.dateFrom } : {}),
+        ...(c.dateTo ? { dateTo: c.dateTo } : {}),
+        ...(c.time ? { time: c.time } : {}),
+        ...(c.ref ? { ref: c.ref } : {}),
+        excerpt: c.excerpt,
+        source: from.source,
+      });
       continue;
     }
     if ((c.kind === "date_scope" || c.kind === "protect_dates") && (!validDate(c.dateFrom) || !validDate(c.dateTo) || c.dateTo < c.dateFrom || c.dateTo < today || c.dateFrom > addDays(today, 365))) {

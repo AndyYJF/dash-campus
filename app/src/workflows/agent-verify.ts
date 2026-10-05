@@ -1,13 +1,14 @@
 import { getDb } from "@/repositories/db";
 import { OPERATIONS, type Command } from "@/contracts/commands";
 import { listChanges, type ChangeRow } from "@/repositories/journal";
-import { listItems, type IntakeItemRow } from "@/repositories/intakes";
+import { getIntake, listItems, type IntakeItemRow } from "@/repositories/intakes";
+import { listGoalConstraints } from "@/repositories/goal-constraints";
 import type { CheckRecord, VerificationStatus } from "@/repositories/agent-runs";
 import { instanceTimezone, localDateInTz } from "@/domain/time";
 import { eventsForDay, latestPlanUnscheduled } from "@/workflows/plan";
 import { batchChanges, entityLabel } from "@/workflows/results";
 import { stepEffects } from "@/repositories/step-executions";
-import { protectedSnapshot, type GateContext } from "@/workflows/agent-gate";
+import { protectedSnapshot, sessionConditionProblem, type GateContext } from "@/workflows/agent-gate";
 
 /**
  * 执行后核验（Agent 方案 §5.2）：命令成功后重新读取当前事实，按操作注册表里的 verify 模板逐项判定。
@@ -138,6 +139,18 @@ function protectedNow(item: IntakeItemRow): string | null {
   return ctx ? protectedSnapshot(ctx) : null;
 }
 
+/** 目标上现在生效的范围与“几点后不排”（这一步照做过的沿用保护除外）；没有这类条件返回 null */
+function goalConditions(intakeId: string, item: IntakeItemRow): GateContext | null {
+  const goalId = getIntake(intakeId)?.goalId;
+  if (!goalId) return null;
+  const values = listGoalConstraints(goalId).filter((c) => !(item.payload.overrideInherited === true && c.source === "inherited")).map((c) => c.value);
+  const stated = values.find((v): v is Extract<typeof v, { kind: "date_scope" }> => v.kind === "date_scope");
+  const constraints = values.filter((v) => v.kind !== "date_scope");
+  if (!stated && !constraints.some((v) => v.kind === "no_study_after")) return null;
+  const ran = (item.payload.gate as { ctx?: GateContext } | undefined)?.ctx;
+  return { today: ran?.today ?? "", scope: ran?.scope ?? null, statedScope: stated ? { dateFrom: stated.dateFrom, dateTo: stated.dateTo } : null, constraints };
+}
+
 const JOB_WAIT: Record<string, string> = { queued: "还在排队", running: "正在进行" };
 
 /**
@@ -215,6 +228,19 @@ function verifyAppliedItem(intakeId: string, item: IntakeItemRow, now: Date, tz:
   if (guarded?.protectedBefore) {
     const now2 = protectedNow(item);
     push("constraints_hold", now2 !== guarded.protectedBefore ? "你说过不动的部分（日子、规则或安排）被这次处理改动了" : null, "你说过不动的部分没有被改动");
+  }
+  // 主人说过的范围与“几点后不排”：从目标上现在生效的约束读回，核对这一步写下的学习块（不只是核对执行符合模型参数）
+  const conditions = goalConditions(intakeId, item);
+  if (conditions && batch && batch.status !== "undone") {
+    let problem: string | null = null;
+    let seen = 0;
+    for (const c of listChanges(batch.id).filter((x) => x.entityKind === "plan_session" && typeof x.after?.startUtc === "string")) {
+      const s = getDb().prepare(`SELECT start_utc, status FROM plan_sessions WHERE id = ?`).get(c.entityId) as { start_utc: string; status: string } | undefined;
+      if (!s || !ACTIVE_SESSION.includes(s.status) || s.start_utc !== c.after!.startUtc) continue;
+      seen++;
+      problem ??= sessionConditionProblem(c.entityId, conditions);
+    }
+    if (seen) push("goal_conditions_hold", problem, "学习块在你说的范围和时间内");
   }
   // 异步/外部结果：按执行凭据里的任务、探索、复盘、导出的真实状态判断，不把“已受理”当成完成
   const effects = stepEffects(item.id);

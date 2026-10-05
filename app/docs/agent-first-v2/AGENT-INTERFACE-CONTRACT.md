@@ -211,7 +211,7 @@ HTTP 202 只表示 accepted，HTTP 200 不能代替领域成功判断。版本�
 
 - **核验记录**（迁移 0032 `agent_verifications`，随业务导出/恢复）：每次投递处理完已执行的部分后，服务端按 `OPERATIONS[cmd].verify` 读回实际数据逐项核对，一轮一行（`round` 递增，`UNIQUE(intake_id, round)`）。检查项：`read_only`（查看不得产生批次）、`applied_once`（同一事项至多一个业务批次）、`entity_state_matches`/`policy_saved`（写入字段读回一致；之后又被改过只核对存在）、`session_in_scope`、`plan_consistent`（重排已跑且未失败；暂停/完成的任务不再占未开始的块；不撞课程/固定日程）、`practice_not_duplicated`、`side_effect_status`（邮件只核对已交给投递，不核对收件，不自动重发）、`dependent_steps_completed`（多步时任何一步没完成即不通过）、`demand_covered`（截止前排不下）。模型看不到也不能改这些判断。
 - **状态**：`verified` 全部通过；`partial` 有不通过且无现成问题；`needs_action` 不通过项都对应一个待主人取舍的问题（截止前排不下、锁定块撞课）；`blocked` 自动修正用尽或同一失败重复；`pending` 还有步骤在等回答。目标状态随之为 completed / partial / awaiting_input / blocked。
-- **有限修正**（`workflows/agent-run.ts`）：只做确定性动作——`replan`（在原范围内重跑排程）与 `rebind`（对象版本已变时按最新状态重新绑定并执行），不调模型、不扩大范围、不提高预算。每个投递至多 2 次修正、每次至多 4 步；不通过项的指纹与上一轮相同即停止；投递累计主动模型时间到 180 秒也停止。修正决定先写入核验行再执行。
+- **有限修正**（`workflows/agent-run.ts`）：只做确定性动作——`replan`（在原范围内重跑排程）与 `rebind`（对象版本已变时按最新状态重新绑定并执行），不调模型、不扩大范围、不提高预算。每个投递至多 2 次修正、每次至多 4 步；不通过项的指纹与上一轮相同即停止；投递累计主动执行时间（`intakes.active_ms`）到 180 秒也停止。修正决定先写入核验行再执行。
 - **步骤幂等**：`executeCommand` 在写入事务内发现同一 `item_id` + 命令已有批次时直接返回原批次（`replayed: true`），不再写第二次；worker 崩溃恢复后不会重复记实践、建任务或发邮件。
 - **结果视图**新增 `verification: {status, label, checks[{kind, ok, subject, detail}], repairs[{reason, steps[]}]} | null`；`partial`/`blocked` 时 `state` 为 `partly_applied`，`needs_action` 且取舍问题未答时为 `needs_input`，核验涉及的问题并入 `questions`，摘要追加“核对未通过：…/需要你决定：…”。全部查看时 `label` 为“只查看，没有改动任何东西”。目标摘要新增 `verification: {status, failing[]}`。
 
@@ -233,5 +233,10 @@ HTTP 202 只表示 accepted，HTTP 200 不能代替领域成功判断。版本�
 - **异步核验**：`side_effect_status` 按凭据里的引用读真实状态：排队/进行中 → `ok: null`（核验 `pending`），失败/取消 → 不通过，完成按产物判断；邮件只核对到“服务器已接收”，`unknown` 不自动重发。后台任务结束时 worker 调 `reverifyAfterJob` 重新核验并更新目标状态，不轮询。新增检查 `constraints_hold`：主人说过不动的部分执行前后的事实指纹必须一致。没有主批次时也核对必要后续（要求的重排失败或缺失 → 不通过并可修正）。
 - **修正**：`replan` 修正带原 `replanDates` 与保护条件重跑，不退化成全局重算。
 - **结果视图**：`goal.constraints: string[]`（例：“周末的作息、规则和安排不动（你说“周末别动”）”，沿用的写“沿用你前面说的”）。
-- **计时口径**：原 `activeMs` 更名 `modelMs`，只统计模型 HTTP 时间；单份投递 180 秒上限按此口径，不含等待主人、排队与本地执行。
-- **指标**：`metrics.stages {understandFailed, clarified, confirmed, scopeRejected, staleReconfirmed, execFailed, asyncWaiting, verified, partial, repaired, ownerCorrected}` 与 `metrics.modelTime {p50Ms, p95Ms, maxMs}`（单份投递的模型 HTTP 耗时）。
+- **计时口径**：`modelMs` 只统计模型 HTTP 时间。单份投递 180 秒上限按主动执行时间 `intakes.active_ms`（迁移 0034）计：worker 处理这份投递的实际时间（模型、查询、执行、核验与修正），模型调用后与处理结束时记检查点；不含排队与等主人回答。用完后不再请求模型，已完成的结果保留；每次模型调用的超时不超过剩余时间。进程崩溃最多丢最后一段未记下的时间。
+- **指标**：`metrics.stages {understandFailed, clarified, confirmed, scopeRejected, staleReconfirmed, execFailed, asyncWaiting, verified, partial, repaired, ownerCorrected}`、`metrics.modelTime {p50Ms, p95Ms, maxMs}`（单份投递的模型 HTTP 耗时）与 `metrics.activeTime {p50Ms, p95Ms, maxMs, samples}`（单份投递的主动执行时间；0034 之前的投递没有记录，不补算）。
+- **解除约束**：模型给的 `release` 只是候选。服务端按类型与点名字段（`days`/`dateFrom`/`dateTo`/`time`/`ref`）匹配到目标上具体的约束 ID（只匹配当前版本及以前的），确认问题点名要解除哪条；主人确认后记 `releaseAuthorized {ids, revision}`，目标版本变了即失效；该步执行成功后才把这些约束改为 `released`。不确认就仍按原约束过门。
+- **具体学习块的条件**：`GateContext.statedScope` 是主人明说的日期范围（`date_scope` 约束）。`schedule_session`/`reschedule_session` 按实际日期与起止时间核对 `statedScope` 与 `no_study_after`，越界即拒绝；核验项 `goal_conditions_hold` 从目标上生效的约束读回本批写入且仍在原位的学习块。
+- **对象身份**：`commandEntities(command)` 统一解析命令点名的对象（固定对象字段 + 通用 `entityKind/entityId`），确认快照与 `protect_entity` 核对共用。
+- **结果状态**：新增 `in_background`——核验在等后台任务、而本身已写入或无需写入时使用；此时目标保持 `active`，后台结束后重新核验再定终态。
+- **指代不明**：带条件的回答新增了 `protect_entity`、方案却与上一版一模一样时，问题 `purpose: "tradeoff"`、`fieldPath: "adjustment.referent"`，选项为方案里动到已有对象的每一步 +“都不是，其余照这份方案执行”+“先不要，什么都不改”；回答 `{choice}`。指认某一步 → 对该对象记 `protect_entity`（id 引用，摘录为主人那句回答）并去掉这一步再确认；选“都不是”且方案指纹未变 → 视同确认。

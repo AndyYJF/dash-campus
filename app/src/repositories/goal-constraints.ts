@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { getDb } from "./db";
-import { constraintValueSchema, type AcceptedConstraint, type ConstraintRelease, type ConstraintSource, type ConstraintValue } from "@/domain/constraints";
+import { constraintValueSchema, releaseMatches, type AcceptedConstraint, type ConstraintRelease, type ConstraintSource, type ConstraintValue } from "@/domain/constraints";
 
 /**
  * 目标约束（迁移 0033）：读出时逐行用 zod 判别联合校验，校验不过的行不参与执行判断。
@@ -34,23 +34,30 @@ export function inheritProtections(fromGoalId: string, toGoalId: string, intakeI
   const inherited = listGoalConstraints(fromGoalId)
     .filter((c) => c.value.kind === "protect_days" || c.value.kind === "protect_dates" || c.value.kind === "protect_entity")
     .map((c) => ({ value: c.value, excerpt: c.excerpt, source: "inherited" as const }));
-  return inherited.length ? recordGoalConstraints({ goalId: toGoalId, revision: 1, intakeId, accepted: inherited, releases: [], at }).added : 0;
+  return inherited.length ? recordGoalConstraints({ goalId: toGoalId, revision: 1, intakeId, accepted: inherited, at }).added : 0;
 }
 
-/** 记下接受的约束与解除：同一内容已在生效的不重复；新范围取代旧范围。必须在调用方事务里 */
-export function recordGoalConstraints(input: { goalId: string; revision: number; intakeId: string | null; accepted: AcceptedConstraint[]; releases: ConstraintRelease[]; at?: Date }): { added: number; released: number } {
+/**
+ * 模型提出的解除候选指向目标上哪几条生效的约束（只看这一版及之前说过的：旧事项重放不会解除之后重新说的条件）。
+ * 只是找出来给主人确认，不改状态。
+ */
+export function constraintsToRelease(goalId: string, releases: ConstraintRelease[], revision: number): GoalConstraintRow[] {
+  if (!releases.length) return [];
+  return listGoalConstraints(goalId).filter((c) => c.revision <= revision && releases.some((r) => releaseMatches(r, c.value)));
+}
+
+/** 主人确认过、且那一步执行成功后，按约束身份解除（已不是 accepted 的不动）。必须在调用方事务里 */
+export function releaseGoalConstraints(goalId: string, ids: string[], revision: number): number {
+  const db = getDb();
+  let n = 0;
+  for (const id of ids) n += db.prepare(`UPDATE agent_goal_constraints SET status = 'released', released_revision = ? WHERE id = ? AND goal_id = ? AND status = 'accepted'`).run(revision, id, goalId).changes;
+  return n;
+}
+
+/** 记下接受的约束：同一内容已在生效的不重复；新范围取代旧范围。只会收紧，解除走 releaseGoalConstraints。必须在调用方事务里 */
+export function recordGoalConstraints(input: { goalId: string; revision: number; intakeId: string | null; accepted: AcceptedConstraint[]; at?: Date }): { added: number } {
   const db = getDb();
   const t = (input.at ?? new Date()).toISOString();
-  const active = listGoalConstraints(input.goalId);
-  let released = 0;
-  for (const rel of input.releases) {
-    for (const c of active) {
-      // 只解除这一版及之前说过的：旧事项重放时不会把之后重新说的条件又解除掉
-      if (c.value.kind !== rel.target || c.status !== "accepted" || c.revision > input.revision) continue;
-      if (rel.days && c.value.kind === "protect_days" && c.value.days !== rel.days) continue;
-      released += db.prepare(`UPDATE agent_goal_constraints SET status = 'released', released_revision = ? WHERE id = ? AND status = 'accepted'`).run(input.revision, c.id).changes;
-    }
-  }
   let added = 0;
   const current = listGoalConstraints(input.goalId);
   for (const a of input.accepted) {
@@ -64,5 +71,5 @@ export function recordGoalConstraints(input: { goalId: string; revision: number;
     );
     added++;
   }
-  return { added, released };
+  return { added };
 }

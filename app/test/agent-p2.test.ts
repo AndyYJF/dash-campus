@@ -335,7 +335,7 @@ test("JSON next-tool 兼容协议：端点不支持原生工具时，模型用�
   try {
     const r = await say("帮我回忆一下我给自己定的方向");
     assert.equal(r.state, "answered", JSON.stringify(r));
-    assert.match(r.summary, /依据（只读查询）：当前身份、目标与作息/);
+    assert.match(r.summary, /依据（只读查询）：当前身份、目标、阶段与作息/);
   } finally {
     setProvidersForTests({ model: { mode: "fixture", provider } });
   }

@@ -30,6 +30,11 @@ const TABLE: Record<string, string> = {
   resource: "resources",
   candidate: "candidates",
   teaching_override: "teaching_day_overrides",
+  direction_profile: "direction_profile",
+  direction_track: "direction_tracks",
+  roadmap_item: "roadmap_items",
+  direction_project_link: "direction_project_links",
+  direction_reflection: "direction_reflections",
 };
 const ACTIVE_SESSION = ["tentative", "planned", "in_progress"];
 const columnCache = new Map<string, Set<string>>();

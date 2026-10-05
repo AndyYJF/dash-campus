@@ -8,7 +8,7 @@ import { instanceTimezone, tzOffsetMs } from "@/domain/time";
  * 确认绑定“命令 + 这些事实”；确认前或执行事务内事实变了，旧确认作废并说明差异；集合外的变化不作废。
  */
 
-const VERSIONED: Record<string, string> = { taskId: "tasks", sessionId: "plan_sessions", projectId: "projects", goalId: "goals", eventId: "fixed_events", practiceId: "practice_entries", candidateId: "candidates" };
+const VERSIONED: Record<string, string> = { taskId: "tasks", sessionId: "plan_sessions", projectId: "projects", goalId: "goals", eventId: "fixed_events", practiceId: "practice_entries", candidateId: "candidates", trackId: "direction_tracks", roadmapItemId: "roadmap_items", practiceEntryId: "practice_entries" };
 const PREF_COLUMNS: Record<string, string> = { workdayStart: "workday_start", workdayEnd: "workday_end", weekendStart: "weekend_start", weekendEnd: "weekend_end", dailyLimitMinutes: "daily_limit_minutes", minBlockMinutes: "min_block_minutes", bufferPercent: "buffer_percent", commuteMinutes: "commute_minutes", meals: "meals_json" };
 const PREF_LABELS: Record<string, string> = { workdayStart: "工作日开始时间", workdayEnd: "工作日结束时间", weekendStart: "周末开始时间", weekendEnd: "周末结束时间", dailyLimitMinutes: "每天上限", minBlockMinutes: "最短一段", bufferPercent: "机动比例", commuteMinutes: "交通时间", meals: "三餐时段" };
 
@@ -30,7 +30,7 @@ function relatedRules(rules: RuleLike[], revokeIds: string[]): Array<{ id: strin
     .map((r) => ({ id: r.id, version: r.version, status: r.status }));
 }
 
-const FIELD_KIND: Record<string, string> = { taskId: "task", sessionId: "plan_session", projectId: "project", goalId: "goal", eventId: "fixed_event", practiceId: "practice_entry", candidateId: "candidate" };
+const FIELD_KIND: Record<string, string> = { taskId: "task", sessionId: "plan_session", projectId: "project", goalId: "goal", eventId: "fixed_event", practiceId: "practice_entry", candidateId: "candidate", trackId: "direction_track", roadmapItemId: "roadmap_item", practiceEntryId: "practice_entry" };
 /** 通用对象字段（entityKind + entityId，如归档）能指向的对象类型与表 */
 const ENTITY_TABLE: Record<string, string> = { task: "tasks", goal: "goals", course_set: "course_sets", plan_session: "plan_sessions", project: "projects" };
 
@@ -70,6 +70,9 @@ export function commandFacts(command: Record<string, unknown>): Facts {
       const row = db.prepare(`SELECT * FROM planning_preferences WHERE id = 1`).get() as Record<string, unknown> | undefined;
       for (const k of keys) out[`pref:${k}`] = row?.[PREF_COLUMNS[k]!] ?? null;
     }
+  }
+  if (sets.includes("direction_profile")) {
+    out.directionProfile = (db.prepare(`SELECT version FROM direction_profile WHERE id = 1`).get() as { version: number } | undefined)?.version ?? null;
   }
   if (sets.includes("rules")) {
     const rules = (command.rules as RuleLike[] | undefined) ?? [];

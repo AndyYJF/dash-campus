@@ -9,6 +9,7 @@ import { listOpenQuestions } from "@/repositories/questions";
 import { getInProgressFocus } from "@/repositories/focus-timer";
 import { getPlanningRevision } from "@/repositories/proposals";
 import { dayLedger, eventsForDay, latestPlanConflicts, latestPlanUnscheduled, openBlocker, type DayLedger } from "./plan";
+import { DIRECTION_CONTENT_VERSION, PATH_KEYS, STAGES, TRACKS, stageTemplate, trackTemplate, type PathKey, type StageKey } from "@/content/direction";
 
 /**
  * 统一 snapshot（MASTER-PLAN §6.1/§8）：dashboard/week/direction 共用同一预算账本与会话数据；
@@ -304,8 +305,8 @@ export function directionSnapshot(asOf: Date) {
     projects,
     practice: practice.map((p) => ({ id: p.id, occurredOn: p.occurred_on, actualMinutes: p.actual_minutes, note: p.note, blocker: p.blocker, category: p.category })),
     evidenceState: practice.length ? "has_evidence" : "no_evidence",
-    // 已有进行中的项目时最多再展示 2 个候选；没有项目时最多 3 个
-    candidates: candidates.slice(0, projects.length ? 2 : 3).map((c) => {
+    // 进行中的项目不挤掉候选：最多仍展示 3 个（方向页打磨：统一上限）
+    candidates: candidates.slice(0, 3).map((c) => {
       const first = parse<{ title?: string; estimateMinutes?: number | null }>(c.first_task_json, {});
       const requirements = parse<Array<{ label: string; status: string; confirmedByOwner?: boolean }>>(c.requirements_json, []);
       return {
@@ -322,9 +323,128 @@ export function directionSnapshot(asOf: Date) {
         unknowns: parse<string[]>(c.unknowns_json, []),
       };
     }),
+    recommendations: candidates.slice(0, 3).map((c) => {
+      const first = parse<{ title?: string; estimateMinutes?: number | null }>(c.first_task_json, {});
+      const requirements = parse<Array<{ label: string; status: string; confirmedByOwner?: boolean }>>(c.requirements_json, []);
+      return {
+        id: c.id as string,
+        version: c.version as number,
+        title: c.title as string,
+        question: c.question as string,
+        deliverable: c.deliverable as string,
+        fitReason: c.fit_reason as string,
+        evidenceStatus: c.evidence_status as string,
+        canonicalUrl: (c.canonical_url as string | null) ?? null,
+        firstStep: first.title ? { title: first.title, estimateMinutes: first.estimateMinutes ?? null } : null,
+        requirements: requirements.map((r) => ({ label: r.label, status: r.status === "met" && r.confirmedByOwner ? "met" : r.status === "unmet" ? "unmet" : "unknown" })),
+        unknowns: parse<string[]>(c.unknowns_json, []),
+        sourceKind: c.evidence_status === "retrieved" ? "retrieved" : c.evidence_status === "snippet" ? "snippet" : "designed",
+      };
+    }),
     honesty: practice.length
       ? "建议只引用上面的实践记录；没有记录的方面不编造，也不给能力评分或升学概率。"
       : "还没有实践记录，方向建议缺少证据。先记录几次真实学习再来看这里。",
+    ...directionWorkspace(today),
+  };
+}
+
+function directionWorkspace(today: string) {
+  const db = getDb();
+  const profileRow = db.prepare(`SELECT confirmed_stage, stage_source, entry_year, path_preferences_json, version FROM direction_profile WHERE id = 1`).get() as
+    | { confirmed_stage: string | null; stage_source: string; entry_year: number | null; path_preferences_json: string; version: number }
+    | undefined;
+  const paths = JSON.parse(profileRow?.path_preferences_json ?? "[]") as PathKey[];
+  const items = db.prepare(`SELECT id, stage_key, title, purpose, goal_id, track_id, status, version FROM roadmap_items ORDER BY created_at`).all() as Array<{
+    id: string; stage_key: string; title: string; purpose: string; goal_id: string | null; track_id: string | null; status: string; version: number;
+  }>;
+  const tracks = db.prepare(`SELECT id, template_key, title, status, owner_notes, version FROM direction_tracks ORDER BY created_at`).all() as Array<{
+    id: string; template_key: string | null; title: string; status: string; owner_notes: string; version: number;
+  }>;
+  const links = db.prepare(`SELECT l.project_id, l.track_id, l.roadmap_item_id, p.title, p.status, p.engagement FROM direction_project_links l JOIN projects p ON p.id = l.project_id WHERE p.archived_at IS NULL`).all() as Array<{
+    project_id: string; track_id: string; roadmap_item_id: string | null; title: string; status: string; engagement: string;
+  }>;
+  const reflections = db.prepare(`SELECT id, original_text, summary, occurred_on, project_id, track_id, practice_entry_id FROM direction_reflections ORDER BY occurred_on DESC, created_at DESC LIMIT 20`).all() as Array<{
+    id: string; original_text: string; summary: string; occurred_on: string; project_id: string | null; track_id: string | null; practice_entry_id: string | null;
+  }>;
+  const notes = db
+    .prepare(
+      `SELECT l.id, l.track_id, l.stage_key, l.note_kind, l.origin, r.id AS resource_id, r.title, r.url, r.created_at
+       FROM resource_links l JOIN resources r ON r.id = l.resource_id
+       WHERE r.archived_at IS NULL AND (l.track_id IS NOT NULL OR l.stage_key IS NOT NULL OR l.note_kind IS NOT NULL)
+       ORDER BY r.created_at DESC LIMIT 20`,
+    )
+    .all() as Array<{ id: string; track_id: string | null; stage_key: string | null; note_kind: string | null; origin: string; resource_id: string; title: string; url: string | null; created_at: string }>;
+  return {
+    contentVersion: DIRECTION_CONTENT_VERSION,
+    profile: {
+      confirmedStage: (profileRow?.confirmed_stage ?? null) as StageKey | null,
+      stageLabel: profileRow?.confirmed_stage ? stageTemplate(profileRow.confirmed_stage as StageKey).label : null,
+      stageSource: profileRow?.stage_source || null,
+      entryYear: profileRow?.entry_year ?? null,
+      pathPreferences: paths,
+      version: profileRow?.version ?? 0,
+    },
+    roadmap: STAGES.map((s) => ({
+      key: s.key,
+      label: s.label,
+      title: s.title,
+      purpose: s.purpose,
+      foundations: s.foundations,
+      choices: s.choices,
+      outputs: s.outputs,
+      nextNeeds: s.nextNeeds,
+      pathHints: Object.fromEntries(PATH_KEYS.filter((k) => k !== "undecided" && (!paths.length || paths.includes(k) || paths.includes("undecided"))).map((k) => [k, s.pathHints[k as Exclude<PathKey, "undecided">] ?? ""])),
+      adopted: items.filter((i) => i.stage_key === s.key).map((i) => ({ id: i.id, title: i.title, purpose: i.purpose, status: i.status, goalId: i.goal_id, trackId: i.track_id, version: i.version })),
+    })),
+    tracks: tracks.map((t) => {
+      const tpl = t.template_key ? trackTemplate(t.template_key) : undefined;
+      const linked = links.filter((l) => l.track_id === t.id);
+      return {
+        id: t.id,
+        templateKey: t.template_key,
+        title: t.title,
+        status: t.status,
+        ownerNotes: t.owner_notes,
+        version: t.version,
+        problem: tpl?.problem ?? null,
+        activities: tpl?.activities ?? [],
+        sample: tpl?.sample ?? null,
+        basics: tpl?.basics ?? [],
+        trial: tpl?.trial ?? null,
+        projects: linked.map((l) => ({ id: l.project_id, title: l.title, status: l.status, engagement: l.engagement, unlinked: false })),
+      };
+    }),
+    workSamples: TRACKS.filter((s) => !tracks.some((t) => t.template_key === s.key)).map((s) => ({
+      templateKey: s.key,
+      title: s.title,
+      problem: s.problem,
+      activities: s.activities,
+      sample: s.sample,
+      basics: s.basics,
+      trial: s.trial,
+      relatedFields: s.relatedFields,
+    })),
+    notes: notes.map((n) => ({
+      id: n.id,
+      resourceId: n.resource_id,
+      title: n.title,
+      url: n.url,
+      trackId: n.track_id,
+      stageKey: n.stage_key,
+      noteKind: n.note_kind,
+      origin: n.origin,
+      createdAt: n.created_at,
+    })),
+    reflections: reflections.map((r) => ({
+      id: r.id,
+      originalText: r.original_text,
+      summary: r.summary || null,
+      occurredOn: r.occurred_on,
+      projectId: r.project_id,
+      trackId: r.track_id,
+      practiceEntryId: r.practice_entry_id,
+    })),
+    asOfLocal: today,
   };
 }
 

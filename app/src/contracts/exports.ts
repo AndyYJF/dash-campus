@@ -130,6 +130,12 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   // 语义修复（迁移 0033）：目标约束与步骤执行凭据属于目标流程状态
   agent_goal_constraints: {},
   agent_step_executions: {},
+  // 方向页打磨（迁移 0035）：主人确认的阶段/去向、关注方向、采用的阶段项、项目关联与实践感受
+  direction_profile: {},
+  direction_tracks: {},
+  roadmap_items: {},
+  direction_project_links: {},
+  direction_reflections: {},
     // 非敏感设置（邮件模板、预算）；调度内部状态不导出
   settings: {},
 };

@@ -117,6 +117,14 @@ function projectRefs(): TaskRef[] {
   return getDb().prepare(`SELECT id, title FROM projects WHERE archived_at IS NULL AND status != 'completed' ORDER BY created_at`).all() as TaskRef[];
 }
 
+function trackRefs(): TaskRef[] {
+  return getDb().prepare(`SELECT id, title FROM direction_tracks ORDER BY created_at`).all() as TaskRef[];
+}
+
+function roadmapRefs(): TaskRef[] {
+  return getDb().prepare(`SELECT id, title FROM roadmap_items ORDER BY created_at`).all() as TaskRef[];
+}
+
 /** 通知：标题取正文第一行（上游桥接的取上游标题） */
 function noticeRefs(): TaskRef[] {
   const rows = getDb()
@@ -400,7 +408,81 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
       picked = c.value;
     }
     if (!picked) return { kind: "fail", error: list.length ? `有 ${list.length} 个候选，说一下是哪一个（名称或“第几个”）` : "现在没有候选项目。可以说“帮我找一个……的小项目”" };
-    return { kind: "run", command: { command: "select_candidate", candidateId: picked.id, mode: "trial", trialWeeks: intent.weeks, goalId: primaryGoalId() } };
+    let trackId: string | null = null;
+    if (intent.track) {
+      const t = chooseOrAsk(resolvePooled(intent.track, env, "direction_track", trackRefs(), "没有找到这个关注方向"), env, "direction_track", (v) => v.title, "关注方向");
+      if (t.kind !== "one") return t;
+      trackId = t.value.id;
+    }
+    return { kind: "run", command: { command: "select_candidate", candidateId: picked.id, mode: intent.commit ? "commit" : "trial", trialWeeks: intent.weeks, goalId: primaryGoalId(), trackId } };
+  }
+  if (intent.op === "direction_profile") {
+    return { kind: "run", command: { command: "update_direction_profile", ...(intent.stage !== undefined ? { confirmedStage: intent.stage } : {}), ...(intent.entryYear !== undefined ? { entryYear: intent.entryYear } : {}), ...(intent.paths !== undefined ? { pathPreferences: intent.paths } : {}) } };
+  }
+  if (intent.op === "direction_track") {
+    const patch = { ...(intent.status ? { status: intent.status } : {}), ...(intent.notes !== undefined ? { ownerNotes: intent.notes } : {}) };
+    if (intent.ref) {
+      const t = chooseOrAsk(resolvePooled(intent.ref, env, "direction_track", trackRefs(), intent.ref.kind === "named" ? `还没有关注「${intent.ref.text}」` : "没有找到这个关注方向"), env, "direction_track", (v) => v.title, "关注方向");
+      if (t.kind === "one") return { kind: "run", command: { command: "upsert_direction_track", trackId: t.value.id, ...patch } };
+      if (t.kind !== "fail" || (!intent.templateKey && !intent.title)) return t;
+    }
+    if (!intent.templateKey && !intent.title) return { kind: "fail", error: "说一下想关注哪一类工作" };
+    return { kind: "run", command: { command: "upsert_direction_track", ...(intent.templateKey ? { templateKey: intent.templateKey } : {}), ...(intent.title ? { title: intent.title } : {}), ...patch } };
+  }
+  if (intent.op === "roadmap_item") {
+    let trackId: string | undefined;
+    if (intent.track) {
+      const t = chooseOrAsk(resolvePooled(intent.track, env, "direction_track", trackRefs(), "没有找到这个关注方向"), env, "direction_track", (v) => v.title, "关注方向");
+      if (t.kind !== "one") return t;
+      trackId = t.value.id;
+    }
+    const fields = { ...(intent.stage ? { stageKey: intent.stage } : {}), ...(intent.title ? { title: intent.title } : {}), ...(intent.purpose !== undefined ? { purpose: intent.purpose } : {}), ...(intent.status ? { status: intent.status } : {}), ...(trackId ? { trackId } : {}) };
+    if (intent.ref) {
+      const r = chooseOrAsk(resolvePooled(intent.ref, env, "roadmap_item", roadmapRefs(), "没有找到这个阶段项"), env, "roadmap_item", (v) => v.title, "阶段项");
+      if (r.kind !== "one") return r;
+      if (intent.title && intent.title === r.value.title) delete (fields as { title?: string }).title;
+      return { kind: "run", command: { command: "update_roadmap_item", roadmapItemId: r.value.id, ...fields } };
+    }
+    if (!intent.stage || !intent.title) return { kind: "fail", error: "采用阶段项需要说明是哪个阶段、做什么" };
+    return { kind: "run", command: { command: "update_roadmap_item", ...fields } };
+  }
+  if (intent.op === "direction_link") {
+    const p = chooseOrAsk(resolvePooled(intent.project, env, "project", projectRefs(), "没有找到这个项目"), env, "project", (v) => v.title, "项目");
+    if (p.kind !== "one") return p;
+    const t = chooseOrAsk(resolvePooled(intent.track, env, "direction_track", trackRefs(), "没有找到这个关注方向"), env, "direction_track", (v) => v.title, "关注方向");
+    if (t.kind !== "one") return t;
+    return { kind: "run", command: { command: "link_direction_project", projectId: p.value.id, trackId: t.value.id, remove: intent.remove } };
+  }
+  if (intent.op === "direction_reflection") {
+    let projectId: string | null = null;
+    let trackId: string | null = null;
+    if (intent.project) {
+      const p = chooseOrAsk(resolvePooled(intent.project, env, "project", projectRefs(), "没有找到这个项目"), env, "project", (v) => v.title, "项目");
+      if (p.kind !== "one") return p;
+      projectId = p.value.id;
+    }
+    if (intent.track) {
+      const t = chooseOrAsk(resolvePooled(intent.track, env, "direction_track", trackRefs(), "没有找到这个关注方向"), env, "direction_track", (v) => v.title, "关注方向");
+      if (t.kind !== "one") return t;
+      trackId = t.value.id;
+    }
+    if (!projectId && !trackId) {
+      const only = projectRefs();
+      if (only.length !== 1) return { kind: "fail", error: only.length ? "这段感受是关于哪个项目或方向的？说一下名称" : "这段感受要关联到一个项目或关注方向，现在还没有" };
+      projectId = only[0]!.id;
+    }
+    return { kind: "run", command: { command: "record_direction_reflection", text: intent.text, ...(intent.date ? { occurredOn: intent.date } : {}), projectId, trackId } };
+  }
+  if (intent.op === "direction_note") {
+    const resourceId = recentResourceId(env);
+    if (!resourceId) return { kind: "fail", error: "不确定你说的是哪份资料——先把资料放进来，再告诉我它记在哪里" };
+    let trackId: string | null = null;
+    if (intent.track) {
+      const t = chooseOrAsk(resolvePooled(intent.track, env, "direction_track", trackRefs(), "没有找到这个关注方向"), env, "direction_track", (v) => v.title, "关注方向");
+      if (t.kind !== "one") return t;
+      trackId = t.value.id;
+    }
+    return { kind: "run", command: { command: "link_resource", resourceId, role: "reference", origin: "user", trackId, stageKey: intent.stage, noteKind: intent.noteKind } };
   }
   if (intent.op === "project_state") {
     const p = chooseOrAsk(resolvePooled(intent.ref, env, "project", projectRefs(), "没有找到这个项目"), env, "project", (v) => v.title, "项目");

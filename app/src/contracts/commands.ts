@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { taskKindSchema } from "@/domain/task-admission";
+import { PATH_KEYS, STAGE_KEYS } from "@/content/direction/stages";
 
 /**
  * 操作注册表契约（MASTER-PLAN §4.2/§7，AGENT-INTERFACE-CONTRACT §4）：
@@ -332,6 +333,9 @@ export const selectCandidateSchema = z.object({
   mode: z.enum(["trial", "commit"]).default("trial"),
   trialWeeks: z.number().int().min(1).max(12).default(2),
   goalId: z.string().uuid().nullable().default(null),
+  /** 从方向卡/阶段项发起时的关联：同一事务里写方向关联，重复选择返回已有项目 */
+  trackId: z.string().uuid().nullable().default(null),
+  roadmapItemId: z.string().uuid().nullable().default(null),
 });
 
 export const updateProjectStateSchema = z.object({
@@ -358,6 +362,62 @@ export const linkResourceSchema = z.object({
   projectId: z.string().uuid().nullable().default(null),
   role: z.enum(["reference", "requirement", "achievement"]).optional(),
   origin: z.enum(["user", "assumed"]).default("assumed"),
+  /** 主人线索的方向/阶段上下文与类型；只是存档，不建任务、不代表要联系或申请 */
+  trackId: z.string().uuid().nullable().optional(),
+  stageKey: z.enum(STAGE_KEYS).nullable().optional(),
+  noteKind: z.enum(["advice", "policy", "opportunity", "industry", "question", "other"]).nullable().optional(),
+});
+
+/** 主人明确说的当前阶段与去向偏好；阶段不从任务数推算，去向可多选，未选不代表排除 */
+export const updateDirectionProfileSchema = z.object({
+  command: z.literal("update_direction_profile"),
+  expectedVersion: z.number().int().min(1).nullable().default(null),
+  confirmedStage: z.enum(STAGE_KEYS).nullable().optional(),
+  entryYear: z.number().int().min(2000).max(2100).nullable().optional(),
+  pathPreferences: z.array(z.enum(PATH_KEYS)).max(PATH_KEYS.length).optional(),
+});
+
+/** 关注方向：不带 trackId 新建（同一工作样本只建一个）；带 trackId 修改状态或备注 */
+export const upsertDirectionTrackSchema = z.object({
+  command: z.literal("upsert_direction_track"),
+  trackId: z.string().uuid().nullable().default(null),
+  expectedVersion: z.number().int().min(1).nullable().default(null),
+  templateKey: z.string().trim().min(1).max(60).nullable().optional(),
+  title: z.string().trim().min(1).max(200).optional(),
+  status: z.enum(["exploring", "following", "paused"]).optional(),
+  ownerNotes: z.string().max(2000).optional(),
+});
+
+/** 阶段项：不带 roadmapItemId 是主人采用一条；带 ID 修订；completed 只在主人明确确认时用 */
+export const updateRoadmapItemSchema = z.object({
+  command: z.literal("update_roadmap_item"),
+  roadmapItemId: z.string().uuid().nullable().default(null),
+  expectedVersion: z.number().int().min(1).nullable().default(null),
+  stageKey: z.enum(STAGE_KEYS).optional(),
+  title: z.string().trim().min(1).max(200).optional(),
+  purpose: z.string().max(1000).optional(),
+  goalId: z.string().uuid().nullable().optional(),
+  trackId: z.string().uuid().nullable().optional(),
+  status: z.enum(["adopted", "completed", "paused"]).optional(),
+});
+
+/** 把已有项目关联到关注方向（可附阶段项）；同一项目 + 方向只有一条；remove 解除关联，项目本身不动 */
+export const linkDirectionProjectSchema = z.object({
+  command: z.literal("link_direction_project"),
+  projectId: z.string().uuid(),
+  trackId: z.string().uuid(),
+  roadmapItemId: z.string().uuid().nullable().optional(),
+  remove: z.boolean().default(false),
+});
+
+/** 主人的实践感受：原话必留；关联到项目/方向/实践记录至少一个；不另记分钟数 */
+export const recordDirectionReflectionSchema = z.object({
+  command: z.literal("record_direction_reflection"),
+  text: z.string().trim().min(1).max(4000),
+  occurredOn: dateStr.optional(),
+  projectId: z.string().uuid().nullable().default(null),
+  trackId: z.string().uuid().nullable().default(null),
+  practiceEntryId: z.string().uuid().nullable().default(null),
 });
 
 /** 主动程度与调用预算：每日模型/搜索次数上限、是否运行定期探索与定期复盘 */
@@ -447,6 +507,11 @@ export const commandSchema = z.discriminatedUnion("command", [
   updateProjectStateSchema,
   requestExplorationSchema,
   linkResourceSchema,
+  updateDirectionProfileSchema,
+  upsertDirectionTrackSchema,
+  updateRoadmapItemSchema,
+  linkDirectionProjectSchema,
+  recordDirectionReflectionSchema,
   updateAgentPolicySchema,
   requestReviewSchema,
   configureExplorationSchema,
@@ -503,7 +568,7 @@ export type OperationMeta = {
 };
 
 /** entity：命令里点名对象的版本；preferences：命令要改的作息字段当前值；rules：同类或日期重叠的生效规则 */
-export type FactSet = "entity" | "preferences" | "rules";
+export type FactSet = "entity" | "preferences" | "rules" | "direction_profile";
 
 export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   upsert_course_set: { title: "课表更新", description: "用确定性课表文本（SDCT1）和学期首周一建立/替换本学期课程。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"], sideEffects: ["replan"], reads: ["get_context"], verify: ["entity_state_matches", "plan_consistent"] },
@@ -534,7 +599,12 @@ export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   select_candidate: { title: "开始项目", description: "选一个候选开始试做（默认两周、只建第一步）或正式投入。不代表对外报名。", group: "goal", authorization: "explicit", undo: "journal", affects: ["plan", "direction"], sideEffects: ["replan"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "plan_consistent"] },
   update_project_state: { title: "项目状态", description: "暂停/恢复/结束项目，或把试做转为正式投入。", group: "goal", authorization: "explicit", undo: "journal", affects: ["plan", "direction"], sideEffects: ["replan"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "plan_consistent"] },
   request_exploration: { title: "找候选项目", description: "按主人给的问题检索有来源的资料并生成最多 3 个候选。", group: "goal", authorization: "explicit", undo: "none", affects: ["direction"], sideEffects: ["job"], reads: ["get_context"], verify: ["side_effect_status"] },
-  link_resource: { title: "资料", description: "把资料存下来、关联到项目，或纠正它是参考资料/别人的要求/自己的成果。", group: "goal", authorization: "auto", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["find_entities"], verify: ["entity_state_matches"] },
+  link_resource: { title: "资料", description: "把资料存下来、关联到项目，或纠正它是参考资料/别人的要求/自己的成果；主人线索可带关注方向 trackId、阶段 stageKey 与类型 noteKind（只存档，不建任务）。", group: "goal", authorization: "auto", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["find_entities"], verify: ["entity_state_matches"] },
+  update_direction_profile: { title: "阶段与去向", description: "记录主人明确说的当前阶段（year1–year4）、入学年与去向偏好（research/further_study/employment/undecided，可多选）。不从任务数推算阶段，不生成目标或任务。", group: "goal", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["get_context"], verify: ["entity_state_matches"], facts: ["direction_profile"] },
+  upsert_direction_track: { title: "关注方向", description: "添加一个关注方向（可来自工作样本 templateKey），或改它的状态 exploring/following/paused 与主人备注。“先不看了”只改状态，不动关联项目。", group: "goal", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["get_context", "find_entities"], verify: ["entity_state_matches"] },
+  update_roadmap_item: { title: "阶段项", description: "主人采用或修订一条阶段项（stageKey + 标题/目的，可引用已有目标或关注方向）；completed 只在主人明确确认时用。不生成任务。", group: "goal", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["get_context", "find_entities"], verify: ["entity_state_matches"] },
+  link_direction_project: { title: "项目关联方向", description: "把已有项目关联到关注方向（可附阶段项），或 remove 解除；项目本身和它的安排不变。", group: "goal", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["find_entities"], verify: ["entity_state_matches"] },
+  record_direction_reflection: { title: "实践感受", description: "保存主人对实践的原话感受，关联项目/关注方向/实践记录至少一个。只记主人说的，不记分钟数（实际用时走实践记录）。", group: "practice", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["find_entities"], verify: ["entity_state_matches"] },
   update_agent_policy: { title: "主动程度与预算", description: "每日模型/搜索调用上限；是否运行定期探索和定期复盘。", group: "agent", authorization: "explicit", undo: "journal", affects: [], sideEffects: [], reads: ["get_context"], verify: ["policy_saved"] },
   request_review: { title: "复盘", description: "按一周已记录的事实生成复盘与建议；建议不自动执行。", group: "agent", authorization: "explicit", undo: "none", affects: [], sideEffects: ["job"], reads: ["get_context"], verify: ["side_effect_status"] },
   configure_exploration: { title: "定期探索", description: "新建、调整或停用一个关注方向及其每周探索时间。", group: "agent", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: ["job"], reads: ["find_entities"], verify: ["policy_saved"] },

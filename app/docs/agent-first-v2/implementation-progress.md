@@ -2,6 +2,14 @@
 
 本页按阶段记录事实、缺口和下一步。开工指令见 [CODING-AGENT.md](./CODING-AGENT.md)，完整契约见 [MASTER-PLAN.md](./MASTER-PLAN.md)。每条结论注明验证方式；无证据的能力标为缺口。
 
+## 方向页打磨 D0/D1（2026-10-05，未部署）
+
+计划见 [dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md](../../../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md)。
+
+- 交付：`src/content/direction/`（四年模板 year1–year4、5 个工作样本）；迁移 `0035_direction_workspace.sql`，`EXPECTED_SCHEMA_VERSION = 35`；操作 `update_direction_profile` / `upsert_direction_track` / `update_roadmap_item` / `link_direction_project` / `record_direction_reflection` 走 OPERATIONS、Zod、intent、绑定、facts、执行、核验表、撤销、导出；`select_candidate` 可带 `trackId`/`roadmapItemId`；`link_resource` 可带方向线索字段；`GET /api/v2/direction` 增加 profile/roadmap/tracks/workSamples/notes/reflections，候选最多 3 个。
+- 验证：`test/direction-workspace.test.ts` 9 项（未知年级只读、并存去向、阶段项不建任务、先不看了不暂停项目、感受去重、线索不建任务、撤销、导出白名单）；相关旧测同步通过。
+- 未做：投入预览、网页走查、真实模型、生产部署与只读冒烟、第 11 节 13 个场景的完整验收。
+
 ## 2026-10-04 后续交互修复与决策同步（当前补充）
 
 业务版本 `95c8cf1` 已部署/schema29，代码及文档在 `agentbox/dashcampus`。全局 Agent 栏、查看只读、模糊调整的事实决策/日期范围核对已完成。337项测试通过；真实模型及生产原句验证通过，计算后无需移动，Todo未写。具体证据见 [当前状态](../STATUS.md)、[决策记录](../decisions.md) 和 [模糊调整记录](../flexible-adjustments-2026-10-04.md)。真实模型追问续答只有假件验证，真实邮件和主人七天试用仍未完成。

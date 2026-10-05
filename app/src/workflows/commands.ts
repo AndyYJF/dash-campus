@@ -18,6 +18,7 @@ import { applyAgentPolicy, applyDigestPolicy, applyReminderPolicy } from "@/work
 import { applyCancelOperation, applyConfigureExploration, applyRequestOwnerDigest, applyRequestReview, applyUpdateFixedEvent } from "@/workflows/ops/agent-ops";
 import { applyNotice, applyNoticeRule, applyProfileFacts, applyResolveNotice } from "@/workflows/ops/notices";
 import { applyGoal, applyLinkResource, applyProjectState, applyRequestExploration, applySelectCandidate } from "@/workflows/ops/direction";
+import { applyDirectionProfile, applyDirectionReflection, applyDirectionTrack, applyLinkDirectionProject, applyRoadmapItem } from "@/workflows/ops/direction-workspace";
 import { reevaluateAllCurrent } from "@/workflows/inbox";
 import { createExport } from "@/workflows/exports";
 import { refreshAllReminders } from "@/workflows/reminders";
@@ -126,6 +127,11 @@ const HANDLERS: { [N in Command["command"]]: Handler<N> } = {
   update_project_state: applyProjectState,
   request_exploration: applyRequestExploration,
   link_resource: applyLinkResource,
+  update_direction_profile: applyDirectionProfile,
+  upsert_direction_track: applyDirectionTrack,
+  update_roadmap_item: applyRoadmapItem,
+  link_direction_project: applyLinkDirectionProject,
+  record_direction_reflection: applyDirectionReflection,
   update_agent_policy: applyAgentPolicy,
   request_review: applyRequestReview,
   configure_exploration: applyConfigureExploration,

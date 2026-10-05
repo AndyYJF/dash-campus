@@ -63,6 +63,11 @@ const COMMAND_LABEL: Record<string, string> = {
   select_candidate: "开始项目",
   update_project_state: "项目状态",
   link_resource: "资料",
+  update_direction_profile: "阶段与去向",
+  upsert_direction_track: "关注方向",
+  update_roadmap_item: "阶段项",
+  link_direction_project: "项目关联方向",
+  record_direction_reflection: "实践感受",
 };
 const WEEKDAY = "日一二三四五六";
 const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));

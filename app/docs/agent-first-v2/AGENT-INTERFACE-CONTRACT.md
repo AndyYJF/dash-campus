@@ -263,3 +263,10 @@ HTTP 202 只表示 accepted，HTTP 200 不能代替领域成功判断。版本�
 - **判定**：`deadlineScopeAmbiguity`（`src/workflows/intake.ts`）。只在本轮意图含 `replan`/`schedule_at` 时检查；截止日来自本轮 `set_due`、`create_task.dueLocalDate`，以及 `prioritize`/`schedule_at` 点名的现有任务的截止。候选范围只取主人原话（文字解析的单日、主人原文摘录的单日 `date_scope`、单日 `decisionScope`）。某个候选日 D 晚于今天且正是某件事的截止 → 有歧义。主人回答里已说范围、或主人说的范围从今天覆盖到截止，都不问。
 - **问题**：`purpose: "tradeoff"`，`fieldPath: "adjustment.scope"`，`questionKey = scope-choice:{itemId}:{D}`；提示“你说的 M/D 是「任务」的截止日。这次安排是从今天到截止前都可以排，还是只调整 M/D 那一天？”，选项“从今天到截止前都可以排 / 只调整 M/D 那一天 / 先不要，什么都不改”。问在统一门与确认之前；决策路径答后重新决策，命令路径答后再走原步骤。
 - **回答**：`{choice}` 结构化处理，不交给模型二次理解。0 → `scopeChoice {date: D, mode: "deadline"}`：D 不再算范围（`decisionScope` 的 `notScope`、主人原文的单日 `date_scope` 去掉、不记到目标约束），默认范围与其他已说的范围照常生效；1 → `mode: "only"`，范围固定为 [D, D]；2 → 不执行，结果“按你说的先不改，原来的安排没有动”。同一项只问一次。
+
+## 2026-10-05 方向页打磨 D0/D1（迁移 0035）
+
+- **读**：`GET /api/v2/direction` 增加 `profile`、`roadmap`、`tracks`、`workSamples`、`notes`、`reflections`、`recommendations`；候选最多 3 个。GET 不写库、不启 job。
+- **写（名称固定）**：`update_direction_profile`、`upsert_direction_track`、`update_roadmap_item`、`link_direction_project`、`record_direction_reflection`。`select_candidate` 可选 `trackId`/`roadmapItemId`；`link_resource` 可选 `trackId`/`stageKey`/`noteKind`。
+- **阶段键** `year1`–`year4`；去向 `research`/`further_study`/`employment`/`undecided`；关注状态 `exploring`/`following`/`paused`；阶段项 `adopted`/`completed`/`paused`。
+- **边界**：采用模板不建目标或任务；“先不看了”只改关注状态；感受保存原话、不另记分钟。

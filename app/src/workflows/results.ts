@@ -52,6 +52,11 @@ const KIND_LABEL: Record<string, string> = {
   setting: "设置",
   profile_fact: "身份信息",
   profile_rule: "筛选规则",
+  direction_profile: "阶段与去向",
+  direction_track: "关注方向",
+  roadmap_item: "阶段项",
+  direction_project_link: "项目与方向的关联",
+  direction_reflection: "实践感受",
 };
 
 const RECOVERABLE = new Set(["STALE_VERSION", "NO_SLOT", "OVER_BUDGET", "DEADLINE_CONFLICT", "SLOT_CONFLICT", "AMBIGUOUS_REFERENCE", "ANCHOR_CONFLICT", "MAPPING_CONFLICT", "UNDO_CONFLICT", "CONFLICT"]);
@@ -74,6 +79,8 @@ export function entityLabel(kind: string, id: string): string {
   if (kind === "course") return (db.prepare(`SELECT name FROM courses WHERE id = ?`).get(id) as { name: string } | undefined)?.name ?? "课程";
   if (kind === "goal") return (db.prepare(`SELECT title FROM goals WHERE id = ?`).get(id) as { title: string } | undefined)?.title ?? "目标";
   if (kind === "project") return (db.prepare(`SELECT title FROM projects WHERE id = ?`).get(id) as { title: string } | undefined)?.title ?? "项目";
+  if (kind === "direction_track") return (db.prepare(`SELECT title FROM direction_tracks WHERE id = ?`).get(id) as { title: string } | undefined)?.title ?? "关注方向";
+  if (kind === "roadmap_item") return (db.prepare(`SELECT title FROM roadmap_items WHERE id = ?`).get(id) as { title: string } | undefined)?.title ?? "阶段项";
   return KIND_LABEL[kind] ?? kind;
 }
 

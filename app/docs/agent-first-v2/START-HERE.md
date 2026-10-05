@@ -1,6 +1,6 @@
 # 从这里接手：V2 易用性修复与自研 Agent
 
-更新：2026-10-05。Agent 语义修复（R01–R08、S01–S20，迁移 0033；复审修复 0034；过期未反馈块、剩余时钟、反馈记账及同步刷新修复、截止日与范围歧义，当前生产 `c71d5cf`、schema 34）见下节；Agent增强 v1.1 的 P0–P6 已在 `main` 实现并逐包部署生产（`521aeaa`、schema32）；早先 R0–R5 与易用性修复的业务版本为 `95c8cf1`（schema29）。后续文档提交与业务部署修订分开记录。先读 [当前状态](../STATUS.md)、[产品与工程决策](../decisions.md) 及 [模糊调整的实现与证据](../flexible-adjustments-2026-10-04.md)。修复前审计基线 `cbbaeeeaa328807ebc97389a7a824f7acdb6c356` 只作历史，拉取后仍核对代码与工作区。
+更新：2026-10-05。方向页打磨 D0/D1（迁移 0035，schema 35，尚未部署）见下节。Agent 语义修复（R01–R08、S01–S20，迁移 0033；复审修复 0034；过期未反馈块、剩余时钟、反馈记账及同步刷新修复、截止日与范围歧义，当前生产 `c71d5cf`、schema 34）见其后；Agent增强 v1.1 的 P0–P6 已在 `main` 实现并逐包部署生产（`521aeaa`、schema32）；早先 R0–R5 与易用性修复的业务版本为 `95c8cf1`（schema29）。后续文档提交与业务部署修订分开记录。先读 [当前状态](../STATUS.md)、[产品与工程决策](../decisions.md) 及 [模糊调整的实现与证据](../flexible-adjustments-2026-10-04.md)。修复前审计基线 `cbbaeeeaa328807ebc97389a7a824f7acdb6c356` 只作历史，拉取后仍核对代码与工作区。
 
 反馈记账业务 **`967719d` / schema34** 已被最新 **`3895aa3` / schema34** 补发（均无迁移）。同日多段反馈按plan_session_id去重，“完成一半”不推算实际时间；最新补发让同步answered路径也广播dash:changed、PlanView也订阅，避免时间轴显示过期状态。证据见 [即时刷新发布](../feedback-refresh-fix-2026-10-05.md)；前段 `962b120` 是更早发布，保留历史。证据及未关联历史记录的兼容边界见 [反馈记账发布](../feedback-accounting-fix-2026-10-05.md)。不要改回按整天覆盖关联完成块，也不要用计划时间的一半构造actual。
 
@@ -13,6 +13,10 @@
 过期未反馈学习块（验收页 §9，无迁移，生产 `de8adff` → `962b120`）：已结束没反馈的块挂住需求不整段补排（`awaitingFeedbackSessions`，`src/workflows/plan.ts`），每段一个“这段做了吗，还剩多少？”问题（`askSessionFeedback`，`src/workflows/agent.ts`），回答走现有操作；回归 `test/session-feedback.test.ts`。剩余需求的报告时刻用真实写入时刻（`src/workflows/ops/tasks.ts`），和学习记录同一时钟比较先后，不要改回规划时钟 `ctx.now`。
 
 截止日与范围的歧义（验收页 §10，无迁移）：主人说的单日正好是截止日、本轮又要重排时，`deadlineScopeAmbiguity` / `askScopeChoice` / `takeScopeChoice`（`src/workflows/intake.ts`）在统一门与确认之前问“截止前都可以排 / 只调整那一天 / 先不要”；答“截止前”时 `decisionScope` 的 `notScope` 排除那一天（`src/workflows/agent-decide.ts`）。回归在 `test/agent-semantic-repair.test.ts` 末尾 4 项。不要靠放宽统一门或加“就要交了”之类关键词绕过。
+
+## 方向页打磨 D0/D1（2026-10-05）
+
+计划 [dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md](../../../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md)。内容目录 `src/content/direction/`；迁移 0035；五个操作名称固定；GET `/api/v2/direction` 只读。采用模板不建任务；“先不看了”只改 `direction_tracks.status`。D2–D5 未完成。
 
 ## Agent增强 v1.1（已实施，2026-10-05）
 

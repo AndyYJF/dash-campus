@@ -124,7 +124,7 @@ test("E31：“这学期先打好数学基础”成为主方向；候选最多 2
   assert.deepEqual([p.title, p.engagement, p.trialUntil], ["小型分类基线", "trial", "2026-10-26"]);
   assert.deepEqual(p.openTasks.map((t) => t.title), ["跑通逻辑回归基线"], "试做只建第一步，不把整个计划都压上来");
   assert.equal(p.nextSessions.length, 1, "第一步已进入安排");
-  assert.equal(d1.candidates.length, 2, "有进行中的项目时最多再展示 2 个候选");
+  assert.equal(d1.candidates.length, 3, "进行中的项目不挤掉候选，最多仍展示 3 个");
   assert.ok(!d1.candidates.some((x) => x.title === "小型分类基线"));
   const goalLink = getDb().prepare(`SELECT COUNT(*) AS n FROM project_goals WHERE project_id = ?`).get(p.id) as { n: number };
   assert.equal(goalLink.n, 1, "项目关联到主方向");

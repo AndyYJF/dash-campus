@@ -2,6 +2,15 @@
 
 更新：2026-10-05。本页是当前状态入口；历史记录保留其日期。规划、业务实现、测试和生产部署分别报告。
 
+## 2026-10-05：方向页打磨 D0/D1（迁移 0035）
+
+按 [方向页打磨计划](../../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md) 做了阶段模板与工作样本目录、向前迁移（`direction_profile` / `direction_tracks` / `roadmap_items` / `direction_project_links` / `direction_reflections`，`resource_links` 增加方向上下文）、五个注册操作走完整执行通路、只读四年地图与导出白名单。阶段不从任务数推算；采用模板不建目标或任务；“先不看了”只改关注状态。候选展示上限统一为 3。schema **35**。D2–D5（投入预览、网页走查、真实模型、生产冒烟）尚未做。
+
+| 层 | 状态 |
+|---|---|
+| 隔离 | `direction-workspace` 9 项；`direction-r5`、`agent-p1`、`agent-p2`、`delivery`、`upgrade`、`agent-ops` 同步通过；`tsc` 0 错误 |
+| 真实模型 / 网页 / 生产 | 本切片未走查、未部署 |
+
 ## 2026-10-05：截止日不再被当成范围
 
 “概率论大作业明天就要交了，帮我优先安排”里的“明天”原来会被记成“只动明天”的范围，从今天起的重排被统一门拒绝。现在说的那天正是截止日时先问“从今天到截止前都可以排 / 只调整那一天 / 先不要”，回答结构化处理；没改统一门、提示词，没加关键词；无迁移，schema 34。证据见 [语义修复验收 §10](agent-first-v2/acceptance-semantic-repair-2026-10-05.md)。

@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import { PATH_LABEL, type PathKey } from "@/content/direction/stages";
 import { api, newIdempotencyKey } from "./api";
 import { compose, emitChanged, useDashRefresh } from "./dashBus";
 import styles from "./v2.module.css";
 
 /**
- * V2 方向页（REPAIR-PLAN §5.3）：最多 1 个主方向 + 2 个候选；进行中的项目给下一步、证据和基于记录的建议。
- * 没有证据就承认；选“试做”只是在这里建一个有期限的小项目，不代表报名或对外承诺。
+ * V2 方向页（方向页打磨 D1）：四年地图与工作样本只读展示；阶段/去向由主人明确选择。
+ * 试做只建有期限的小项目，不代表报名。GET 不创建任务。
  */
 
 type Project = {
@@ -38,6 +39,33 @@ type Candidate = {
   requirements: Array<{ label: string; status: string }>;
   unknowns: string[];
 };
+type Stage = {
+  key: "year1" | "year2" | "year3" | "year4";
+  label: string;
+  title: string;
+  purpose: string;
+  foundations: string[];
+  choices: string[];
+  outputs: string[];
+  nextNeeds: string[];
+  adopted: Array<{ id: string; title: string; purpose: string; status: string }>;
+};
+type Sample = {
+  templateKey: string;
+  title: string;
+  problem: string;
+  activities: string[];
+  sample: { steps: string[]; output: string };
+  basics: Array<{ label: string; needed: boolean }>;
+  trial: { title: string; verifies: string; firstStep: string; estimateMinutes: number };
+};
+type Track = {
+  id: string;
+  title: string;
+  status: string;
+  problem: string | null;
+  projects: Array<{ id: string; title: string; status: string; engagement: string }>;
+};
 type Direction = {
   mainGoal: { id: string; title: string } | null;
   goals: Array<{ id: string; title: string; status: string; primary: boolean }>;
@@ -45,10 +73,18 @@ type Direction = {
   candidates: Candidate[];
   practice: Array<{ id: string; occurredOn: string; actualMinutes: number | null; note: string; blocker: string; category: string }>;
   honesty: string;
+  profile: { confirmedStage: Stage["key"] | null; stageLabel: string | null; entryYear: number | null; pathPreferences: PathKey[]; version: number };
+  roadmap: Stage[];
+  tracks: Track[];
+  workSamples: Sample[];
+  notes: Array<{ id: string; title: string; noteKind: string | null; url: string | null }>;
+  reflections: Array<{ id: string; originalText: string; occurredOn: string }>;
 };
 
 const REQ: Record<string, string> = { met: "具备", unmet: "不具备", unknown: "未确认" };
 const SOURCE: Record<string, string> = { retrieved: "已读到原文", snippet: "只有摘要", user_supplied: "你提供的资料" };
+const PATHS: PathKey[] = ["research", "further_study", "employment", "undecided"];
+const TRACK_STATUS: Record<string, string> = { exploring: "在了解", following: "持续关注", paused: "先不看" };
 
 function when(utc: string): string {
   const d = new Date(utc);
@@ -79,8 +115,55 @@ export default function V2DirectionView() {
   if (error && !data) return <p className={styles.error}>{error}</p>;
   if (!data) return <p className={styles.muted}>加载中…</p>;
 
+  const togglePath = (key: PathKey) => {
+    const cur = new Set(data.profile.pathPreferences);
+    if (cur.has(key)) cur.delete(key);
+    else cur.add(key);
+    act("update_direction_profile", { expectedVersion: data.profile.version, pathPreferences: [...cur] });
+  };
+
   return (
     <div className={styles.page}>
+      <section className={styles.card}>
+        <h2 className={styles.title}>四年阶段</h2>
+        <p className={styles.lead}>
+          {data.profile.stageLabel ? `你确认现在处于${data.profile.stageLabel}` : "还没确认现在处于哪一阶段——先看一类工作的样子，再试一次。"}
+          {data.profile.entryYear ? ` · 入学 ${data.profile.entryYear}` : " · 入学年未知也能用"}
+        </p>
+        <div className={styles.pathRow}>
+          {PATHS.map((k) => (
+            <button key={k} type="button" className={data.profile.pathPreferences.includes(k) ? styles.btnPrimary : styles.btn} onClick={() => togglePath(k)}>
+              {PATH_LABEL[k]}
+            </button>
+          ))}
+        </div>
+        <p className={styles.muted}>去向可以并存，没选的不代表排除。点上面记下你明确说过的偏好；不会生成全年待办。</p>
+        <div className={styles.stageStrip}>
+          {data.roadmap.map((s) => (
+            <article key={s.key} className={styles.stageCard} data-current={data.profile.confirmedStage === s.key ? "true" : "false"}>
+              <h3 className={styles.subtitle}>
+                {s.label} · {s.title}
+              </h3>
+              <p className={styles.muted}>{s.purpose}</p>
+              <p className={styles.muted}>共同基础：{s.foundations.join("；")}</p>
+              <p className={styles.muted}>值得验证：{s.choices.join("；")}</p>
+              {s.adopted.length > 0 && <p className={styles.muted}>你采用的：{s.adopted.map((i) => `${i.title}${i.status === "completed" ? "（完成）" : ""}`).join("、")}</p>}
+              <div className={styles.detailActions}>
+                <button type="button" className={styles.btn} onClick={() => act("update_direction_profile", { expectedVersion: data.profile.version, confirmedStage: s.key })}>
+                  我现在在{s.label}
+                </button>
+                {s.choices[0] && (
+                  <button type="button" className={styles.btnGhost} onClick={() => act("update_roadmap_item", { stageKey: s.key, title: s.choices[0], purpose: s.purpose })}>
+                    采用这条
+                  </button>
+                )}
+              </div>
+            </article>
+          ))}
+        </div>
+        {error && <p className={styles.error}>{error}</p>}
+      </section>
+
       <section className={styles.card}>
         <h2 className={styles.title}>当前主要方向</h2>
         {data.mainGoal ? <p className={styles.lead}>{data.mainGoal.title}</p> : <p className={styles.muted}>还没有定主要方向——不确定也没关系。想好了说一句，比如“这学期先打好数学基础”。</p>}
@@ -94,7 +177,49 @@ export default function V2DirectionView() {
           </p>
         )}
         <p className={styles.muted}>{data.honesty}</p>
-        {error && <p className={styles.error}>{error}</p>}
+      </section>
+
+      {data.tracks.length > 0 && (
+        <section className={styles.card}>
+          <h2 className={styles.title}>你在关注的工作</h2>
+          {data.tracks.map((t) => (
+            <div key={t.id} className={styles.cand}>
+              <div className={styles.candHead}>
+                <span className={styles.candTitle}>{t.title}</span>
+                <em className={styles.tagBadge}>{TRACK_STATUS[t.status] ?? t.status}</em>
+              </div>
+              {t.problem && <p className={styles.muted}>{t.problem}</p>}
+              {t.projects.length > 0 ? <p className={styles.muted}>关联项目：{t.projects.map((p) => `${p.title}（${p.engagement === "trial" ? "试做" : "投入"}）`).join("、")}</p> : <p className={styles.muted}>还没有关联项目。</p>}
+              {t.status !== "paused" && (
+                <button type="button" className={styles.btnGhost} onClick={() => act("upsert_direction_track", { trackId: t.id, status: "paused" })}>
+                  这个方向先不看了
+                </button>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
+
+      <section className={styles.card}>
+        <h2 className={styles.title}>工作样本</h2>
+        <p className={styles.muted}>先看这类人平时做什么。点“先关注”只记下来，不建任务。</p>
+        <div className={styles.compare}>
+          {data.workSamples.map((s) => (
+            <div key={s.templateKey} className={styles.cand}>
+              <span className={styles.candTitle}>{s.title}</span>
+              <p className={styles.why}>{s.problem}</p>
+              <p className={styles.muted}>平时做：{s.activities.join("、")}</p>
+              <p className={styles.muted}>可试：{s.trial.title}（约 {s.trial.estimateMinutes} 分钟）——{s.trial.verifies}</p>
+              <p className={styles.muted}>
+                基础：{s.basics.filter((b) => b.needed).map((b) => b.label).join("、")}
+                {s.basics.some((b) => !b.needed) ? `；暂不需要：${s.basics.filter((b) => !b.needed).map((b) => b.label).join("、")}` : ""}
+              </p>
+              <button type="button" className={styles.btn} onClick={() => act("upsert_direction_track", { templateKey: s.templateKey })}>
+                先关注这类工作
+              </button>
+            </div>
+          ))}
+        </div>
       </section>
 
       {data.projects.map((p) => (
@@ -152,7 +277,7 @@ export default function V2DirectionView() {
       ))}
 
       <section className={styles.card}>
-        <h2 className={styles.title}>候选{data.projects.length ? "（最多 2 个）" : "（最多 3 个）"}</h2>
+        <h2 className={styles.title}>候选（最多 3 个）</h2>
         {data.candidates.length === 0 && (
           <p className={styles.muted}>
             暂无候选。可以说“帮我找一个能试出是否喜欢科研的小项目”，或者把看到的项目资料直接放进输入框。
@@ -184,13 +309,36 @@ export default function V2DirectionView() {
             </p>
             <div className={styles.detailActions}>
               <button type="button" className={styles.btnPrimary} onClick={() => act("select_candidate", { candidateId: c.id, mode: "trial", trialWeeks: 2 })}>
-                试做两周
+                试一下
               </button>
-              <span className={styles.muted}>只在这里建一个小项目和第一步，不代表报名或对外承诺</span>
+              <span className={styles.muted}>默认用一小段时间试做（可改），只在这里建项目和第一步，不代表报名</span>
             </div>
           </div>
         ))}
       </section>
+
+      {data.reflections.length > 0 && (
+        <section className={styles.card}>
+          <h2 className={styles.title}>你记下的感受</h2>
+          {data.reflections.map((r) => (
+            <p key={r.id} className={styles.muted}>
+              {r.occurredOn.slice(5)} · {r.originalText}
+            </p>
+          ))}
+        </section>
+      )}
+
+      {data.notes.length > 0 && (
+        <section className={styles.card}>
+          <h2 className={styles.title}>我记录的线索</h2>
+          {data.notes.map((n) => (
+            <p key={n.id} className={styles.muted}>
+              {n.title}
+              {n.url ? ` · ${n.url}` : ""}
+            </p>
+          ))}
+        </section>
+      )}
 
       <section className={styles.card}>
         <h2 className={styles.title}>最近的实践记录</h2>

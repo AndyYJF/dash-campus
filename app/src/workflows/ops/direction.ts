@@ -11,6 +11,8 @@ import { createResource, getResource } from "@/repositories/resources";
 import { createProjectFromCandidate } from "@/workflows/candidates";
 import { startExploration } from "@/workflows/exploration";
 import { HttpError } from "@/workflows/http";
+import { getTrack, linkProjectToTrack } from "@/workflows/ops/direction-workspace";
+import { stageTemplate, type StageKey } from "@/content/direction";
 
 /**
  * 目标 / 项目 / 资料 操作（REPAIR-PLAN §5.3，AGENT-INTERFACE-CONTRACT §2）。
@@ -73,7 +75,14 @@ export function applySelectCandidate(cmd: Cmd<"select_candidate">, ctx: CommandC
   const db = getDb();
   const c = getCandidate(cmd.candidateId);
   if (!c) throw new HttpError(404, "NOT_FOUND", "这个候选不存在");
-  if (c.projectId) return `「${c.title}」已经在做了，没有重复建项目`;
+  const track = cmd.trackId ? getTrack(cmd.trackId) : null;
+  if (cmd.trackId && !track) throw new HttpError(422, "INVALID_REFERENCE", "这个关注方向不存在");
+  if (cmd.roadmapItemId && !cmd.trackId) throw new HttpError(422, "VALIDATION", "关联阶段项时需要同时给出关注方向");
+  if (cmd.roadmapItemId && !db.prepare(`SELECT 1 FROM roadmap_items WHERE id = ?`).get(cmd.roadmapItemId)) throw new HttpError(422, "INVALID_REFERENCE", "这个阶段项不存在");
+  if (c.projectId) {
+    const linked = track ? linkProjectToTrack(c.projectId, track.id, cmd.roadmapItemId ?? undefined, changes) : "unchanged";
+    return `「${c.title}」已经在做了，没有重复建项目${linked !== "unchanged" ? `；已关联到「${track!.title}」` : ""}`;
+  }
   const tasks = (cmd.mode === "trial" ? [c.firstTask] : [c.firstTask, ...c.initialTasks].slice(0, 3))
     .filter((t) => t.title)
     .map((t) => ({ title: t.title, description: [t.input && `需要：${t.input}`, t.output && `产出：${t.output}`].filter(Boolean).join("；"), estimateMinutes: t.estimateMinutes }));
@@ -91,7 +100,10 @@ export function applySelectCandidate(cmd: Cmd<"select_candidate">, ctx: CommandC
     confirmedRequirementIndexes: [],
     tasks,
   });
-  if (r.kind === "exists") return `「${c.title}」已经在做了，没有重复建项目`;
+  if (r.kind === "exists") {
+    if (track) linkProjectToTrack(r.projectId, track.id, cmd.roadmapItemId ?? undefined, changes);
+    return `「${c.title}」已经在做了，没有重复建项目`;
+  }
   if (r.kind !== "created") throw new HttpError(409, "CONFLICT", "候选刚被修改，请刷新后再选");
   const tz = instanceTimezone();
   const trialUntil = cmd.mode === "trial" ? addDays(localDateInTz(ctx.now ?? nowDate(), tz), cmd.trialWeeks * 7) : null;
@@ -99,12 +111,14 @@ export function applySelectCandidate(cmd: Cmd<"select_candidate">, ctx: CommandC
   changes.push({ entityKind: "project", entityId: r.projectId, action: "create", after: { title: c.title, engagement: cmd.mode, trialUntil }, afterVersion: 1 });
   for (const id of r.taskIds) changes.push({ entityKind: "task", entityId: id, action: "create", after: { projectId: r.projectId }, afterVersion: 1 });
   changes.push({ entityKind: "candidate", entityId: c.id, action: "update", before: { status: c.status, projectId: null, startedWithUnknowns: c.startedWithUnknowns ? 1 : 0 }, after: { status: "started", projectId: r.projectId }, beforeVersion: c.version, afterVersion: c.version + 1 });
+  if (track) linkProjectToTrack(r.projectId, track.id, cmd.roadmapItemId ?? undefined, changes);
   bumpPlanningRevision();
   const first = tasks[0]!;
   const unknowns = r.startedWithUnknowns ? `还有没确认的条件：${c.requirements.filter((x) => !(x.status === "met" && x.confirmedByOwner)).map((x) => x.label).slice(0, 3).join("、") || "来源只有摘要"}，做的过程中留意。` : "";
+  const linked = track ? `已关联到关注方向「${track.title}」。` : "";
   return cmd.mode === "trial"
-    ? `开始试做「${c.title}」到 ${trialUntil}：第一步「${first.title}」${first.estimateMinutes ? `（预计 ${first.estimateMinutes} 分钟）` : ""}会进入安排。这只是试一试，不等于报名或对外承诺。${unknowns}`
-    : `「${c.title}」转为正式投入，前 ${tasks.length} 步会进入安排。${unknowns}`;
+    ? `开始试做「${c.title}」到 ${trialUntil}：第一步「${first.title}」${first.estimateMinutes ? `（预计 ${first.estimateMinutes} 分钟）` : ""}会进入安排。这只是试一试，不等于报名或对外承诺。${linked}${unknowns}`
+    : `「${c.title}」转为正式投入，前 ${tasks.length} 步会进入安排。${linked}${unknowns}`;
 }
 
 /** 项目状态：暂停（任务一起放一放）/ 恢复 / 结束 / 试做转正式投入 */
@@ -175,24 +189,31 @@ export function applyLinkResource(cmd: Cmd<"link_resource">, ctx: CommandContext
     if (!p || p.archivedAt) throw new HttpError(422, "INVALID_REFERENCE", "要关联的项目不存在");
     target = p.title;
   }
-  const existing = db.prepare(`SELECT id, entity_kind, entity_id, role, origin, version FROM resource_links WHERE resource_id = ? ORDER BY created_at LIMIT 1`).get(resourceId) as
-    | { id: string; entity_kind: string; entity_id: string | null; role: string; origin: string; version: number }
+  const track = cmd.trackId ? getTrack(cmd.trackId) : null;
+  if (cmd.trackId && !track) throw new HttpError(422, "INVALID_REFERENCE", "这个关注方向不存在");
+  const existing = db.prepare(`SELECT id, entity_kind, entity_id, role, origin, track_id, stage_key, note_kind, version FROM resource_links WHERE resource_id = ? ORDER BY created_at LIMIT 1`).get(resourceId) as
+    | { id: string; entity_kind: string; entity_id: string | null; role: string; origin: string; track_id: string | null; stage_key: string | null; note_kind: string | null; version: number }
     | undefined;
   const entityKind = cmd.projectId ? "project" : (existing?.entity_kind ?? "none");
   const entityId = cmd.projectId ?? existing?.entity_id ?? null;
   const role = cmd.role ?? existing?.role ?? "reference";
   const origin = cmd.origin;
+  const trackId = cmd.trackId !== undefined ? cmd.trackId : (existing?.track_id ?? null);
+  const stageKey = cmd.stageKey !== undefined ? cmd.stageKey : (existing?.stage_key ?? null);
+  const noteKind = cmd.noteKind !== undefined ? cmd.noteKind : (existing?.note_kind ?? null);
   if (existing) {
     // 主人纠正过的归属/类型，不被之后的自动判断覆盖
     if (existing.origin === "user" && origin !== "user") return `「${title}」的归属你之前纠正过，保持不变`;
-    if (existing.entity_kind === entityKind && existing.entity_id === entityId && existing.role === role && existing.origin === origin) return `「${title}」没有变化`;
-    db.prepare(`UPDATE resource_links SET entity_kind = ?, entity_id = ?, role = ?, origin = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(entityKind, entityId, role, origin, now(), existing.id);
-    changes.push({ entityKind: "resource_link", entityId: existing.id, action: "update", before: { entityKind: existing.entity_kind, entityId: existing.entity_id, role: existing.role, origin: existing.origin }, after: { entityKind, entityId, role, origin }, beforeVersion: existing.version, afterVersion: existing.version + 1 });
+    if (existing.entity_kind === entityKind && existing.entity_id === entityId && existing.role === role && existing.origin === origin && existing.track_id === trackId && existing.stage_key === stageKey && existing.note_kind === noteKind) return `「${title}」没有变化`;
+    db.prepare(`UPDATE resource_links SET entity_kind = ?, entity_id = ?, role = ?, origin = ?, track_id = ?, stage_key = ?, note_kind = ?, version = version + 1, updated_at = ? WHERE id = ?`).run(entityKind, entityId, role, origin, trackId, stageKey, noteKind, now(), existing.id);
+    changes.push({ entityKind: "resource_link", entityId: existing.id, action: "update", before: { entityKind: existing.entity_kind, entityId: existing.entity_id, role: existing.role, origin: existing.origin, trackId: existing.track_id, stageKey: existing.stage_key, noteKind: existing.note_kind }, after: { entityKind, entityId, role, origin, trackId, stageKey, noteKind }, beforeVersion: existing.version, afterVersion: existing.version + 1 });
   } else {
     const id = crypto.randomUUID();
-    db.prepare(`INSERT INTO resource_links (id, resource_id, entity_kind, entity_id, role, origin, locator, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, resourceId, entityKind, entityId, role, origin, ctx.intakeId ? `intake:${ctx.intakeId}` : "", now(), now());
-    changes.push({ entityKind: "resource_link", entityId: id, action: "create", after: { resourceId, entityKind, entityId, role }, afterVersion: 1 });
+    db.prepare(`INSERT INTO resource_links (id, resource_id, entity_kind, entity_id, role, origin, locator, track_id, stage_key, note_kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, resourceId, entityKind, entityId, role, origin, ctx.intakeId ? `intake:${ctx.intakeId}` : "", trackId, stageKey, noteKind, now(), now());
+    changes.push({ entityKind: "resource_link", entityId: id, action: "create", after: { resourceId, entityKind, entityId, role, trackId, stageKey, noteKind }, afterVersion: 1 });
   }
   const ROLE: Record<string, string> = { reference: "参考资料", requirement: "别人的要求（不算你的成果）", achievement: "你完成的成果" };
-  return `「${title}」已存为${ROLE[role]}${target ? `，归到项目「${target}」` : ""}；原文保留`;
+  const context = [track && `关注方向「${track.title}」`, stageKey && stageTemplate(stageKey as StageKey).label].filter(Boolean).join("、");
+  const note = noteKind || trackId || stageKey ? `；记在${context || "我的线索"}下，只是存档，没有建任务或提醒` : "";
+  return `「${title}」已存为${ROLE[role]}${target ? `，归到项目「${target}」` : ""}；原文保留${note}`;
 }

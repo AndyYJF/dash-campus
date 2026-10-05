@@ -37,6 +37,11 @@ const KIND_TABLE: Record<string, { table: string; versioned: boolean; idColumn?:
   inbox_decision: { table: "inbox_decisions", versioned: true },
   exploration_topic: { table: "exploration_topics", versioned: true },
   fixed_event_exception: { table: "fixed_event_exceptions", versioned: false },
+  direction_profile: { table: "direction_profile", versioned: true },
+  direction_track: { table: "direction_tracks", versioned: true },
+  roadmap_item: { table: "roadmap_items", versioned: true },
+  direction_project_link: { table: "direction_project_links", versioned: true },
+  direction_reflection: { table: "direction_reflections", versioned: true },
 };
 
 /** 没有 updated_at 列的表：字段恢复时不写它 */

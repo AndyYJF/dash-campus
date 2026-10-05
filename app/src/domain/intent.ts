@@ -4,6 +4,7 @@ import { addDays } from "./time";
 import { dateFromText, estimateFromText, isCompletionReport, parseNumber, timeFromText } from "./task-text";
 import { normalizeProfileValue, profileFactsFromText } from "./identity";
 import { isReadRequest } from "./read-request";
+import { PATH_KEYS, STAGE_KEYS } from "@/content/direction/stages";
 
 /**
  * 主人指令的结构化意图（REPAIR-PLAN §5.1.1，AGENT-INTERFACE-CONTRACT §5.1）。
@@ -17,7 +18,7 @@ const timeStr = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 const part = z.enum(["morning", "afternoon", "evening", "any"]);
 
 /** 可以按 ID 引用的对象种类 */
-export const REF_ENTITY_KINDS = ["task", "plan_session", "project", "goal", "practice_entry", "resource", "candidate", "fixed_event", "inbox_message", "course_set", "exploration_topic"] as const;
+export const REF_ENTITY_KINDS = ["task", "plan_session", "project", "goal", "practice_entry", "resource", "candidate", "fixed_event", "inbox_message", "course_set", "exploration_topic", "direction_track", "roadmap_item"] as const;
 
 /**
  * 对象引用：recent = “刚才那个”；named = 名称 + 可选的日期/时段限定；
@@ -63,7 +64,13 @@ export const intentSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("complete"), ref: refSchema, actualMinutes: z.number().int().min(1).max(1440).nullable().default(null) }),
   z.object({ op: z.literal("correct_practice"), minutes: z.number().int().min(1).max(1440) }),
   z.object({ op: z.literal("goal"), title: z.string().min(1).max(200), horizon: z.enum(["long_term", "semester"]).default("semester"), primary: z.boolean().default(true) }),
-  z.object({ op: z.literal("trial"), ref: refSchema, ordinal: z.number().int().min(1).max(10).nullable().default(null), weeks: z.number().int().min(1).max(12).default(2), commit: z.boolean().default(false) }),
+  z.object({ op: z.literal("trial"), ref: refSchema, ordinal: z.number().int().min(1).max(10).nullable().default(null), weeks: z.number().int().min(1).max(12).default(2), commit: z.boolean().default(false), track: refSchema.nullable().default(null) }),
+  z.object({ op: z.literal("direction_profile"), stage: z.enum(STAGE_KEYS).nullable().optional(), entryYear: z.number().int().min(2000).max(2100).nullable().optional(), paths: z.array(z.enum(PATH_KEYS)).max(PATH_KEYS.length).optional() }),
+  z.object({ op: z.literal("direction_track"), ref: refSchema.nullable().default(null), templateKey: z.string().min(1).max(60).optional(), title: z.string().trim().min(1).max(200).optional(), status: z.enum(["exploring", "following", "paused"]).optional(), notes: z.string().max(2000).optional() }),
+  z.object({ op: z.literal("roadmap_item"), ref: refSchema.nullable().default(null), stage: z.enum(STAGE_KEYS).optional(), title: z.string().trim().min(1).max(200).optional(), purpose: z.string().max(1000).optional(), status: z.enum(["adopted", "completed", "paused"]).optional(), track: refSchema.nullable().default(null) }),
+  z.object({ op: z.literal("direction_link"), project: refSchema, track: refSchema, remove: z.boolean().default(false) }),
+  z.object({ op: z.literal("direction_reflection"), text: z.string().trim().min(1).max(4000), date: dateStr.optional(), project: refSchema.nullable().default(null), track: refSchema.nullable().default(null) }),
+  z.object({ op: z.literal("direction_note"), track: refSchema.nullable().default(null), stage: z.enum(STAGE_KEYS).nullable().default(null), noteKind: z.enum(["advice", "policy", "opportunity", "industry", "question", "other"]).default("other") }),
   z.object({ op: z.literal("project_state"), ref: refSchema, status: z.enum(["active", "paused", "completed"]).nullable().default(null), commit: z.boolean().default(false) }),
   z.object({ op: z.literal("explore"), query: z.string().min(1).max(500) }),
   z.object({ op: z.literal("resource_link"), projectText: z.string().min(1).max(100) }),
@@ -315,7 +322,7 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
     const n = weeks ? parseNumber(weeks[1]!) : 2;
     const subject = trial[1]!.replace(/^(那|就|先|我想|我要|想)+/, "") || trial[2]!.replace(new RegExp(`(${NUM})\\s*(?:个)?\\s*(?:周|星期|礼拜)`), "");
     const ord = /第\s*([一二三四五六七八九十\d]+)\s*个/.exec(c);
-    return { op: "trial", ref: ord || !nameOf(subject) || /^(这个|那个|它|这)$/.test(subject.trim()) ? { kind: "recent" } : refOf(subject, referenceDate), ordinal: ord ? parseNumber(ord[1]!) : null, weeks: Number.isInteger(n) && n >= 1 && n <= 12 ? n : 2, commit: false };
+    return { op: "trial", ref: ord || !nameOf(subject) || /^(这个|那个|它|这)$/.test(subject.trim()) ? { kind: "recent" } : refOf(subject, referenceDate), ordinal: ord ? parseNumber(ord[1]!) : null, weeks: Number.isInteger(n) && n >= 1 && n <= 12 ? n : 2, commit: false, track: null };
   }
   const commit = /^(.+?)(?:转为|改为|改成|变成)?正式(?:投入|做|开始)/.exec(c);
   if (commit && isShortName(commit[1]!)) return { op: "project_state", ref: refOf(commit[1]!, referenceDate), status: null, commit: true };

@@ -417,22 +417,25 @@ function hadStarter(taskId: string): boolean {
 }
 
 /**
- * 已确认投入：任务关联的学习记录 + 没有对应实际记录的已完成块（同一任务同一天只取其一）。
+ * 需求抵扣：任务关联的实际记录 + 没有对应实际记录的已完成块的计划用时估算。
+ * 有关联的实际记录只覆盖对应块；未关联的旧记录保留原来的按日兼容口径。
  * since 给出时只算那之后的投入（主人报告过剩余需求）；和报告同一时刻记下的投入算在报告里，不再另扣。
  */
 function spentMinutes(taskId: string, since: string | null): number {
   const db = getDb();
   const tz = instanceTimezone();
   let total = 0;
-  const daysWithActual = new Set<string>();
-  const practice = db.prepare(`SELECT occurred_on, actual_minutes, created_at FROM practice_entries WHERE task_id = ? AND actual_minutes IS NOT NULL AND category = 'study'`).all(taskId) as Array<{ occurred_on: string; actual_minutes: number; created_at: string }>;
+  const sessionsWithActual = new Set<string>();
+  const daysWithUnlinkedActual = new Set<string>();
+  const practice = db.prepare(`SELECT occurred_on, actual_minutes, created_at, plan_session_id FROM practice_entries WHERE task_id = ? AND actual_minutes IS NOT NULL AND category = 'study'`).all(taskId) as Array<{ occurred_on: string; actual_minutes: number; created_at: string; plan_session_id: string | null }>;
   for (const p of practice) {
-    daysWithActual.add(p.occurred_on);
+    if (p.plan_session_id) sessionsWithActual.add(p.plan_session_id);
+    else daysWithUnlinkedActual.add(p.occurred_on);
     if (!since || p.created_at > since) total += p.actual_minutes;
   }
-  const done = db.prepare(`SELECT start_utc, end_utc, updated_at FROM plan_sessions WHERE task_id = ? AND status = 'completed'`).all(taskId) as Array<{ start_utc: string; end_utc: string; updated_at: string }>;
+  const done = db.prepare(`SELECT id, start_utc, end_utc, updated_at FROM plan_sessions WHERE task_id = ? AND status = 'completed'`).all(taskId) as Array<{ id: string; start_utc: string; end_utc: string; updated_at: string }>;
   for (const s of done) {
-    if (daysWithActual.has(localDateInTz(new Date(s.start_utc), tz))) continue;
+    if (sessionsWithActual.has(s.id) || daysWithUnlinkedActual.has(localDateInTz(new Date(s.start_utc), tz))) continue;
     if (since && s.updated_at <= since) continue;
     total += (Date.parse(s.end_utc) - Date.parse(s.start_utc)) / 60000;
   }

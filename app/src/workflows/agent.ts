@@ -838,7 +838,7 @@ export function parseAnswerByPurpose(q: QuestionRow, text: string, env: { refere
     const url = /https?:\/\/\S+/.exec(text)?.[0];
     return url ? { ok: true, structured: { url } } : { ok: false, hint: "贴一个链接；如果手上是通知原文或文件，直接放进上面的输入框就行" };
   }
-  if (q.purpose === "session_feedback") return parseSessionFeedback(text, options, Number(q.context.plannedMinutes ?? 0));
+  if (q.purpose === "session_feedback") return parseSessionFeedback(text, options);
   if (q.purpose === "tradeoff" || q.purpose === "conflict" || q.purpose === "locate") {
     const i = optionIndex(text, options);
     return i >= 0 ? { ok: true, structured: { choice: i } } : { ok: false, hint: `选一个：${options.map((o, n) => `${n + 1}. ${o}`).join("；")}` };
@@ -853,7 +853,7 @@ const FEEDBACK_HINT = "说一下这段的结果就行：“做完了”“这段
  * done 只说做完、没说范围（落实时按剩余需求判断）/ skipped 没做 / partial 做了一部分。
  * 只有主人说出口的分钟数才记成实际投入；说不清的回到提示，不猜。
  */
-function parseSessionFeedback(text: string, options: string[], planned: number): AnswerParse {
+function parseSessionFeedback(text: string, options: string[]): AnswerParse {
   const t = text.trim();
   const ordinal = /^第?\s*(\d+|[一二两三])\s*个?$/.exec(t);
   const picked = ordinal ? parseNumber(ordinal[1]!) - 1 : options.indexOf(t);
@@ -864,9 +864,8 @@ function parseSessionFeedback(text: string, options: string[], planned: number):
     return m ? estimateFromText(m[1]!) : null;
   };
   const remaining = minutesAfter(/(?:还剩|还差|剩下?|还要|还需要?)\s*(?:大概|大约|差不多|约)?([^，,。；;！!]*)/);
-  let actual = minutesAfter(/(?:做了|学了|写了|花了|弄了|干了|看了|练了|用了)\s*(?:大概|大约|差不多|约)?([^，,。；;！!]*)/);
+  const actual = minutesAfter(/(?:做了|学了|写了|花了|弄了|干了|看了|练了|用了)\s*(?:大概|大约|差不多|约)?([^，,。；;！!]*)/);
   const half = /(做|写|学|完成)(了|到)?一半/.test(t);
-  if (actual === null && half && planned > 0) actual = Math.round(planned / 2);
   const minutes = { ...(actual !== null ? { actualMinutes: actual } : {}), ...(remaining !== null ? { remainingMinutes: remaining } : {}) };
   const notAtAll = /没(有)?(做|学|写|开始|动|弄|去|碰)(?!完)|忘了|跳过|没时间|没空|鸽了/.test(t);
   const notFinished = half || /没(做|写|学|弄|干)?完|没完成|未完成|没结束|还没好|只做了|做了一部分|做了一些|做了点/.test(t);

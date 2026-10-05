@@ -4,7 +4,7 @@ import { after, before, beforeEach, test } from "node:test";
 import { migrateAll, getDb } from "./helpers";
 import { setNowForTests } from "@/domain/clock";
 import { executeOperation } from "@/workflows/commands";
-import { dayLedger, rebuildPlan } from "@/workflows/plan";
+import { dayLedger, rebuildPlan, taskRemainingDemand } from "@/workflows/plan";
 import { askSessionFeedback, parseAnswerByPurpose, raisePlanQuestions } from "@/workflows/agent";
 import { submitAnswer } from "@/workflows/intake";
 import { getPrefs } from "@/repositories/plan";
@@ -382,7 +382,7 @@ test("自然语言回答：只按主人说出口的内容落结果，说不清�
   assert.deepEqual(parse("没做，还剩一小时"), { outcome: "skipped", remainingMinutes: 60 });
   assert.deepEqual(parse("做了40分钟，还剩30分钟"), { outcome: "partial", actualMinutes: 40, remainingMinutes: 30 });
   assert.deepEqual(parse("做了20分钟就没时间了"), { outcome: "partial", actualMinutes: 20 });
-  assert.deepEqual(parse("完成了一半"), { outcome: "partial", actualMinutes: 30 });
+  assert.equal(parse("完成了一半"), "ASK");
   assert.deepEqual(parse("还差半小时"), { outcome: "partial", remainingMinutes: 30 });
   assert.deepEqual(parse("做完了，花了一小时"), { outcome: "done", actualMinutes: 60 });
   assert.deepEqual(parse("这段做完了，作业还没写完"), { outcome: "session_done" });
@@ -391,6 +391,79 @@ test("自然语言回答：只按主人说出口的内容落结果，说不清�
   assert.equal(parse("没做完"), "ASK");
   assert.equal(parse("40分钟"), "ASK", "只给一个数，分不清是做了还是还剩");
   assert.equal(parse("嗯"), "ASK");
+});
+
+for (const firstHasActual of [true, false]) {
+  test(`同日两段混合反馈：${firstHasActual ? "先报实际用时" : "后报实际用时"}不漏算另一段、不多排`, () => {
+    const task = addTask("两段数学作业", 60);
+    const first = own(task, "2026-10-13", "08:00", 60);
+    getDb().prepare(`UPDATE tasks SET estimate_minutes = 120, effort_mode = 'deliverable' WHERE id = ?`).run(task);
+    const second = own(task, "2026-10-13", "10:00", 60);
+    clock("2026-10-13T11:30");
+    replan();
+    assert.equal(feedback(task)[0]!.context.sessionId, first.id);
+    const q = feedback(task)[0]!;
+    assert.equal(answer(q, firstHasActual ? "做了30分钟" : "这段做完了，事情还没完").kind, "answered");
+    assert.equal(feedback(task)[0]!.context.sessionId, second.id);
+    assert.equal(answer(feedback(task)[0]!, firstHasActual ? "这段做完了，事情还没完" : "做了30分钟").kind, "answered");
+    assert.equal(taskRemainingDemand(task, now), 30, "实际30 + 另一完成块的估算60，剩余30");
+    assert.equal(total(future(task)), 30, "只排剩余，不多排60");
+    assert.deepEqual(practice(task), [{ actual_minutes: 30, plan_session_id: firstHasActual ? first.id : second.id }], "只记录报告的实际用时，不把另一段的估算写成实际");
+    const writes = batches();
+    assert.notEqual(answer(q, "做了30分钟").kind, "answered");
+    replan();
+    assert.equal(batches(), writes);
+    assert.equal(total(future(task)), 30, "重试和重排不重复记账");
+  });
+}
+
+test("跨日两段混合反馈也只扣各自一次；显式剩余覆盖历史投入", () => {
+  const task = addTask("跨日数学作业", 60);
+  own(task, "2026-10-13", "08:00", 60);
+  getDb().prepare(`UPDATE tasks SET estimate_minutes = 120, effort_mode = 'deliverable' WHERE id = ?`).run(task);
+  own(task, "2026-10-14", "08:00", 60);
+  clock("2026-10-14T10:00");
+  replan();
+  assert.equal(answer(feedback(task)[0]!, "做了30分钟").kind, "answered");
+  assert.equal(answer(feedback(task)[0]!, "这段做完了，事情还没完").kind, "answered");
+  assert.equal(taskRemainingDemand(task, now), 30);
+  assert.equal(total(future(task)), 30);
+  assert.ok(executeOperation({ command: "create_or_update_task", taskId: task, remainingMinutes: 45 }, ctx()).result.ok);
+  replan();
+  assert.equal(taskRemainingDemand(task, now), 45, "最新剩余不再扣历史投入");
+  assert.equal(total(future(task)), 45);
+});
+
+for (const text of ["完成了一半", "写了一半"]) {
+  test(`只说“${text}”保持待反馈并追问，不写推算的实际用时`, async () => {
+    const task = addTask("进度不是用时", 60);
+    const block = own(task, "2026-10-13", "08:00", 60);
+    clock("2026-10-13T10:00");
+    replan();
+    const q = feedback(task)[0]!;
+    const writes = batches();
+    const result = await answerInBar(q, text);
+    assert.notEqual(result.body.answered, true);
+    assert.deepEqual(practice(task), []);
+    assert.deepEqual(sessions(task).map((s) => s.id), [block.id]);
+    assert.equal(total(future(task)), 0);
+    assert.equal(batches(), writes);
+    assert.equal(feedback(task)[0]!.id, q.id, "沿用同一问题继续回答");
+    assert.equal(answer(feedback(task)[0]!, "学了半小时").kind, "answered");
+    assert.deepEqual(practice(task), [{ actual_minutes: 30, plan_session_id: block.id }]);
+    assert.equal(total(future(task)), 30);
+  });
+}
+
+test("完成一半但明确还剩30分钟：只更新剩余，不伪造实际用时", () => {
+  const task = addTask("只报告剩余", 60);
+  own(task, "2026-10-13", "08:00", 60);
+  clock("2026-10-13T10:00");
+  replan();
+  assert.equal(answer(feedback(task)[0]!, "完成了一半，还剩30分钟").kind, "answered");
+  assert.deepEqual(practice(task), []);
+  assert.equal(taskRow(task).remaining_minutes, 30);
+  assert.equal(total(future(task)), 30);
 });
 
 test("后台轮询：块刚过去就问，重复轮询不重复问；块被主人挪走后问题收回", async () => {

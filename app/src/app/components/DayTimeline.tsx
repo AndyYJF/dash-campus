@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import styles from "./timeline.module.css";
 
 /**
@@ -43,6 +44,19 @@ export function hm(minutes: number): string {
 }
 
 /** 一天里所有块的最早/最晚时刻，用来决定时间轴范围——不拿固定的 08–22 裁掉真实课程 */
+/** 手机宽度：时间线拉长一些，短块也点得到 */
+export function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const apply = () => setNarrow(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
+  return narrow;
+}
+
 export function dayExtent(date: string, tz: string, events: TimelineEvent[], sessions: TimelineSession[]): [number, number] | null {
   const all = [...events, ...sessions].map((x) => [minuteOfDay(x.startUtc, date, tz), minuteOfDay(x.endUtc, date, tz)] as const).filter(([s, e]) => e > s);
   return all.length ? [Math.min(...all.map((x) => x[0])), Math.max(...all.map((x) => x[1]))] : null;
@@ -184,7 +198,7 @@ export default function DayTimeline(props: {
           <button
             key={b.key}
             type="button"
-            className={`${styles.block} ${styles.session}${height < 58 ? ` ${styles.compact}` : ""}${s.status === "completed" ? ` ${styles.done}` : ""}${s.status === "in_progress" ? ` ${styles.live}` : ""}${props.selectedKey === b.key ? ` ${styles.selected}` : ""}`}
+            className={`${styles.block} ${styles.session}${height < 58 ? ` ${styles.compact}` : ""}${s.status === "completed" ? ` ${styles.done}` : ""}${s.status === "in_progress" ? ` ${styles.live}` : ""}${s.awaitingFeedback ? ` ${styles.awaiting}` : ""}${props.selectedKey === b.key ? ` ${styles.selected}` : ""}`}
             style={{ top: top(b.start), height, width, left }}
             onClick={() => props.onPick(b.pick, b.key)}
             aria-label={`${tag}：${s.title}，${hm(b.start)} 到 ${hm(b.end)}${s.locked ? "，已锁定" : ""}${s.awaitingFeedback ? "，已经过去，还没记录做没做" : ""}`}

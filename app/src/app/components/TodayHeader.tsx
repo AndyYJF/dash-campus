@@ -38,7 +38,6 @@ export default function TodayHeader({ localDate, localMonday }: { localDate?: st
   return (
     <div className={styles.pageHeader}>
       <div>
-        <div className={styles.overline}>Today</div>
         <h1>今天</h1>
         <p className={styles.pageSub}>{text || " "}</p>
       </div>

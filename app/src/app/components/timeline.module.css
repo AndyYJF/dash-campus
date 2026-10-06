@@ -1,13 +1,15 @@
-/* 日时间线。类型区分：课程=实心块+左侧粗边；固定活动=斜纹；待核对=虚线框；学习安排=荧光描边；空档=点线。 */
+/* 日时间线（手册的一页）。只有两支笔：
+   课程 = 墨线（左侧一道实心墨线，纸面不上色）；固定活动 = 墨线 + 淡斜纹；待核对 = 虚线框；
+   自己的学习安排 = 松绿（浅绿底 + 绿线）；空档 = 留白，点线提示可写；“现在” = 一道朱砂线。 */
 
 .day {
-  --tl-gutter: 30px;
+  --tl-gutter: 34px;
   position: relative;
   min-width: 0;
 }
 
 .noHours {
-  --tl-gutter: 2px;
+  --tl-gutter: 3px;
 }
 
 .hour {
@@ -22,11 +24,12 @@
   position: absolute;
   top: -8px;
   left: 0;
-  width: 24px;
+  width: 28px;
+  padding-right: 4px;
   font-size: 11px;
   line-height: 16px;
   color: var(--color-text-muted);
-  background: var(--color-surface);
+  background: var(--color-bg);
   font-variant-numeric: tabular-nums;
 }
 
@@ -39,22 +42,23 @@
   flex-direction: column;
   align-items: flex-start;
   gap: 1px;
-  padding: 3px 6px;
-  border-radius: var(--radius-xs);
-  border: 1px solid var(--color-border-strong);
-  background: var(--color-surface);
+  padding: 4px 8px;
+  border: none;
+  border-left: 3px solid var(--color-text);
+  border-radius: 0;
+  background: var(--color-bg);
   color: var(--color-text);
   font: inherit;
   font-size: 12px;
-  line-height: 1.3;
+  line-height: 1.35;
   text-align: left;
   overflow: hidden;
   cursor: pointer;
-  transition: box-shadow var(--transition), transform var(--transition);
+  transition: background var(--transition), box-shadow var(--transition);
 }
 
 .block:hover {
-  box-shadow: var(--shadow-md);
+  background: var(--color-surface-hover);
   z-index: 3;
 }
 
@@ -65,23 +69,21 @@
 }
 
 .selected {
-  box-shadow: 0 0 0 2px var(--color-text);
+  box-shadow: 0 0 0 1.5px var(--color-text);
   z-index: 3;
 }
 
 .tag {
-  flex: none;
-  font-size: 10px;
-  font-weight: 650;
-  line-height: 14px;
-  letter-spacing: 0.02em;
-  opacity: 0.75;
-  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-muted);
 }
 
 .name {
+  font-family: var(--font-serif);
+  font-size: 14px;
   font-weight: 600;
-  overflow-wrap: anywhere;
+  line-height: 1.3;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -89,75 +91,110 @@
 }
 
 .meta {
+  font-size: 11.5px;
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
 }
 
-/* 课程：实心 + 左侧粗边 */
 .course {
   background: var(--color-surface-muted);
-  border-color: var(--color-border-strong);
-  border-left: 4px solid var(--color-text);
 }
 
-/* 固定活动：斜纹，弱化但可辨认 */
 .fixed {
-  background: repeating-linear-gradient(135deg, var(--color-surface), var(--color-surface) 6px, var(--color-surface-muted) 6px, var(--color-surface-muted) 12px);
-  color: var(--color-text-muted);
+  border-left-style: double;
+  border-left-width: 4px;
+  background: repeating-linear-gradient(135deg, var(--color-surface-muted) 0 1px, transparent 1px 7px), var(--color-bg);
 }
 
-/* 待核对：虚线框 */
 .pending {
-  background: var(--color-warning-bg);
   border: 1px dashed var(--color-warning-text);
+  background: color-mix(in srgb, var(--color-warning-bg) 55%, var(--color-bg));
+}
+
+.pending .tag {
   color: var(--color-warning-text);
 }
 
-/* 学习安排：荧光笔 */
 .session {
+  border-left-color: var(--color-accent);
   background: var(--color-accent-soft);
-  border: 1px solid var(--color-accent);
-  border-left: 4px solid var(--color-primary);
 }
 
-.live {
-  box-shadow: 0 0 0 2px var(--color-primary);
+.session .tag {
+  color: var(--color-accent);
+}
+
+.session:hover {
+  background: color-mix(in srgb, var(--color-accent-soft) 80%, var(--color-accent) 20%);
+}
+
+/* 正在进行：整块涂上墨水 */
+.live,
+.live:hover {
+  background: var(--color-accent);
+  color: var(--color-accent-text);
+}
+
+.live .tag,
+.live .meta {
+  color: color-mix(in srgb, var(--color-accent-text) 80%, transparent);
 }
 
 .done {
-  opacity: 0.6;
-  text-decoration: line-through;
-  text-decoration-color: var(--color-text-muted);
-}
-
-/* 空档：点线，只在有内容可排时才值得点 */
-.slot {
-  border: 1px dotted var(--color-border-strong);
+  border-left-color: var(--color-border-strong);
   background: transparent;
   color: var(--color-text-muted);
-  justify-content: center;
+}
+
+.done .name {
+  text-decoration: line-through;
+  text-decoration-color: var(--color-border-strong);
+}
+
+.done .tag {
+  color: var(--color-text-muted);
+}
+
+/* 已经过去、还没说做没做：朱砂虚线提醒 */
+.awaiting {
+  border-left-color: var(--color-now);
+  border-left-style: dashed;
+  background: transparent;
+}
+
+.awaiting .tag {
+  color: var(--color-now);
+}
+
+/* 空档：留白 + 点线；悬停时像铅笔圈出来 */
+.slot {
   align-items: center;
+  justify-content: center;
+  border: none;
+  border-left: 1px dotted var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text-muted);
   z-index: 0;
 }
 
 .slot:hover {
-  background: var(--color-accent-soft);
-  color: var(--color-text);
-  box-shadow: none;
+  background: color-mix(in srgb, var(--color-accent-soft) 60%, transparent);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+  color: var(--color-accent);
 }
 
 .slotText {
-  font-size: 11px;
-  white-space: nowrap;
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
 }
 
+/* 现在：朱砂线，右端写着钟点 */
 .now {
   position: absolute;
   left: calc(var(--tl-gutter) - 4px);
   right: 0;
   height: 0;
-  border-top: 2px solid var(--color-danger);
+  border-top: 1.5px solid var(--color-now);
   z-index: 5;
   pointer-events: none;
 }
@@ -166,14 +203,43 @@
   content: "";
   position: absolute;
   left: -3px;
-  top: -5px;
-  width: 8px;
-  height: 8px;
+  top: -4.5px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--color-danger);
+  background: var(--color-now);
+}
+
+.now::after {
+  content: attr(aria-label);
+  position: absolute;
+  right: 0;
+  top: -17px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-now);
+  background: var(--color-bg);
+}
+
+.noHours .now::after {
+  display: none;
+}
+
+/* 手机：触摸目标不小于 40px（很短的块会略微盖住后面的间隔） */
+@media (max-width: 767px) {
+  .block {
+    min-height: 40px;
+  }
 }
 
 /* 矮的块：名称只留一行，不和时间挤在一起 */
+.compact {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
 .compact .name {
   -webkit-line-clamp: 1;
+  font-size: 13px;
 }

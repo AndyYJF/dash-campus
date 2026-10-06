@@ -181,16 +181,15 @@ export default function V2WeekView() {
   const p = week.policy;
 
   return (
-    <div className={styles.pageWide}>
-      <section className={styles.card}>
+    <div className={styles.pageWide} data-page="week">
+      <header className={styles.mast}>
         <div className={styles.weekBar}>
-          <h2 className={styles.title}>
-            {isThisWeek ? "本周" : "这一周"}
-            {week.teachingWeek ? ` · 第 ${week.teachingWeek} 教学周` : ""}
-            <span className={styles.titleSub}>
-              {Number(week.monday.slice(5, 7))}/{Number(week.monday.slice(8, 10))}–{Number(week.days[6]!.date.slice(5, 7))}/{Number(week.days[6]!.date.slice(8, 10))}
-            </span>
-          </h2>
+          <div>
+            <p className={styles.kicker}>
+              {Number(week.monday.slice(5, 7))}月{Number(week.monday.slice(8, 10))}日至{Number(week.days[6]!.date.slice(5, 7))}月{Number(week.days[6]!.date.slice(8, 10))}日
+            </p>
+            <h1 className={styles.mastTitle}>{week.teachingWeek ? `第 ${week.teachingWeek} 教学周` : isThisWeek ? "本周" : "这一周"}</h1>
+          </div>
           <div className={styles.weekNav}>
             <button type="button" className={styles.btn} onClick={() => setMonday(addDays(week.monday, -7))} aria-label="上一周">
               ‹ 上一周
@@ -205,31 +204,42 @@ export default function V2WeekView() {
             </button>
           </div>
         </div>
-        <div className={styles.stats}>
+        <dl className={styles.stats}>
           <div className={styles.stat}>
-            <div className={styles.statNum}>{week.courseMinutes}′</div>
-            <div className={styles.statLabel}>课程占用</div>
+            <dd className={styles.statNum}>
+              {week.courseMinutes}
+              <span className={styles.unit}>分钟</span>
+            </dd>
+            <dt className={styles.statLabel}>课程占用</dt>
           </div>
           <div className={styles.stat}>
-            <div className={styles.statNum}>
-              {week.weekBudget}′{p.status === "tentative" && <em className={styles.badge}>暂定</em>}
-            </div>
-            <div className={styles.statLabel}>学习预算</div>
+            <dd className={styles.statNum}>
+              {week.weekBudget}
+              <span className={styles.unit}>分钟</span>
+              {p.status === "tentative" && <em className={styles.badge}>暂定</em>}
+            </dd>
+            <dt className={styles.statLabel}>学习预算</dt>
           </div>
           <div className={styles.stat}>
-            <div className={styles.statNum}>{week.plannedMinutes}′</div>
-            <div className={styles.statLabel}>已排学习</div>
+            <dd className={styles.statNum}>
+              {week.plannedMinutes}
+              <span className={styles.unit}>分钟</span>
+            </dd>
+            <dt className={styles.statLabel}>已排学习</dt>
           </div>
           <div className={styles.stat}>
-            <div className={styles.statNum}>{week.actualMinutes}′</div>
-            <div className={styles.statLabel}>已记录的实际学习</div>
+            <dd className={styles.statNum}>
+              {week.actualMinutes}
+              <span className={styles.unit}>分钟</span>
+            </dd>
+            <dt className={styles.statLabel}>已记录的实际学习</dt>
           </div>
-        </div>
+        </dl>
         {error && <p className={styles.error}>{error}</p>}
-      </section>
+      </header>
 
       {(p.status === "tentative" || p.rules.length > 0) && (
-        <section className={styles.card}>
+        <section className={`${styles.card} ${styles.rules}`}>
           <h2 className={styles.title}>
             作息与规则{p.status === "tentative" && <em className={styles.badge}>暂定</em>}
           </h2>
@@ -266,7 +276,8 @@ export default function V2WeekView() {
 
       {picked && pickedDay && <ItemDetail picked={picked.p} date={picked.date} timezone={week.timezone} onClose={() => setPicked(null)} teachingNote={pickedDay.calendar.teachingNote} budgetLeft={pickedDay.budget.futureCapacity} />}
 
-      <section className={styles.card}>
+      <section className={`${styles.card} ${styles.weekSheet}`}>
+        <h2 className="visually-hidden">这一周的时间线</h2>
         {wide ? (
           <div className={styles.grid} style={{ gridTemplateColumns: `repeat(7, minmax(0, 1fr))` }}>
             {week.days.map((d, i) => (
@@ -291,7 +302,7 @@ export default function V2WeekView() {
             {header(current, currentIndex)}
             {current.calendar.teachingNote && <p className={styles.dayNote}>{current.calendar.teachingNote}</p>}
             {current.calendar.policyNotes.length > 0 && <p className={styles.dayNote}>{current.calendar.policyNotes.join("；")}</p>}
-            {timeline(current, currentIndex, { ppm: 1.05 })}
+            {timeline(current, currentIndex, { ppm: 1.35 })}
           </>
         )}
       </section>
@@ -304,7 +315,7 @@ export default function V2WeekView() {
             return (
               <p key={c.sessionId} className={styles.question}>
                 {s ? `「${s.title}」` : "一段学习安排"}
-                {CONFLICT_LABEL[c.reason] ?? c.reason}。可以在上面的时间线点它挪动，或回答输入框上方的问题。
+                {CONFLICT_LABEL[c.reason] ?? c.reason}。可以在上面的时间线点它挪动，或在底部的 Agent 栏回答问题。
               </p>
             );
           })}

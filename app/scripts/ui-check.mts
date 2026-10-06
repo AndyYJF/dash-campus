@@ -69,7 +69,7 @@ const NAME_SHIM = "globalThis.__name = globalThis.__name || ((f) => f);";
 
 async function main() {
   const browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const pages = ["/today", "/plan", "/explore", "/inbox", "/reviews", "/settings"];
+  const pages = ["/today", "/week", "/direction", "/plan", "/explore", "/inbox", "/reviews", "/settings"];
   const widths = [320, 390, 768, 1024, 1440];
 
   for (const scheme of ["light", "dark"] as const) {
@@ -92,22 +92,19 @@ async function main() {
           await page.screenshot({ path: path.join(OUT, `${scheme}-${w}-${p.slice(1)}.png`), fullPage: true });
         }
       }
-      // 今天页：手机顺序 状态带 → 行动 → 待决定 → 记录
+      // 今天页：手机顺序 刊头 → 下一步 → 时间线；桌面上刊头与下一步都在首屏
       await page.goto(`${BASE}/today`);
-      await page.waitForSelector("text=近期行动");
+      await page.waitForSelector("main h1");
       const order = await page.evaluate(() =>
-        ["本周状态", "近期行动", "需要你决定", "写记录"].map((t) => {
-          const el =
-            t === "本周状态"
-              ? document.querySelector('[aria-label="本周状态"]')
-              : [...document.querySelectorAll("main h2")].find((h) => h.textContent === t);
+        ["刊头", "下一步", "时间线"].map((t) => {
+          const el = t === "刊头" ? document.querySelector("main h1") : [...document.querySelectorAll("main h2")].find((h) => h.textContent === t);
           return el ? el.getBoundingClientRect().top + window.scrollY : -1;
         }),
       );
       if (w < 768) {
-        check(`${scheme} ${w}px 今天页顺序 状态→行动→待决定→记录`, order.every((v, i) => v >= 0 && (i === 0 || v > order[i - 1])), order.join(","));
+        check(`${scheme} ${w}px 今天页顺序 刊头→下一步→时间线`, order.every((v, i) => v >= 0 && (i === 0 || v > order[i - 1])), order.join(","));
       } else if (w >= 1100) {
-        check(`${scheme} ${w}px 状态带与行动在首屏`, order[0] >= 0 && order[1] >= 0 && order[1] < 900, order.join(","));
+        check(`${scheme} ${w}px 刊头与下一步在首屏`, order[0] >= 0 && order[1] >= 0 && order[1] < 900, order.join(","));
       }
     }
     await ctx.close();
@@ -156,7 +153,7 @@ async function main() {
     const page = await ctx.newPage();
     await login(page);
     await page.goto(`${BASE}/today`);
-    await page.waitForSelector("#log-progress");
+    await page.waitForSelector("#intake textarea");
     // 键盘：Tab 进入跳转链接，焦点可见
     await page.keyboard.press("Tab");
     const skipFocused = await page.evaluate(() => document.activeElement?.textContent?.includes("跳到主要内容") ?? false);
@@ -164,50 +161,30 @@ async function main() {
     const outline = await page.evaluate(() => getComputedStyle(document.activeElement!).outlineStyle);
     check("键盘 焦点可见（outline）", outline !== "none", outline);
 
-    await page.focus("#log-progress");
-    await page.keyboard.type("键盘写的一条进展");
+    // Agent 栏：平时是细条；Ctrl+K 聚焦并展开，Ctrl+Enter 提交，Esc 收起
+    const barOpen = () => page.getAttribute("#intake", "data-open");
+    check("Agent 栏平时收成细条", (await barOpen()) === "false");
+    await page.keyboard.press("Control+k");
+    const boxFocused = await page.evaluate(() => document.activeElement === document.querySelector("#intake textarea"));
+    check("键盘 Ctrl+K 聚焦 Agent 栏并展开", boxFocused && (await barOpen()) === "true");
+    await page.keyboard.type("键盘写的一句话，预计二十分钟");
     await page.keyboard.press("Control+Enter");
-    await page.waitForFunction(() => /^已保存 \d/.test(document.querySelector("#quick-log [role=status]")?.textContent ?? ""), null, { timeout: 10_000 });
-    await page.waitForTimeout(800);
-    check("键盘 Ctrl+Enter 提交记录并显示已保存", (await page.locator("#quick-log").innerText()).includes("键盘写的一条进展"));
+    await page.waitForFunction(() => (document.querySelector("#intake [role=status]")?.textContent ?? "").includes("已收到"), null, { timeout: 10_000 });
+    check("键盘 Ctrl+Enter 提交并显示已收到", (await page.inputValue("#intake textarea")) === "");
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+    check("键盘 Esc 把 Agent 栏收回细条", (await barOpen()) === "false");
 
-    // 会话失效：服务端撤销会话，再提交 → 401，草稿保留、显示在新标签页登录
-    await page.fill("#log-progress", "401 时不能丢的草稿");
-    await page.waitForTimeout(300);
+    // 会话失效：服务端撤销会话，再提交 → 401，不显示成功、输入保留
+    await page.fill("#intake textarea", "401 时不能丢的草稿");
     await page.evaluate(async () => {
       await fetch("/api/v1/auth/logout", { method: "POST", headers: { "x-csrf-token": localStorage.getItem("csrfToken") ?? "" } });
     });
-    await page.click("button:has-text('保存记录')");
+    await page.click('#intake button:has-text("发送")');
     await page.waitForSelector("text=登录已过期", { timeout: 10_000 });
-    const status401 = (await page.textContent("#quick-log [role=status]"))?.trim() ?? "";
-    check("401 不显示虚假成功，提示重新登录", !/^已保存 \d/.test(status401) && (await page.isVisible("text=在新标签页登录")), status401);
-    check("401 后输入保留", (await page.inputValue("#log-progress")) === "401 时不能丢的草稿");
-    const draftBefore = await page.evaluate(() => localStorage.getItem("draft:quick-log"));
+    check("401 提示重新登录，不显示虚假成功", !(await page.locator("#intake [role=status]").count()) || !((await page.textContent("#intake [role=status]")) ?? "").includes("已收到"));
+    check("401 后输入保留", (await page.inputValue("#intake textarea")) === "401 时不能丢的草稿");
     await page.screenshot({ path: path.join(OUT, "u7-401.png"), fullPage: true });
-
-    // 重新登录（新标签页），回原页再提交：同一 clientEntryId，只产生一条
-    const tab = await ctx.newPage();
-    await login(tab);
-    await tab.close();
-    await page.reload();
-    await page.waitForSelector("#log-progress");
-    check("刷新后草稿恢复", (await page.inputValue("#log-progress")) === "401 时不能丢的草稿");
-    check("恢复后提示本机草稿", await page.isVisible("text=已恢复本机草稿"));
-    await page.click("button:has-text('保存记录')");
-    await page
-      .waitForFunction(() => /^已保存 \d/.test(document.querySelector("#quick-log [role=status]")?.textContent ?? ""), null, { timeout: 10_000 })
-      .catch(() => {});
-    const statusAfter = (await page.textContent("#quick-log [role=status]"))?.trim() ?? "";
-    const errAfter = (await page.textContent("#quick-log [role=alert]").catch(() => null)) ?? "";
-    console.log(`  重新提交后状态：${statusAfter} ${errAfter}`);
-    const idBefore = JSON.parse(draftBefore ?? "{}").v?.clientEntryId;
-    const logs = await page.evaluate(async () => (await (await fetch("/api/v1/logs")).json()).logs as Array<{ clientEntryId: string; progress: string }>);
-    const same = logs.filter((l) => l.progress === "401 时不能丢的草稿");
-    check(
-      "重新登录后同 ID 提交，只有一条",
-      same.length === 1 && same[0].clientEntryId === idBefore,
-      `条数 ${same.length}，ID ${same[0]?.clientEntryId === idBefore ? "一致" : `${same[0]?.clientEntryId} vs ${idBefore}`}`,
-    );
     await ctx.close();
   }
 

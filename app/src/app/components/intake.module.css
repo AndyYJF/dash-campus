@@ -1,105 +1,286 @@
-/* 全局统一输入：一条输入 + 待答问题 + 每条输入的结果卡。token 全部来自 globals.css。 */
+/* 全局 Agent 栏（纸面风）：平时是底部一条细线般的输入条，只占一行；
+   点进去或有内容时向上展开成一页“便签”——上面是对话与结果，下面是输入。token 全部来自 globals.css。 */
 
 .intake {
   position: fixed;
   z-index: 40;
-  left: calc(var(--sidebar-width) + 24px);
-  right: 32px;
-  bottom: 20px;
-  max-width: 1080px;
+  left: calc(var(--sidebar-width) + var(--space-10));
+  right: var(--space-10);
+  bottom: 16px;
+  max-width: 720px;
   margin: 0 auto;
-  padding: 10px 12px;
-  max-height: calc(100dvh - 100px);
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: calc(100dvh - 96px);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-lg);
   background: var(--color-surface);
+  box-shadow: var(--shadow-md);
+  transition: box-shadow var(--transition), border-color var(--transition);
+}
+
+.intake[data-open="true"] {
+  border-color: var(--color-text);
   box-shadow: var(--shadow-lg);
-  display: grid;
-  gap: 6px;
-  min-width: 0;
 }
 
-.dockHead { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; }
-.dockStatus { flex: 1; color: var(--color-text-muted); min-width: 0; }
-.headButton { appearance: none; border: none; font: inherit; color: var(--color-text); background: var(--color-surface-muted); border-radius: var(--radius-sm); padding: 6px 8px; cursor: pointer; white-space: nowrap; }
-.commands { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; max-height: 200px; overflow-y: auto; }
-.commands button { display: flex; gap: 8px; align-items: center; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-text); font: inherit; font-size: 12px; padding: 10px 8px; cursor: pointer; }
-.commands button:hover { background: var(--color-surface-muted); }
-.recover { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; font-size: 12px; color: var(--color-text-muted); }
-.feedback { margin: 0; font-size: 12px; color: var(--color-text-muted); white-space: pre-line; overflow-wrap: anywhere; max-height: 70px; overflow: auto; }
-.transcript { display: grid; gap: 10px; max-height: 38dvh; overflow-y: auto; overscroll-behavior: contain; padding-top: 8px; border-top: 1px solid var(--color-border); }
-.context span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.context .chipClose { flex: none; }
+@media (max-width: 1023px) {
+  .intake {
+    left: var(--space-4);
+    right: var(--space-4);
+    bottom: max(12px, env(safe-area-inset-bottom));
+    max-height: calc(100dvh - 76px - env(safe-area-inset-top));
+  }
+}
 
-@media (max-width: 1099px) { .intake { left: calc(var(--rail-width) + 20px); right: 24px; } }
 @media (max-width: 767px) {
-  .intake { left: 12px; right: 12px; bottom: calc(var(--dock-height) + 24px + env(safe-area-inset-bottom)); padding: 8px; max-height: calc(100dvh - var(--dock-height) - 100px); }
-  .dockStatus { display: none; }
-  .dockHead strong { flex: 1; }
-  .transcript { max-height: 32dvh; }
+  .intake {
+    left: 10px;
+    right: 10px;
+  }
 }
 
-.dragging .composer {
-  border-color: var(--color-accent);
-  box-shadow: var(--ring);
+/* ===== 展开后的页眉 ===== */
+.dockHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 8px 8px 8px 14px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+}
+
+.dockHead strong {
+  font-family: var(--font-serif);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.dockStatus {
+  flex: 1;
+  min-width: 0;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.headButton,
+.headClose {
+  appearance: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+  min-height: 30px;
+  padding: 0 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color var(--transition), background var(--transition);
+}
+
+.headButton:hover,
+.headClose:hover {
+  border-color: var(--color-text);
+}
+
+.headButton[aria-expanded="true"] {
+  background: var(--color-text);
+  border-color: var(--color-text);
+  color: var(--color-bg);
+}
+
+.headClose {
+  border-color: transparent;
+  color: var(--color-text-muted);
+}
+
+/* ===== 对话与结果：在输入上方，像翻回去看的几行记录 ===== */
+.transcript {
+  display: grid;
+  gap: var(--space-3);
+  min-height: 0;
+  max-height: 46dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-3) 14px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.commands {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 0;
+  max-height: 168px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.commands button {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  border: none;
+  border-right: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  padding: 9px 12px;
+  cursor: pointer;
+}
+
+.commands button strong {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.commands button:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text);
+}
+
+.recover {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--space-3);
+  align-items: baseline;
+  font-size: 12.5px;
+  color: var(--color-text-muted);
+}
+
+/* 对话末尾的“最近的目标”：一行一个，别抢问题和结果的位置 */
+.transcript > .recover {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.transcript > .recover > span {
+  flex-basis: 100%;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.intake > .recover,
+.intake > .context {
+  margin: 8px 14px 0;
 }
 
 .context {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  justify-self: start;
-  max-width: 100%;
+  align-self: flex-start;
+  max-width: calc(100% - 28px);
   font-size: 13px;
-  padding: 3px 6px 3px 10px;
-  border-radius: var(--radius-pill);
+  padding: 2px 4px 2px 10px;
+  border-left: 2px solid var(--color-accent);
   background: var(--color-accent-soft);
   color: var(--color-text);
-  overflow-wrap: anywhere;
 }
 
+.context span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.context .chipClose {
+  flex: none;
+}
+
+/* ===== 输入 ===== */
 .composer {
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-xs);
-  transition: border-color var(--transition), box-shadow var(--transition);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--dock-height);
+  padding: 0 8px 0 6px;
 }
 
-.composer:focus-within {
-  border-color: var(--color-text);
+.intake[data-open="true"] .composer {
+  display: block;
+  padding: 0;
+}
+
+.dragging .composer {
+  background: var(--color-accent-soft);
 }
 
 .box {
   display: block;
+  flex: 1;
   width: 100%;
+  min-width: 0;
   resize: none;
-  max-height: 130px;
-  min-height: 44px;
-  padding: 11px 14px 4px;
+  max-height: 160px;
+  min-height: 40px;
+  height: auto;
+  padding: 9px 8px;
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: 0;
   font: inherit;
+  line-height: 1.5;
   background: transparent;
   color: inherit;
   outline: none;
+  box-shadow: none;
+}
+
+.box:focus {
+  box-shadow: none;
+  background: transparent;
+}
+
+.intake[data-open="true"] .box {
+  padding: 14px 14px 6px;
+  min-height: 52px;
+}
+
+.badge {
+  appearance: none;
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  min-height: 32px;
+  padding: 0 8px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.badge[data-kind="question"] {
+  color: var(--color-now);
+  font-weight: 600;
+}
+
+.badge[data-kind="failed"] {
+  color: var(--color-danger);
 }
 
 .actions {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
-  padding: 4px 8px 8px;
+  gap: var(--space-2);
+  flex: none;
+}
+
+.intake[data-open="true"] .actions {
+  padding: 2px 8px 8px 6px;
 }
 
 .fileInput {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
+  display: none;
 }
 
 .attach {
@@ -110,29 +291,35 @@
   font: inherit;
   font-size: 13px;
   padding: 6px 8px;
-  min-height: 36px;
+  min-height: 34px;
   border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
+.intake[data-open="false"] .attach {
+  display: none;
+}
+
 .attach:hover {
-  background: var(--color-surface-muted);
   color: var(--color-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .send {
   appearance: none;
-  padding: 6px 16px;
-  min-height: 36px;
+  padding: 0 16px;
+  min-height: 34px;
   border: none;
   border-radius: var(--radius-sm);
   background: var(--color-primary);
   color: var(--color-primary-text);
   font: inherit;
   font-size: 14px;
-  font-weight: 650;
+  font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
+  transition: background var(--transition), opacity var(--transition);
 }
 
 .send:hover:not(:disabled) {
@@ -140,14 +327,22 @@
 }
 
 .send:disabled {
-  opacity: 0.5;
+  opacity: 0.35;
   cursor: default;
+}
+
+/* 细条状态下没内容时，发送键退成一个淡淡的提示 */
+.intake[data-open="false"] .send:disabled {
+  background: transparent;
+  color: var(--color-text-muted);
+  opacity: 0.6;
+  padding: 0 8px;
 }
 
 .files {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 0 14px 8px;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -156,13 +351,13 @@
 .fileChip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   max-width: 100%;
-  font-size: 12px;
-  padding: 2px 4px 2px 10px;
+  margin: 0;
+  font-size: 12.5px;
+  padding: 2px 4px 2px 8px;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill);
-  background: var(--color-surface);
+  border-radius: var(--radius-sm);
   overflow-wrap: anywhere;
 }
 
@@ -171,58 +366,70 @@
   border: none;
   background: transparent;
   color: var(--color-text-muted);
-  font: inherit;
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
+  width: 26px;
+  height: 26px;
   cursor: pointer;
 }
 
 .chipClose:hover {
-  background: var(--color-surface-muted);
   color: var(--color-text);
+}
+
+.error,
+.feedback {
+  margin: 0;
+  padding: 0 14px 10px;
+  font-size: 13px;
 }
 
 .error {
   color: var(--color-danger);
-  margin: 0;
-  font-size: 14px;
 }
 
+.feedback {
+  color: var(--color-text-muted);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  max-height: 72px;
+  overflow: auto;
+}
+
+/* ===== 待回答的问题 ===== */
 .questions {
   display: grid;
-  gap: 8px;
+  gap: var(--space-3);
 }
 
 .question {
-  border: 1px solid var(--color-border);
-  border-left: 4px solid var(--color-primary);
-  background: var(--color-surface);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
   display: grid;
-  gap: 8px;
-  min-width: 0;
+  gap: 6px;
+  padding: 2px 0 2px 12px;
+  border-left: 2px solid var(--color-now);
+}
+
+.question > .linkBtn {
+  justify-self: start;
 }
 
 .prompt {
   margin: 0;
-  white-space: pre-line;
-  overflow-wrap: anywhere;
-  font-size: 14px;
+  font-family: var(--font-serif);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.5;
 }
 
 .reason,
 .hint {
   margin: 0;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--color-text-muted);
 }
 
 .hint {
-  color: var(--color-warning-text);
+  padding: 8px 12px;
 }
 
 .options {
@@ -234,89 +441,74 @@
 .option {
   appearance: none;
   border: 1px solid var(--color-border-strong);
-  background: var(--color-surface);
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--color-text);
-  border-radius: var(--radius-pill);
-  padding: 5px 12px;
-  min-height: 34px;
   font: inherit;
-  font-size: 13px;
-  cursor: pointer;
+  font-size: 13.5px;
+  min-height: 34px;
+  padding: 4px 12px;
   text-align: left;
-  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition);
 }
 
 .option:hover {
-  background: var(--color-accent-soft);
-  border-color: var(--color-accent);
+  border-color: var(--color-text);
 }
 
-.answerRow {
-  display: flex;
-  gap: 8px;
+.option[aria-pressed="true"] {
+  background: var(--color-text);
+  border-color: var(--color-text);
+  color: var(--color-bg);
 }
 
-.answerRow input {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 10px;
-  min-height: 36px;
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-sm);
-  font: inherit;
-  font-size: 14px;
-  background: var(--color-surface);
-  color: inherit;
-}
-
+/* ===== 每条输入的结果：一行状态 + 说了什么 + 结果，条目之间只隔细线 ===== */
 .results {
+  list-style: none;
   margin: 0;
   padding: 0;
-  list-style: none;
   display: grid;
-  gap: 8px;
 }
 
 .result {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  padding: 9px 12px;
   display: grid;
   gap: 4px;
-  font-size: 13px;
+  margin: 0;
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--color-border);
   min-width: 0;
+}
+
+.result:first-child {
+  border-top: none;
+  padding-top: 0;
 }
 
 .resultHead {
   display: flex;
-  gap: 8px;
   align-items: baseline;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .status {
   flex: none;
-  font-weight: 650;
-  font-size: 12px;
-  padding: 1px 8px;
-  border-radius: var(--radius-pill);
-  background: var(--color-surface-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-text-muted);
 }
 
 .status[data-state="applied"] {
-  background: var(--color-ok-soft);
   color: var(--color-ok);
 }
 
 .status[data-state="needs_input"],
 .status[data-state="partly_applied"] {
-  background: var(--color-warning-bg);
   color: var(--color-warning-text);
 }
 
 .status[data-state="failed"] {
-  background: var(--color-danger-soft);
   color: var(--color-danger);
 }
 
@@ -324,29 +516,30 @@
   flex: 1;
   min-width: 0;
   color: var(--color-text-muted);
-  white-space: nowrap;
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .when {
   flex: none;
-  color: var(--color-text-muted);
+  margin: 0;
   font-size: 12px;
+  color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .summary {
   margin: 0;
-  font-size: 14px;
-  white-space: pre-line;
-  overflow-wrap: anywhere;
+  font-size: 14.5px;
+  line-height: 1.6;
 }
 
 .followUp {
   margin: 0;
+  font-size: 13px;
   color: var(--color-text-muted);
-  overflow-wrap: anywhere;
 }
 
 .followUp[data-state="failed"] {
@@ -355,16 +548,17 @@
 
 .next {
   margin: 0;
-  padding-left: 18px;
-  overflow-wrap: anywhere;
+  padding-left: 1.2em;
+  font-size: 13px;
+  color: var(--color-text-muted);
 }
 
 .resultActions,
 .historyBar {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 12px;
-  align-items: center;
+  align-items: baseline;
+  gap: 2px var(--space-4);
 }
 
 .linkBtn {
@@ -374,19 +568,59 @@
   color: var(--color-accent);
   font: inherit;
   font-size: 13px;
-  padding: 4px 0;
-  min-height: 28px;
+  padding: 3px 0;
   cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 3px;
 }
 
 .linkBtn:hover {
   color: var(--color-accent-hover);
-  text-decoration: underline;
+  text-decoration-color: currentColor;
+}
+
+.linkBtn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .changes {
   margin: 0;
-  padding-left: 18px;
+  padding-left: 1.2em;
+  font-size: 13px;
   color: var(--color-text-muted);
-  overflow-wrap: anywhere;
+}
+
+@media (max-width: 767px) {
+  /* 手机上的触摸目标不小于 40px */
+  .send,
+  .attach,
+  .badge,
+  .headButton,
+  .headClose,
+  .option {
+    min-height: 40px;
+  }
+
+  .linkBtn {
+    min-height: 36px;
+  }
+
+  .chipClose {
+    width: 36px;
+    height: 36px;
+  }
+
+  .dockStatus {
+    display: none;
+  }
+
+  .dockHead strong {
+    flex: 1;
+  }
+
+  .transcript {
+    max-height: 42dvh;
+  }
 }

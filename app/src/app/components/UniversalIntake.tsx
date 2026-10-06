@@ -94,6 +94,9 @@ export default function UniversalIntake() {
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [expanded, setExpanded] = useState(false);
+  // 焦点在栏内（点进输入框或栏里的按钮）：细条展开成完整输入
+  const [focused, setFocused] = useState(false);
+  const rootRef = useRef<HTMLElement>(null);
   const [showCommands, setShowCommands] = useState(false);
   const [feedback, setFeedback] = useState("");
   type Draft = { text: string; files: File[]; context: ComposeDetail | null; busy?: boolean };
@@ -177,15 +180,28 @@ export default function UniversalIntake() {
         setShowCommands(false);
       }
       if (detail.question) setExpanded(true);
+      setFocused(true);
       boxRef.current?.focus();
     };
     const shortcut = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); boxRef.current?.focus(); }
-      if (e.key === "Escape") { setShowCommands(false); setExpanded(false); }
+      if (e.key === "Escape") { setShowCommands(false); setExpanded(false); setFocused(false); boxRef.current?.blur(); }
+    };
+    // 点到或聚焦到栏外：收回细条（还有没发出去的内容时输入区仍保留）。按“外面”判断而不是 blur，
+    // 这样点栏里的按钮不会先把栏收掉。
+    const outside = (e: Event) => {
+      if (rootRef.current && e.target instanceof Node && !rootRef.current.contains(e.target)) { setFocused(false); setExpanded(false); setShowCommands(false); }
     };
     window.addEventListener(DASH_COMPOSE, onCompose);
     window.addEventListener("keydown", shortcut);
-    return () => { window.removeEventListener(DASH_COMPOSE, onCompose); window.removeEventListener("keydown", shortcut); };
+    document.addEventListener("pointerdown", outside);
+    document.addEventListener("focusin", outside);
+    return () => {
+      window.removeEventListener(DASH_COMPOSE, onCompose);
+      window.removeEventListener("keydown", shortcut);
+      document.removeEventListener("pointerdown", outside);
+      document.removeEventListener("focusin", outside);
+    };
   }, []);
 
   function addFiles(list: FileList | File[]) {
@@ -210,6 +226,8 @@ export default function UniversalIntake() {
     lastAttempt.current = { value, contextJson, files: [...files] };
     setBusy(true);
     setError(null);
+    // 上一条的“已收到”不留到这一次：这次没成功时不能还显示着成功
+    setFeedback("");
     try {
       const urls = (value.match(/https?:\/\/[^\s，。；]+/g) ?? []).slice(0, 2);
       let res: Response;
@@ -308,12 +326,19 @@ export default function UniversalIntake() {
   const paletteOpen = showCommands || commandQuery !== null;
   const shown = showHistory ? results : results.slice(0, 1);
   const canSend = (text.trim().length > 0 || files.length > 0) && !busy;
+  // 细条什么时候展开：正在用（聚焦/看对话/选指令），或还有没发出去的东西、要看的提示
+  const isOpen = focused || expanded || paletteOpen || busy || text.length > 0 || files.length > 0 || Boolean(context?.label) || Boolean(goal) || Boolean(error) || Boolean(savedDraft);
+  const latest = results[0];
+  const badge = hasActive ? "处理中…" : questions.length ? `${questions.length} 个待回答` : latest && latest.state === "failed" ? "上一条没有办成" : null;
 
   return (
     <section
+      ref={rootRef}
       className={`${styles.intake}${dragging ? ` ${styles.dragging}` : ""}`}
+      data-open={isOpen ? "true" : "false"}
       aria-label="统一 Agent 输入"
       id="intake"
+      onFocusCapture={() => setFocused(true)}
       onDragOver={(e) => {
         e.preventDefault();
         setDragging(true);
@@ -322,107 +347,22 @@ export default function UniversalIntake() {
       onDrop={(e) => {
         e.preventDefault();
         setDragging(false);
+        setFocused(true);
         if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
       }}
     >
-      <div className={styles.dockHead}>
-        <strong>Agent</strong>
-        <span className={styles.dockStatus}>{hasActive ? "处理中…" : "直接说，或用 / 指令"}</span>
-        <button type="button" className={styles.headButton} onClick={() => setShowCommands((v) => !v)} aria-expanded={paletteOpen}>/ 指令</button>
-        <button type="button" className={styles.headButton} onClick={() => setExpanded((v) => !v)} aria-expanded={expanded} aria-label={expanded ? "收起 Agent 对话" : "展开 Agent 对话"}>{questions.length ? `${questions.length} 个待回答` : "对话 / 历史"}</button>
-      </div>
-      {paletteOpen && <div className={styles.commands} aria-label="Agent 指令列表">
-        {visibleCommands.map((c) => <button type="button" key={c.name} onClick={() => chooseCommand(c.name)} title={c.hint}><strong>{c.token}</strong><span>{c.label}</span></button>)}
-        {!visibleCommands.length && <p className={styles.hint}>未知指令。可去掉前缀直接说。</p>}
-      </div>}
-      {savedDraft && <div className={styles.recover}>
-        <span>之前的草稿已保留</span>
-        <button type="button" className={styles.linkBtn} disabled={busy} onClick={() => { const current = draftRef.current; setText(savedDraft.text); setFiles(savedDraft.files); setContext(savedDraft.context); setSavedDraft(current.text.trim() || current.files.length ? current : null); setError(null); }}>恢复草稿</button>
-      </div>}
-      {goal && !context?.question && (
-        <div className={styles.context}>
-          <span title={goal.objective}>继续：{goal.objective}</span>
-          <button type="button" className={styles.chipClose} onClick={() => setGoal(null)} aria-label="不再继续这个目标">
-            ×
+      {isOpen && (
+        <div className={styles.dockHead}>
+          <strong>Agent</strong>
+          <span className={styles.dockStatus}>{hasActive ? "处理中…" : "直接说，或用 / 指令"}</span>
+          <button type="button" className={styles.headButton} onClick={() => setShowCommands((v) => !v)} aria-expanded={paletteOpen}>/ 指令</button>
+          <button type="button" className={styles.headButton} onClick={() => setExpanded((v) => !v)} aria-expanded={expanded} aria-label={expanded ? "收起 Agent 对话" : "展开 Agent 对话"}>{expanded ? "收起对话" : questions.length ? `${questions.length} 个待回答` : "对话 / 历史"}</button>
+          <button type="button" className={styles.headClose} onClick={() => { setFocused(false); setExpanded(false); setShowCommands(false); boxRef.current?.blur(); }} aria-label="收起 Agent 栏">
+            收起
           </button>
         </div>
       )}
-      {context?.label && (
-        <div className={styles.context}>
-          <span title={context.label}>{context.question ? "回答：" : "关于："}{context.label}</span>
-          <button type="button" className={styles.chipClose} onClick={() => setContext(null)} aria-label="取消这个上下文">
-            ×
-          </button>
-        </div>
-      )}
-      <div className={styles.composer}>
-        <textarea
-          ref={boxRef}
-          className={styles.box}
-          disabled={busy}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onPaste={(e) => {
-            const pasted = Array.from(e.clipboardData.files);
-            if (pasted.length) {
-              e.preventDefault();
-              addFiles(pasted);
-            }
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit();
-          }}
-          placeholder={selectedCommand?.hint ?? "直接说，或用 / 指令"}
-          rows={text.includes("\n") || text.length > 80 ? 3 : 1}
-          maxLength={100_000}
-          aria-label="把材料或想法放进来"
-        />
-        <div className={styles.actions}>
-          <input ref={fileRef} type="file" multiple accept={ACCEPT} className={styles.fileInput} onChange={(e) => e.target.files && addFiles(e.target.files)} aria-label="添加文件" />
-          <button type="button" className={styles.attach} disabled={busy} onClick={() => fileRef.current?.click()}>
-            添加图片/文件
-          </button>
-          <button type="button" className={styles.send} onClick={submit} disabled={!canSend}>
-            {busy ? "提交中…" : "发送"}
-          </button>
-        </div>
-      </div>
-      {files.length > 0 && (
-        <ul className={styles.files}>
-          {files.map((f, i) => (
-            <li key={`${f.name}-${i}`} className={styles.fileChip}>
-              <span>{f.name || "粘贴的图片"}</span>
-              <button type="button" className={styles.chipClose} onClick={() => setFiles((cur) => cur.filter((_, n) => n !== i))} aria-label={`移除 ${f.name}`}>
-                ×
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      {error && (
-        <p className={styles.error} role="alert">
-          {error}
-        </p>
-      )}
-
-      {feedback && <p className={styles.feedback} role="status">{feedback}</p>}
-      {expanded && <div className={styles.transcript} aria-label="Agent 对话与结果">
-      {openGoals.length > 0 && (
-        <div className={styles.recover} aria-label="最近的目标">
-          <span>最近的目标</span>
-          {openGoals.map((g) => (
-            <button
-              key={g.id}
-              type="button"
-              className={styles.linkBtn}
-              title={g.lastResult ?? g.objective}
-              onClick={() => { setGoal({ id: g.id, revision: g.revision, objective: g.objective }); boxRef.current?.focus(); }}
-            >
-              继续：{g.objective}
-            </button>
-          ))}
-        </div>
-      )}
+      {isOpen && expanded && <div className={styles.transcript} aria-label="Agent 对话与结果">
       {questions.length > 0 && (
         <div className={styles.questions}>
           {questions.map((q) => (
@@ -541,9 +481,105 @@ export default function UniversalIntake() {
               更早的
             </button>
           )}
+      {openGoals.length > 0 && (
+        <div className={styles.recover} aria-label="最近的目标">
+          <span>最近的目标</span>
+          {openGoals.map((g) => (
+            <button
+              key={g.id}
+              type="button"
+              className={styles.linkBtn}
+              title={g.lastResult ?? g.objective}
+              onClick={() => { setGoal({ id: g.id, revision: g.revision, objective: g.objective }); boxRef.current?.focus(); }}
+            >
+              继续：{g.objective}
+            </button>
+          ))}
+        </div>
+      )}
         </div>
       )}
       </div>}
+      {paletteOpen && <div className={styles.commands} aria-label="Agent 指令列表">
+        {visibleCommands.map((c) => <button type="button" key={c.name} onClick={() => chooseCommand(c.name)} title={c.hint}><strong>{c.token}</strong><span>{c.label}</span></button>)}
+        {!visibleCommands.length && <p className={styles.hint}>未知指令。可去掉前缀直接说。</p>}
+      </div>}
+      {savedDraft && <div className={styles.recover}>
+        <span>之前的草稿已保留</span>
+        <button type="button" className={styles.linkBtn} disabled={busy} onClick={() => { const current = draftRef.current; setText(savedDraft.text); setFiles(savedDraft.files); setContext(savedDraft.context); setSavedDraft(current.text.trim() || current.files.length ? current : null); setError(null); }}>恢复草稿</button>
+      </div>}
+      {goal && !context?.question && (
+        <div className={styles.context}>
+          <span title={goal.objective}>继续：{goal.objective}</span>
+          <button type="button" className={styles.chipClose} onClick={() => setGoal(null)} aria-label="不再继续这个目标">
+            ×
+          </button>
+        </div>
+      )}
+      {context?.label && (
+        <div className={styles.context}>
+          <span title={context.label}>{context.question ? "回答：" : "关于："}{context.label}</span>
+          <button type="button" className={styles.chipClose} onClick={() => setContext(null)} aria-label="取消这个上下文">
+            ×
+          </button>
+        </div>
+      )}
+      <div className={styles.composer}>
+        <textarea
+          ref={boxRef}
+          className={styles.box}
+          disabled={busy}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            const pasted = Array.from(e.clipboardData.files);
+            if (pasted.length) {
+              e.preventDefault();
+              addFiles(pasted);
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit();
+          }}
+          placeholder={selectedCommand?.hint ?? (isOpen ? "直接说，或用 / 指令；可以粘贴截图、拖文件进来" : "说一句…")}
+          rows={text.includes("\n") || text.length > 80 ? 3 : 1}
+          maxLength={100_000}
+          aria-label="把材料或想法放进来"
+        />
+        {!isOpen && badge && (
+          <button type="button" className={styles.badge} data-kind={hasActive ? "working" : questions.length ? "question" : "failed"} onClick={() => { setExpanded(true); setFocused(true); }}>
+            {badge}
+          </button>
+        )}
+        <div className={styles.actions}>
+          <input ref={fileRef} type="file" multiple accept={ACCEPT} className={styles.fileInput} onChange={(e) => e.target.files && addFiles(e.target.files)} aria-label="添加文件" />
+          <button type="button" className={styles.attach} disabled={busy} onClick={() => fileRef.current?.click()}>
+            添加图片/文件
+          </button>
+          <button type="button" className={styles.send} onClick={submit} disabled={!canSend}>
+            {busy ? "提交中…" : "发送"}
+          </button>
+        </div>
+      </div>
+      {files.length > 0 && (
+        <ul className={styles.files}>
+          {files.map((f, i) => (
+            <li key={`${f.name}-${i}`} className={styles.fileChip}>
+              <span>{f.name || "粘贴的图片"}</span>
+              <button type="button" className={styles.chipClose} onClick={() => setFiles((cur) => cur.filter((_, n) => n !== i))} aria-label={`移除 ${f.name}`}>
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && (
+        <p className={styles.error} role="alert">
+          {error}
+        </p>
+      )}
+
+      {isOpen && feedback && <p className={styles.feedback} role="status">{feedback}</p>}
     </section>
   );
 }

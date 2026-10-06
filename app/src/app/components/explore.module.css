@@ -4,32 +4,26 @@
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
-  gap: var(--space-4);
+  column-gap: var(--space-8);
   align-items: stretch;
 }
 
+/* 候选：一栏一份，上面一道细线，不套框 */
 .candidate {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
   min-width: 0;
-  padding: var(--space-5);
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  transition: border-color var(--transition), box-shadow var(--transition);
-}
-
-.candidate:hover {
-  border-color: var(--color-border-strong);
-  box-shadow: var(--shadow-md);
+  padding: var(--space-4) 0 var(--space-5);
+  border-top: 1px solid var(--color-border-strong);
 }
 
 .candidate h3 {
   margin: 0;
-  font-size: 17px;
-  line-height: 1.45;
-  letter-spacing: -0.01em;
+  font-family: var(--font-serif);
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.4;
 }
 
 /* 字段小标题；作为 <label> 包住输入框时，输入框自动与文字留出间距 */
@@ -115,20 +109,18 @@
 .quote {
   margin: 0 0 var(--space-1);
   padding: var(--space-2) var(--space-3);
-  border-left: 2px solid var(--color-text);
-  background: var(--color-surface-muted);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  border-left: 2px solid var(--color-border-strong);
   font-size: var(--text-small);
   line-height: 1.65;
   color: var(--color-text-muted);
   overflow-wrap: anywhere;
 }
 
-/* 运行阶段：一排步骤，当前步骤涂荧光色，已完成的打勾 */
+/* 运行阶段：一行步骤，用“›”连起来；当前步骤墨色加粗，已完成的打勾 */
 .stages {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  gap: 2px var(--space-2);
   list-style: none;
   padding: 0;
   margin: var(--space-4) 0 var(--space-3);
@@ -143,45 +135,40 @@
   align-items: center;
   gap: 6px;
   margin: 0;
-  padding: 4px var(--space-3);
-  border-radius: var(--radius-pill);
   font-weight: 500;
-}
-
-.stage {
-  background: var(--color-surface-muted);
   color: var(--color-text-muted);
 }
 
-.stage::before,
-.stageActive::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.45;
+.stage + .stage::before,
+.stage + .stageActive::before,
+.stage + .stageDone::before,
+.stageDone + .stage::before,
+.stageDone + .stageActive::before,
+.stageDone + .stageDone::before,
+.stageActive + .stage::before,
+.stageActive + .stageDone::before {
+  content: "›";
+  margin-right: 2px;
+  color: var(--color-border-strong);
 }
 
 .stageActive {
-  background: var(--color-primary);
-  color: var(--color-primary-text);
+  color: var(--color-text);
   font-weight: 650;
-}
-
-.stageActive::before {
-  opacity: 1;
+  text-decoration: underline;
+  text-decoration-color: var(--color-now);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 5px;
 }
 
 .stageDone {
-  background: var(--color-surface-muted);
   color: var(--color-text);
 }
 
 .banner {
   padding: var(--space-3) var(--space-4);
   margin: 0 0 var(--space-4);
-  border-radius: var(--radius-md);
+  border-left: 3px solid var(--color-warning-text);
   background: var(--color-warning-bg);
   color: var(--color-warning-text);
   font-size: var(--text-small);
@@ -222,16 +209,15 @@
   border-top: 1px solid var(--color-border);
 }
 
-/* 展开的编辑区（项目草案、卡点分析）：浅底，里面的输入框换成白底 */
+/* 展开的编辑区（项目草案、卡点分析）：左侧一道墨线缩进 */
 .draft {
   --color-field: var(--color-surface);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   margin-top: var(--space-3);
-  padding: var(--space-4);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-muted);
+  padding: var(--space-2) 0 var(--space-2) var(--space-4);
+  border-left: 2px solid var(--color-text);
 }
 
 .draft > p,

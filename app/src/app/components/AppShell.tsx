@@ -16,11 +16,10 @@ const NAV_ITEMS: Array<{ href: string; label: string; icon: IconName }> = [
 ];
 
 /**
- * AppShell：
- * - ≥1100px：左侧栏（品牌、写记录、五项主导航、近期项目、设置与主题）+ 右侧圆角"纸面"放内容。
- * - 768–1099px：侧栏收成图标栏（图标 + 小字）。
- * - <768px：顶部一行（品牌、设置、写记录）+ 底部悬浮标签栏放五项主导航，拇指够得到。
- * 五项主导航固定；近期项目最多三个；"写记录"入口在任何宽度都看得见。
+ * AppShell（纸面/手册风）：
+ * - ≥1024px：左侧一栏直接印在纸面上（刊名、三个栏目、近期项目、设置与主题），与正文之间只有一条细线。
+ * - <1024px：顶部一行刊头——刊标、三个栏目标签、设置；底部只留 Agent 细条。
+ * 正文不再套圆角面板；Agent 输入由根布局里的 GlobalAgent 固定在底部。
  */
 export default function AppShell({
   children,
@@ -37,7 +36,7 @@ export default function AppShell({
       </a>
       <aside className={styles.sidebar}>
         <div className={styles.brandRow}>
-          <Link href="/today" className={styles.brand}>
+          <Link href="/today" className={styles.brand} aria-label="Dash Campus 首页">
             <BrandMark />
             <span className={styles.brandName}>Dash Campus</span>
           </Link>
@@ -50,10 +49,6 @@ export default function AppShell({
             >
               <Icon name="settings" size={20} />
             </Link>
-            <AgentLauncher className={styles.quickLog}>
-              <Icon name="pencil" size={16} />
-              <span>说一句</span>
-            </AgentLauncher>
           </div>
         </div>
         <nav className={styles.nav} aria-label="主导航">
@@ -67,13 +62,20 @@ export default function AppShell({
                 aria-current={active ? "page" : undefined}
               >
                 <span className={styles.navIcon}>
-                  <Icon name={item.icon} size={18} />
+                  <Icon name={item.icon} size={17} />
                 </span>
                 <span>{item.label}</span>
               </Link>
             );
           })}
         </nav>
+        <AgentLauncher className={styles.quickLog}>
+          <span className={styles.navIcon}>
+            <Icon name="pencil" size={16} />
+          </span>
+          <span>说一句</span>
+          <kbd className={styles.kbd}>Ctrl K</kbd>
+        </AgentLauncher>
         <ShellExtras />
         <div className={styles.sidebarFoot}>
           <Link
@@ -82,7 +84,7 @@ export default function AppShell({
             aria-current={settingsActive ? "page" : undefined}
           >
             <span className={styles.navIcon}>
-              <Icon name="settings" size={18} />
+              <Icon name="settings" size={17} />
             </span>
             <span>设置</span>
           </Link>

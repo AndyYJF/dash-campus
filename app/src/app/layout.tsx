@@ -5,6 +5,8 @@ import GlobalAgent from "./components/GlobalAgent";
 
 // 拉丁字母与数字用 Geist（OFL 许可，字体文件随仓库，本机提供，不发外部字体请求）；中文仍用系统无衬线（globals.css）
 const geist = localFont({ src: "./fonts/Geist-Variable.woff2", variable: "--font-geist", weight: "100 900", display: "swap" });
+// 标题与大数字的拉丁字形：Newsreader（OFL 许可，随仓库）；中文标题落到系统宋体
+const newsreader = localFont({ src: "./fonts/Newsreader-Latin-Variable.woff2", variable: "--font-newsreader", weight: "200 800", display: "swap" });
 const geistMono = localFont({
   src: "./fonts/GeistMono-Variable.woff2",
   variable: "--font-geist-mono",
@@ -23,8 +25,8 @@ export const viewport: Viewport = {
   initialScale: 1,
   viewportFit: "cover",
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f4f4f5" },
-    { media: "(prefers-color-scheme: dark)", color: "#09090a" },
+    { media: "(prefers-color-scheme: light)", color: "#f5f2ea" },
+    { media: "(prefers-color-scheme: dark)", color: "#171612" },
   ],
 };
 
@@ -37,7 +39,7 @@ const THEME_SCRIPT = `try{var t=localStorage.getItem("theme");if(t==="light"||t=
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     // data-theme 由上面的内联脚本在水合前写入，服务端渲染结果里没有
-    <html lang="zh-CN" className={`${geist.variable} ${geistMono.variable}`} suppressHydrationWarning>
+    <html lang="zh-CN" className={`${geist.variable} ${newsreader.variable} ${geistMono.variable}`} suppressHydrationWarning>
       <body>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
         {children}

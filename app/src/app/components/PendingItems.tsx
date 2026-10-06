@@ -10,10 +10,12 @@ export type PendingItem = { taskId: string; title: string; kind: ResolvedTaskKin
 export default function PendingItems({ items, timezone }: { items: PendingItem[]; timezone: string }) {
   const [expanded, setExpanded] = useState(false);
   if (!items.length) return null;
-  const visible = expanded ? items : items.slice(0, 5);
+  const visible = expanded ? items : items.slice(0, 3);
   return (
-    <section className={styles.card}>
-      <h2 className={styles.title}>待处理 <span className={styles.muted}>({items.length})</span></h2>
+    <section className={`${styles.card} ${styles.pendingList}`}>
+      <h2 className={styles.title}>
+        待处理<span className={styles.titleSub}>{items.length} 项</span>
+      </h2>
       <p className={styles.muted}>通知、决策与日常待办保留在这里，不自动占用学习时间。</p>
       {visible.map((item) => (
         <div key={item.taskId} className={styles.action}>
@@ -26,7 +28,7 @@ export default function PendingItems({ items, timezone }: { items: PendingItem[]
           </div>
         </div>
       ))}
-      {items.length > 5 && <button type="button" className={styles.btnGhost} onClick={() => setExpanded(!expanded)}>{expanded ? "收起" : `查看全部 ${items.length} 项`}</button>}
+      {items.length > 3 && <button type="button" className={styles.btnGhost} onClick={() => setExpanded(!expanded)}>{expanded ? "收起" : `查看全部 ${items.length} 项`}</button>}
     </section>
   );
 }

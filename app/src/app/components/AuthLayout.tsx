@@ -26,7 +26,7 @@ export default function AuthLayout({
           <p className={auth.tagline}>
             计划今天，
             <br />
-            <em>记下每一步</em>。
+            记下每一步。
           </p>
           <ul className={auth.points}>
             <li>一周只定一个重点</li>
@@ -34,7 +34,7 @@ export default function AuthLayout({
             <li>进展与卡点，随手记下</li>
           </ul>
         </div>
-        <div className={auth.asideFoot}>Self-hosted · Single user</div>
+        <div className={auth.asideFoot}>自部署，只有你一个用户</div>
       </div>
       <div className={auth.formSide}>
         <div className={auth.panel}>

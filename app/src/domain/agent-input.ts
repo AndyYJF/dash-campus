@@ -1,8 +1,10 @@
+import { hasClockTime } from "./arrange";
+
 /** Human commands are shared by buttons, the composer and server admission. */
 export const AGENT_COMMANDS = [
   { name: "view", token: "/查看", label: "查看现状", hint: "例如：本周时间安排、明天课表、剩余学习时间" },
   { name: "process", token: "/处理", label: "处理事项", hint: "写下希望 Agent 怎么处理" },
-  { name: "arrange", token: "/安排", label: "在空档安排", hint: "从空档发起，再写要做的事" },
+  { name: "arrange", token: "/安排", label: "安排到某个时间", hint: "例如：下午3点到4点写作业；或先点一个空档再写要做的事" },
   { name: "adjust", token: "/调整", label: "调整安排", hint: "例如：把这段挪到明天下午" },
   { name: "study", token: "/学习", label: "纳入学习", hint: "确认当前事项或填写已有事项名" },
   { name: "todo", token: "/待办", label: "只记待办", hint: "保留事项与提醒，不自动排学习" },
@@ -43,7 +45,8 @@ export function agentInputIssue(input: AgentText, ctx: { hasFiles: boolean; hasU
     if (ctx.hasFiles || ctx.hasUrls) return "这条指令用于纠正已有事项；导入新材料请用 /导入 或直接放入材料。";
     return input.body.trim() || ctx.hasTask ? null : "请先点一个事项，或在指令后写已有事项的名称。";
   }
-  if (input.command === "arrange" && !ctx.hasSlot) return "先点时间线中的空档，再告诉我在这里安排什么；也可以去掉前缀直接说你的计划。";
+  // /安排：要么点了空档，要么话里自己写了钟点
+  if (input.command === "arrange" && !ctx.hasSlot && !hasClockTime(input.body)) return "请写上时间（比如“下午3点到4点写作业”），或先点时间线上的一个空档再说要安排什么。";
   if (input.command === "undo") return input.body.trim() ? "撤销最近变化只需 /撤销，不需要额外参数。" : null;
   if (input.command === "review") return /^(上周|本周|这周)?$/.test(input.body.trim()) ? null : "复盘范围请写“上周”或“本周”。";
   if (input.command === "view" && !input.body.trim() && !ctx.hasFiles && !ctx.hasUrls) return null;

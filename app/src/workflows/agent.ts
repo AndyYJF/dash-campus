@@ -37,6 +37,11 @@ export type BindEnv = {
   selected: EntityRef | null;
   /** 已有回答（按问题键取结构化结果） */
   answer: (key: string) => Record<string, unknown> | null;
+  /**
+   * “/安排”这一步的时间来自哪里：话里自带起止时间（range）或只带开始时间（start）。缺省 = 用点选的空档。
+   * 放在环境里而不是意图里：意图的结构也是给模型的输出格式，这个标记只由服务端的确定性解析产生。
+   */
+  arrangeTimed?: "range" | "start";
   /** 只读工具在这次处理里返回过的对象；按 ID 引用只认见过的 */
   seen?: EntityRef[];
   /** 同一句话里第 N 步产生的对象；null = 那一步还没完成 */
@@ -523,8 +528,24 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
     // 从时间轴空档发起：对得上已有任务就给它排，对不上就按这句话新建一个
     const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3));
     const endMin = intent.end >= "24:00" ? 1440 : toMin(intent.end);
-    // 今天的空档可能已经过去一截：从现在之后的整 5 分钟开始
     let startMin = toMin(intent.start);
+    const timed = env.arrangeTimed ?? "none";
+    // 话里自己说了钟点：照说的排，不挪到“现在”，也不受点选空档的长短限制（过去的时间、撞课、超预算由执行时如实拒绝）
+    if (timed !== "none") {
+      const m = matchTask(intent.text, openTasks());
+      let taskId: string | null = m.kind === "one" ? m.task.id : null;
+      if (m.kind === "ambiguous") {
+        const c = chooseOrAsk({ kind: "many", values: m.candidates }, env, "task", (v) => v.title, "任务");
+        if (c.kind !== "one") return c;
+        taskId = c.value.id;
+      }
+      const known = taskId ? ((getDb().prepare(`SELECT estimate_minutes FROM tasks WHERE id = ?`).get(taskId) as { estimate_minutes: number | null } | undefined)?.estimate_minutes ?? null) : null;
+      const durationMinutes = timed === "range" ? endMin - startMin : (estimateFromText(intent.text) ?? Math.min(90, known ?? 60));
+      if (durationMinutes > 240) return { kind: "fail", error: `「${intent.text}」一段有 ${durationMinutes} 分钟，一段最多排 4 小时：请拆成两段再说` };
+      if (durationMinutes < 5) return { kind: "fail", error: `「${intent.text}」的时间不到 5 分钟，没有排` };
+      return { kind: "run", command: { command: "schedule_session", ...(taskId ? { taskId } : { title: intent.text }), date: intent.date, startLocalTime: intent.start, durationMinutes } };
+    }
+    // 今天的空档可能已经过去一截：从现在之后的整 5 分钟开始
     if (localDateInTz(env.now, env.tz) === intent.date) {
       const nowMin = Math.ceil(((env.now.getTime() - wallTimeToUtc(intent.date, "00:00", env.tz).getTime()) / 60000) / 5) * 5;
       startMin = Math.max(startMin, nowMin);

@@ -55,9 +55,9 @@ test("任务/课程/实践指令", () => {
   assert.deepEqual(one("报告还差一个小时"), { op: "remaining", ref: { kind: "named", text: "报告", date: null, part: "any" }, minutes: 60 });
   assert.deepEqual(one("以后先保证数学"), { op: "prioritize", ref: { kind: "named", text: "数学", date: null, part: "any" } });
   assert.deepEqual(one("这学期先打好数学基础"), { op: "goal", title: "打好数学基础", horizon: "semester", primary: true });
-  assert.deepEqual(one("科研试做两周"), { op: "trial", ref: { kind: "named", text: "科研", date: null, part: "any" }, ordinal: null, weeks: 2, commit: false });
-  assert.deepEqual(one("先试这个两周"), { op: "trial", ref: { kind: "recent" }, ordinal: null, weeks: 2, commit: false });
-  assert.deepEqual(one("试做第一个"), { op: "trial", ref: { kind: "recent" }, ordinal: 1, weeks: 2, commit: false });
+  assert.deepEqual(one("科研试做两周"), { op: "trial", ref: { kind: "named", text: "科研", date: null, part: "any" }, ordinal: null, weeks: 2, commit: false, track: null });
+  assert.deepEqual(one("先试这个两周"), { op: "trial", ref: { kind: "recent" }, ordinal: null, weeks: 2, commit: false, track: null });
+  assert.deepEqual(one("试做第一个"), { op: "trial", ref: { kind: "recent" }, ordinal: 1, weeks: 2, commit: false, track: null });
   assert.deepEqual(one("帮我挑一个能试出是否喜欢科研的小项目"), { op: "explore", query: "帮我挑一个能试出是否喜欢科研的小项目" });
   assert.deepEqual(one("这篇文章归到基线项目"), { op: "resource_link", projectText: "基线" });
   assert.deepEqual(parseInstruction("这段是老师的要求，不是我完成的成果", REF, NOW, TZ).intents.map((i) => i.intent), [{ op: "resource_role", role: "requirement" }, { op: "resource_role", role: "requirement" }]);

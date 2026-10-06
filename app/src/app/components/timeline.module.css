@@ -9,7 +9,7 @@
 }
 
 .noHours {
-  --tl-gutter: 3px;
+  --tl-gutter: 0px;
 }
 
 .hour {
@@ -155,37 +155,43 @@
   color: var(--color-text-muted);
 }
 
-/* 已经过去、还没说做没做：朱砂虚线提醒 */
+/* 已经过去、还没说做没做：朱砂线 + 很淡的底 */
 .awaiting {
   border-left-color: var(--color-now);
-  border-left-style: dashed;
-  background: transparent;
+  background: color-mix(in srgb, var(--color-now) 8%, var(--color-bg));
 }
 
 .awaiting .tag {
   color: var(--color-now);
 }
 
-/* 空档：留白 + 点线；悬停时像铅笔圈出来 */
+/* 空档：只是留白，中间一行小字（垫一块纸色，不让横线从字上穿过）；悬停或聚焦时才圈出来 */
 .slot {
   align-items: center;
   justify-content: center;
   border: none;
-  border-left: 1px dotted var(--color-border-strong);
   background: transparent;
   color: var(--color-text-muted);
   z-index: 0;
 }
 
-.slot:hover {
-  background: color-mix(in srgb, var(--color-accent-soft) 60%, transparent);
+.slot:hover,
+.slot:focus-visible {
+  background: color-mix(in srgb, var(--color-accent-soft) 70%, transparent);
   box-shadow: inset 0 0 0 1px var(--color-accent);
   color: var(--color-accent);
 }
 
 .slotText {
+  padding: 1px 6px;
   font-size: 11.5px;
-  letter-spacing: 0.02em;
+  background: var(--color-bg);
+  border-radius: var(--radius-xs);
+}
+
+.slot:hover .slotText,
+.slot:focus-visible .slotText {
+  background: transparent;
 }
 
 /* 现在：朱砂线，右端写着钟点 */
@@ -220,6 +226,15 @@
   font-weight: 600;
   color: var(--color-now);
   background: var(--color-bg);
+}
+
+.noHours .now {
+  left: -3px;
+  right: -3px;
+}
+
+.noHours .now::before {
+  left: -4px;
 }
 
 .noHours .now::after {

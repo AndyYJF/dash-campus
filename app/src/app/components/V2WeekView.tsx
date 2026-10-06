@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { api, newIdempotencyKey } from "./api";
 import { compose, emitChanged, useDashRefresh } from "./dashBus";
 import DayTimeline, { dayExtent, minuteOfDay, type Picked, type TimelineEvent, type TimelineSession } from "./DayTimeline";
@@ -55,6 +55,8 @@ const REASON_LABEL: Record<string, string> = {
   awaiting_feedback: "之前那段已经过去、还没记录做没做；说一下结果再决定要不要另排",
 };
 const CONFLICT_LABEL: Record<string, string> = { overlaps_fixed: "和课程/固定活动撞了", outside_policy: "落在你说不安排学习的时段", over_budget: "超出了当天的学习预算" };
+/** 一周并排时每分钟的像素高度（一小时 54px，整数像素，横线不发虚） */
+const WEEK_PPM = 0.9;
 const WEEKDAY = ["一", "二", "三", "四", "五", "六", "日"];
 const toMin = (t: string) => Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
 
@@ -279,14 +281,32 @@ export default function V2WeekView() {
       <section className={`${styles.card} ${styles.weekSheet}`}>
         <h2 className="visually-hidden">这一周的时间线</h2>
         {wide ? (
-          <div className={styles.grid} style={{ gridTemplateColumns: `repeat(7, minmax(0, 1fr))` }}>
-            {week.days.map((d, i) => (
-              <div key={d.date} className={styles.gridCol}>
-                {header(d, i)}
-                {d.calendar.teachingNote && <p className={styles.dayNote}>{d.calendar.teachingNote}</p>}
-                {timeline(d, i, { hideHours: i > 0 })}
+          <div className={styles.grid} style={{ "--tl-hour": `${60 * WEEK_PPM}px` } as CSSProperties}>
+            {/* 表头一行：七天等高，备注也放在表头里，下面的时间线才能对齐 */}
+            <div className={styles.gridHead}>
+              <div className={styles.gridCorner} aria-hidden />
+              {week.days.map((d, i) => (
+                <div key={d.date} className={styles.gridHeadCell}>
+                  {header(d, i)}
+                  {d.calendar.teachingNote && <p className={styles.dayNote}>{d.calendar.teachingNote}</p>}
+                </div>
+              ))}
+            </div>
+            {/* 表身：左边一栏钟点，横线整行贯通，由这一层统一画 */}
+            <div className={styles.gridBody} style={{ height: (range[1] - range[0]) * WEEK_PPM }}>
+              <div className={styles.gridHours} aria-hidden>
+                {Array.from({ length: (range[1] - range[0]) / 60 + 1 }, (_, n) => (
+                  <span key={n} style={{ top: n * 60 * WEEK_PPM }}>
+                    {String(range[0] / 60 + n).padStart(2, "0")}
+                  </span>
+                ))}
               </div>
-            ))}
+              {week.days.map((d, i) => (
+                <div key={d.date} className={`${styles.gridCol}${d.date === week.today ? ` ${styles.gridColToday}` : ""}`}>
+                  {timeline(d, i, { hideHours: true, ppm: WEEK_PPM })}
+                </div>
+              ))}
+            </div>
           </div>
         ) : (
           <>

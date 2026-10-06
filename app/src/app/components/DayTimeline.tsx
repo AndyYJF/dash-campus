@@ -109,7 +109,7 @@ export default function DayTimeline(props: {
   selectedKey?: string | null;
   onPick: (p: Picked, key: string) => void;
   label: string;
-  /** 一周并排时只有第一列显示钟点，其余列不留钟点栏 */
+  /** 一周并排时由外层网格统一画钟点和横线，这一列自己不画 */
   hideHours?: boolean;
   /** 当天还能新排的学习分钟：为 0 时空档只是物理空闲，照实标出，不让人以为还能排 */
   budgetLeft?: number;
@@ -145,11 +145,12 @@ export default function DayTimeline(props: {
 
   return (
     <div className={`${styles.day}${props.hideHours ? ` ${styles.noHours}` : ""}`} style={{ height: (rangeEnd - rangeStart) * ppm }} role="group" aria-label={props.label}>
-      {hours.map((h) => (
-        <div key={h} className={styles.hour} style={{ top: (h * 60 - rangeStart) * ppm }} aria-hidden>
-          {!props.hideHours && <span className={styles.hourLabel}>{String(h).padStart(2, "0")}</span>}
-        </div>
-      ))}
+      {!props.hideHours &&
+        hours.map((h) => (
+          <div key={h} className={styles.hour} style={{ top: (h * 60 - rangeStart) * ppm }} aria-hidden>
+            <span className={styles.hourLabel}>{String(h).padStart(2, "0")}</span>
+          </div>
+        ))}
       {slots.map((b) => (
         <button
           key={b.key}

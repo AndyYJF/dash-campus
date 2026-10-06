@@ -28,7 +28,7 @@ import { createJob, getJob, leaseValid, renewLease, completeJob, failJob, comple
 import { getInstanceState } from "@/repositories/instance";
 import { resolveModelProvider } from "@/integrations";
 import { budgetCheck, checkpointIntakeRun, intakeActiveRemainingMs, intakeBudgetCheck, markIntakeRun, meteredModel } from "@/workflows/ai-budget";
-import { instanceTimezone, localDateInTz, mondayOf, addDays } from "@/domain/time";
+import { instanceTimezone, localDateInTz, mondayOf, addDays, wallTimeToUtc } from "@/domain/time";
 import { parseTimetable, TimetableError } from "@/domain/timetable";
 import { executeCommand, executeOperation } from "@/workflows/commands";
 import { rebuildPlan } from "@/workflows/plan";
@@ -95,6 +95,7 @@ import { JOB_EXTERNAL_TIMEOUT_MS, JOB_RENEW_INTERVAL_MS, type JobRow } from "@/c
  * 模型调用不在事务内；回答后从 Resolve 恢复，不重复提取与分类。
  */
 
+import { hasClockTime, parseArrange } from "@/domain/arrange";
 import { parseAgentText } from "@/domain/agent-input";
 
 const EXTRACTOR_VERSION = "text-v1";
@@ -1012,9 +1013,26 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
       const ref = directive.body.trim();
       intents = [{ op: "classify_task", taskKind: kinds[directive.command as keyof typeof kinds], ref: ref && !/^(这个|这条|这项|它)$/.test(ref) ? { kind: "named", text: ref, date: null, part: "any" } : { kind: "recent" } }];
     } else if (directive.command === "arrange") {
-      const slot = intake.context.slot as { date: string; start: string; end: string } | undefined;
-      if (!slot || /^(不要|别|不用|不安排)/.test(textRest.trim())) failure = "请从空档发起，并写要安排的具体工作。取消安排可直接用自然语言说明。";
-      else intents = [{ op: "schedule_here", text: textRest.trim(), date: slot.date, start: slot.start, end: slot.end }];
+      const slot = (intake.context.slot as { date: string; start: string; end: string } | undefined) ?? null;
+      if (/^(不要|别|不用|不安排)/.test(textRest.trim())) failure = "要安排什么请直接写出来。取消安排可直接用自然语言说明。";
+      else if (!slot && !hasClockTime(textRest)) failure = "请写上时间（比如“下午3点到4点写作业”），或先点时间线上的一个空档再说要安排什么。";
+      else {
+        // 一句话里可以有几件事，各自带时间：每件事是独立的一步，时间照话里说的来；说不清的那一件单独指出，不连累其他
+        const now = nowDate();
+        const nowMinute = localDateInTz(now, intake.timezone) === intake.referenceDate ? Math.floor((now.getTime() - wallTimeToUtc(intake.referenceDate, "00:00", intake.timezone).getTime()) / 60000) : null;
+        const pieces = parseArrange(textRest, slot, intake.referenceDate, nowMinute);
+        if (!pieces.length) failure = "没看出要安排什么：请写上要做的事。";
+        pieces.forEach((piece, n) => {
+          const key = n === 0 ? "slash-command" : `slash-command-${n + 1}`;
+          if (piece.ok) {
+            createItem({ intakeId: intake.id, stableItemKey: key, kind: "command", payload: { summary: piece.title.slice(0, 200), intents: [{ op: "schedule_here", text: piece.title.slice(0, 200), date: piece.date, start: piece.start, end: piece.end }], ...(piece.timed !== "none" ? { arrangeTimed: piece.timed } : {}), explicit: true }, evidence: { excerpt: intake.text } });
+          } else {
+            const { item } = createItem({ intakeId: intake.id, stableItemKey: key, kind: "command", payload: { summary: piece.title.slice(0, 200) } });
+            updateItem(item.id, { state: "failed", evidence: { error: piece.error } });
+          }
+        });
+        rest = "";
+      }
     } else if (directive.command === "adjust" || directive.command === "policy") {
       const hints = { fixedEventTitles: [...new Set(fixedEventRefs().map((e) => e.name))] };
       let parsed = parseInstruction(textRest, intake.referenceDate, nowDate(), intake.timezone, hints);
@@ -1046,12 +1064,12 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
   }
   // 已有事项说明这份投递在引入指令解析之前就处理过：不回头重解析
   const fresh = Boolean(textRest.trim()) && !items.some((i) => i.kind !== "timetable");
-  const fastItems: Array<{ key: string; excerpt: string; intents: Intent[] }> = [];
+  const fastItems: Array<{ key: string; excerpt: string; intents: Intent[]; arrangeTimed?: "range" | "start" }> = [];
   if (fresh) {
     // 已有的非课程固定活动名给解析器作提示：只有话里点到名字才当成对它的修改
     const parsed = parseInstruction(textRest, intake.referenceDate, nowDate(), intake.timezone, { fixedEventTitles: [...new Set(fixedEventRefs().map((e) => e.name))] });
     const kept: string[] = [];
-    const groups: Array<{ intents: Intent[]; clauses: string[] }> = [];
+    const groups: Array<{ intents: Intent[]; clauses: string[]; arrangeTimed?: "range" | "start" }> = [];
     for (const { intent, clause } of parsed.intents) {
       // “做完了”对不上任何已有任务：不是对任务的指令，留给分类按一次实践处理
       if (intent.op === "complete" && !completionHasTarget(intent.ref)) {
@@ -1074,12 +1092,15 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
     const slot = intake.context.slot as { date: string; start: string; end: string } | undefined;
     const what = textRest.trim().replace(/^(在)?(这里|这段时间?|这个空档)?(帮我)?(安排|排上?|放|做|学)/, "").replace(/[。.!！]$/, "").trim();
     if (slot && !isFlexibleAdjustment(textRest) && !groups.length && !kept.length && what.length >= 2 && what.length <= 40 && !/[\n，,；;]/.test(what)) {
-      groups.push({ intents: [{ op: "schedule_here", text: what, date: slot.date, start: slot.start, end: slot.end }], clauses: [textRest.trim()] });
+      // 话里自带钟点就照钟点排（只说了一件事时）；否则排在空档开头
+      const pieces = parseArrange(what, slot, intake.referenceDate, null);
+      const one = pieces.length === 1 && pieces[0]!.ok ? pieces[0]! : null;
+      groups.push({ intents: [one && one.ok ? { op: "schedule_here", text: one.title, date: one.date, start: one.start, end: one.end } : { op: "schedule_here", text: what, date: slot.date, start: slot.start, end: slot.end }], clauses: [textRest.trim()], ...(one && one.ok && one.timed !== "none" ? { arrangeTimed: one.timed } : {}) });
       parsed.rest = "";
     }
     if (groups.length) {
       rest = [parsed.rest, ...kept].filter(Boolean).join("\n");
-      groups.forEach((g, n) => fastItems.push({ key: `cmd-${n + 1}`, excerpt: g.clauses.join("，"), intents: g.intents }));
+      groups.forEach((g, n) => fastItems.push({ key: `cmd-${n + 1}`, excerpt: g.clauses.join("，"), intents: g.intents, ...(g.arrangeTimed ? { arrangeTimed: g.arrangeTimed } : {}) }));
     }
   }
   const hasAttachments = listAttachments(intake.id).length > 0;
@@ -1112,7 +1133,7 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
       routed = true;
     } else {
       for (const f of fastItems) {
-        createItem({ intakeId: intake.id, stableItemKey: f.key, kind: "command", payload: { summary: f.excerpt.slice(0, 200), intents: f.intents, explicit: true, routedBy: "fast" }, evidence: { excerpt: f.excerpt } });
+        createItem({ intakeId: intake.id, stableItemKey: f.key, kind: "command", payload: { summary: f.excerpt.slice(0, 200), intents: f.intents, explicit: true, routedBy: "fast", ...(f.arrangeTimed ? { arrangeTimed: f.arrangeTimed } : {}) }, evidence: { excerpt: f.excerpt } });
       }
       if (flexible) {
         createItem({ intakeId: intake.id, stableItemKey: "owner-adjustment", kind: "command", payload: { summary: rest.slice(0, 200), explicit: true, needsDecision: true, decisionText: rest, routedBy: "fast" }, evidence: { excerpt: rest } });
@@ -1642,7 +1663,8 @@ function askReferent(intake: IntakeRow, item: IntakeItemRow, decision: Extract<A
 /** 指令事项：重新读取当前事实绑定对象——唯一就绪，并列只问选哪一个，找不到如实失败 */
 function resolveCommandItem(intake: IntakeRow, item: IntakeItemRow, env: BindEnv): void {
   const intents = (item.payload.intents as Intent[] | undefined) ?? [];
-  const bound = bindIntents(intents, env);
+  const arrangeTimed = item.payload.arrangeTimed as "range" | "start" | undefined;
+  const bound = bindIntents(intents, arrangeTimed ? { ...env, arrangeTimed } : env);
   if (bound.kind === "answer") {
     // 只读回答：不改数据、不写 journal
     updateItem(item.id, { state: "applied", waitingQuestionId: null, payload: { ...item.payload, readOnly: true, readLinks: bound.links ?? [], applied: { batchId: null, summary: bound.text, noChange: true } } });

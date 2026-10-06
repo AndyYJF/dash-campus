@@ -2,7 +2,11 @@
 
 本页按阶段记录事实、缺口和下一步。开工指令见 [CODING-AGENT.md](./CODING-AGENT.md)，完整契约见 [MASTER-PLAN.md](./MASTER-PLAN.md)。每条结论注明验证方式；无证据的能力标为缺口。
 
-## 方向页打磨 D0/D1（2026-10-05，已部署 `54ca2f1`）
+## 当前版本（2026-10-06）
+
+`main` 在 `c0fb270`（`395c0f3` 之后只有文档与测试提交）；生产业务版本 `395c0f3`、schema 35。本地在 `c0fb270` 上运行：464/464，`tsc` 0 错误，eslint 0 错误。各节的版本号与测试数是当时记录，汇总见 [当前状态](../STATUS.md) 顶部。
+
+## 方向页打磨 D0/D1（2026-10-05，首次部署 `54ca2f1`，F01–F03 修复后生产为 `395c0f3`）
 
 计划见 [dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md](../../../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md)。
 

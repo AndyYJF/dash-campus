@@ -2,7 +2,7 @@
 
 对应 [REPAIR-PLAN §7](./REPAIR-PLAN-2026-10-04.md)、[AGENT-INTERFACE-CONTRACT §9](./AGENT-INTERFACE-CONTRACT.md)、[ACADEMIC-CALENDAR-AND-HOLIDAYS §8](./ACADEMIC-CALENDAR-AND-HOLIDAYS.md)。旧 A01–A22 见 [历史验收映射](./acceptance-map.md)，不能替代本页。
 
-当前补充：分支 `agentbox/dashcampus` 已推送，业务 `95c8cf1` 已验证部署/schema29，337项测试通过。真实模型/生产的逐层证据及剩余缺口见 [STATUS](../STATUS.md) 和 [模糊调整记录](../flexible-adjustments-2026-10-04.md)。以下证据表及各行是初始修复完成时的历史快照（schema28、308项测试），保留其原始证据边界，不代表目前所有真实模型/生产验证均未做。
+当前补充（2026-10-06）：此后又有多轮实现与部署，现为生产 `395c0f3`/schema 35、464 项测试通过，以 [STATUS](../STATUS.md) 顶部“当前快照”为准。此前的补充：分支 `agentbox/dashcampus` 已推送，业务 `95c8cf1` 已验证部署/schema29，337项测试通过。真实模型/生产的逐层证据及剩余缺口见 [STATUS](../STATUS.md) 和 [模糊调整记录](../flexible-adjustments-2026-10-04.md)。以下证据表及各行是初始修复完成时的历史快照（schema28、308项测试），保留其原始证据边界，不代表目前所有真实模型/生产验证均未做。
 
 ## 证据层的含义
 

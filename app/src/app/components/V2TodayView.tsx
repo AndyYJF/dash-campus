@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, newIdempotencyKey } from "./api";
 import { emitChanged, useDashRefresh } from "./dashBus";
-import DayTimeline, { dayExtent, hm, minuteOfDay, type Picked, type TimelineEvent, type TimelineSession } from "./DayTimeline";
+import DayTimeline, { dayExtent, hm, minuteOfDay, useNarrow, type Picked, type TimelineEvent, type TimelineSession } from "./DayTimeline";
 import ItemDetail from "./ItemDetail";
 import PendingItems, { type PendingItem } from "./PendingItems";
 import styles from "./v2.module.css";
@@ -85,6 +85,7 @@ export default function V2TodayView() {
   const [confirm, setConfirm] = useState<{ minutes: number; reason: string } | null>(null);
   const [fixMinutes, setFixMinutes] = useState("");
   const [merged, setMerged] = useState<{ focusId: string; note: string } | null>(null);
+  const narrow = useNarrow();
 
   const refresh = useCallback(() => {
     api<Snapshot>("/api/v2/dashboard")
@@ -132,54 +133,70 @@ export default function V2TodayView() {
   const badges = [t.calendar.civilType === "holiday" ? (t.calendar.civilName ?? "节假日") : "", t.calendar.civilType === "adjusted_workday" ? "调休上班" : "", t.calendar.teachingStatus === "cancelled" ? "停课" : "", t.calendar.teachingStatus === "makeup" ? "补课" : "", t.calendar.teachingStatus === "pending" ? "教学安排待核对" : "", t.calendar.phase === "exam" ? "考试周" : ""].filter(Boolean);
 
   return (
-    <div className={styles.pageWide}>
-      <section className={styles.card}>
-        <h2 className={styles.title}>
-          今天 · {dateTitle(snap.date)}
-          {t.calendar.teachingWeek ? <span className={styles.titleSub}>第 {t.calendar.teachingWeek} 教学周</span> : null}
+    <div className={styles.pageWide} data-page="today">
+      <header className={styles.mast}>
+        <p className={styles.kicker}>
+          今天
+          {t.calendar.teachingWeek ? <span> · 第 {t.calendar.teachingWeek} 教学周</span> : null}
           {badges.map((x) => (
             <em key={x} className={styles.tagBadge} data-tone={x.includes("待核对") ? "warn" : "plain"}>
               {x}
             </em>
           ))}
-        </h2>
-        <div className={styles.stats}>
-          <div className={styles.stat}>
-            <div className={styles.statText}>{next ? next.title.split(" · ")[0] : "今天没有课了"}</div>
-            <div className={styles.statLabel}>{next ? `下一节课 · ${label(next.startUtc, snap.date)}–${label(next.endUtc, snap.date)}${next.location ? ` · ${next.location}` : ""}` : `今天课程占用 ${t.courseMinutes}′`}</div>
+        </p>
+        <h1 className={styles.mastTitle}>{dateTitle(snap.date)}</h1>
+        <p className={styles.lede}>
+          {next
+            ? `下一节课：${next.title.split(" · ")[0]}，${label(next.startUtc, snap.date)}–${label(next.endUtc, snap.date)}${next.location ? `，${next.location}` : ""}。`
+            : t.courseMinutes > 0
+              ? "今天的课上完了。"
+              : "今天没有课。"}
+        </p>
+        <dl className={styles.stats}>
+          <div className={styles.stat} data-lead="true">
+            <dd className={styles.statNum}>
+              {b.futureCapacity}
+              <span className={styles.unit}>分钟</span>
+              {b.source === "tentative" && <em className={styles.badge}>暂定</em>}
+            </dd>
+            <dt className={styles.statLabel}>今天还能新排的学习 · 上限 {b.dailyLimit}</dt>
           </div>
           <div className={styles.stat}>
-            <div className={styles.statNum}>
-              {b.futureCapacity}′{b.source === "tentative" && <em className={styles.badge}>暂定</em>}
-            </div>
-            <div className={styles.statLabel}>今天还能新排的学习（上限 {b.dailyLimit}′）</div>
-          </div>
-          <div className={styles.stat}>
-            <div className={styles.statNum}>{b.actualMinutes}′</div>
-            <div className={styles.statLabel}>
+            <dd className={styles.statNum}>
+              {b.actualMinutes}
+              <span className={styles.unit}>分钟</span>
+            </dd>
+            <dt className={styles.statLabel}>
               已记录的实际学习
-              {b.estimatedMinutes + b.provisionalMinutes > 0 ? `；另有 ${b.estimatedMinutes + b.provisionalMinutes}′ 按计划暂扣` : ""}
-            </div>
+              {b.estimatedMinutes + b.provisionalMinutes > 0 ? ` · 另有 ${b.estimatedMinutes + b.provisionalMinutes} 按计划暂扣` : ""}
+            </dt>
           </div>
           <div className={styles.stat}>
-            <div className={styles.statText}>{snap.mainGoal ?? "还没定"}</div>
-            <div className={styles.statLabel}>当前主要方向</div>
+            <dd className={styles.statNum}>
+              {t.courseMinutes}
+              <span className={styles.unit}>分钟</span>
+            </dd>
+            <dt className={styles.statLabel}>今天的课程{t.fixedMinutes > 0 ? ` · 另有固定活动 ${t.fixedMinutes}` : ""}</dt>
           </div>
-        </div>
+          <div className={styles.stat}>
+            <dd className={styles.statText}>{snap.mainGoal ?? "还没定"}</dd>
+            <dt className={styles.statLabel}>当前主要方向</dt>
+          </div>
+        </dl>
         {[t.calendar.teachingNote, ...t.calendar.policyNotes].filter(Boolean).map((n) => (
-          <p key={n} className={styles.muted}>
+          <p key={n} className={styles.note}>
             {n}
           </p>
         ))}
-        {b.source === "tentative" && <p className={styles.muted}>上面的容量按暂定作息估算；到「本周」页看具体内容，确认或一句话修改。</p>}
+        {b.source === "tentative" && <p className={styles.note}>上面的容量按暂定作息估算；到「本周」页看具体内容，确认或一句话修改。</p>}
         {error && <p className={styles.error}>{error}</p>}
-      </section>
+      </header>
 
       {picked && <ItemDetail picked={picked.p} date={picked.date} timezone={tz} onClose={() => setPicked(null)} teachingNote={t.calendar.teachingNote} budgetLeft={picked.date === snap.date ? b.futureCapacity : undefined} />}
 
       <div className={styles.columns}>
-        <section className={styles.card}>
-          <h2 className={styles.title}>今天的时间线</h2>
+        <section className={`${styles.card} ${styles.colMain}`}>
+          <h2 className={styles.title}>时间线</h2>
           <DayTimeline
             date={snap.date}
             timezone={tz}
@@ -187,7 +204,7 @@ export default function V2TodayView() {
             sessions={t.sessions}
             rangeStart={range[0]}
             rangeEnd={range[1]}
-            pxPerMinute={0.95}
+            pxPerMinute={narrow ? 1.35 : 0.95}
             nowMinute={nowMinute}
             windowStart={t.calendar.noStudy ? 1440 : win[0]}
             windowEnd={t.calendar.noStudy ? 1440 : win[1]}
@@ -200,9 +217,9 @@ export default function V2TodayView() {
         </section>
 
         <div className={styles.side}>
-          <section className={styles.card}>
+          <section className={`${styles.card} ${styles.steps}`}>
             <h2 className={styles.title}>下一步</h2>
-            {snap.nextActions.length === 0 && <p className={styles.muted}>今天无需额外安排。想做点什么，直接在上面说一句。</p>}
+            {snap.nextActions.length === 0 && <p className={styles.muted}>今天无需额外安排。想做点什么，在底部说一句。</p>}
             {snap.nextActions.map((a) => (
               <div key={a.id} className={styles.action}>
                 <div className={styles.actionHead}>

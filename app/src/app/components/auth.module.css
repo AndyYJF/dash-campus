@@ -1,91 +1,81 @@
-/* 登录与初始化页：左侧墨色品牌面板（一角荧光），右侧表单；窄屏只留表单，品牌缩成一行 */
+/* 登录与初始化页：手册的扉页。左边是书名页（刊名、一句话、三条要点），右边是登录；中间一道细线。 */
 .wrap {
   min-height: 100vh;
   min-height: 100dvh;
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
-  background: var(--color-surface);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  background: var(--color-bg);
 }
 
 .aside {
-  position: relative;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: var(--space-8);
-  margin: var(--space-2);
-  padding: var(--space-8) var(--space-10) var(--space-10);
-  border-radius: var(--radius-xl);
-  color: var(--hero-text);
-  background:
-    radial-gradient(90% 70% at 100% 0%, var(--hero-glow), transparent 60%),
-    radial-gradient(70% 50% at 0% 100%, color-mix(in srgb, var(--hero-glow) 50%, transparent), transparent 65%),
-    var(--hero-bg);
-  box-shadow: inset 0 0 0 1px var(--hero-line);
-  overflow: hidden;
+  gap: var(--space-10);
+  padding: var(--space-12) var(--space-12);
+  border-right: 1px solid var(--color-border);
 }
 
 .brand {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 10px;
-  font-weight: 650;
-  font-size: 16px;
-  letter-spacing: -0.015em;
+  font-family: var(--font-serif);
+  font-size: 19px;
+  font-weight: 600;
 }
 
 .tagline {
   margin: 0;
-  font-size: clamp(34px, 4.2vw, 56px);
-  font-weight: 700;
-  line-height: 1.15;
-  letter-spacing: -0.03em;
+  padding-top: var(--space-5);
+  border-top: 2px solid var(--color-text);
+  font-family: var(--font-serif);
+  font-size: clamp(40px, 4.6vw, 64px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
 }
 
-/* 荧光笔划过的那半句 */
 .tagline em {
-  display: inline-block;
   font-style: normal;
-  margin: 6px 0 0 -4px;
-  padding: 0 10px 2px;
-  border-radius: var(--radius-sm);
-  background: var(--color-primary);
-  color: var(--color-primary-text);
-  transform: rotate(-1.2deg);
+  color: var(--color-accent);
 }
 
 .points {
-  display: grid;
-  gap: var(--space-2);
-  margin: var(--space-6) 0 0;
-  padding: 0;
   list-style: none;
-  color: var(--hero-muted);
-  font-size: 14px;
+  margin: var(--space-8) 0 0;
+  padding: 0;
+  max-width: 26em;
+  counter-reset: point;
 }
 
 .points li {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
+  position: relative;
   margin: 0;
+  padding: var(--space-3) 0 var(--space-3) 2.4em;
+  border-top: 1px solid var(--color-border);
+  font-size: 16px;
+  color: var(--color-text);
+  counter-increment: point;
 }
 
 .points li::before {
-  content: "";
-  flex: 0 0 auto;
-  width: 14px;
-  height: 3px;
-  border-radius: 2px;
-  background: var(--color-primary);
+  content: counter(point);
+  position: absolute;
+  left: 0;
+  top: 9px;
+  font-family: var(--font-serif);
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-text-muted);
 }
 
 .asideFoot {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.1em;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: var(--hero-muted);
+  color: var(--color-text-muted);
 }
 
 .formSide {
@@ -93,8 +83,8 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-6);
-  padding: var(--space-8) var(--space-5);
+  gap: var(--space-8);
+  padding: var(--space-10) var(--space-6);
 }
 
 .panel {
@@ -102,20 +92,19 @@
   max-width: 360px;
 }
 
-/* 窄屏才出现的品牌行 */
 .mobileBrand {
   display: none;
   align-items: center;
   gap: 10px;
-  margin-bottom: var(--space-8);
-  font-weight: 650;
-  font-size: 16px;
-  letter-spacing: -0.015em;
+  margin-bottom: var(--space-10);
+  font-family: var(--font-serif);
+  font-size: 19px;
+  font-weight: 600;
 }
 
 .panel h1 {
-  margin-bottom: var(--space-2);
-  font-size: 28px;
+  margin: 0 0 var(--space-2);
+  font-size: 34px;
 }
 
 .lead {
@@ -124,33 +113,34 @@
 }
 
 .panel input {
-  height: 46px;
-  font-size: 16px;
+  width: 100%;
+  min-height: var(--tap);
+  height: var(--tap);
 }
 
 .panel button[type="submit"] {
-  min-height: 46px;
-  margin-top: var(--space-2);
-  font-size: 15px;
+  margin-top: var(--space-4);
+  min-height: var(--tap);
 }
 
 .foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   width: 100%;
   max-width: 360px;
   margin: 0;
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  color: var(--color-text-muted);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
   font-size: var(--text-small);
+  color: var(--color-text-muted);
 }
 
 .foot svg {
   flex: 0 0 auto;
-  margin-top: 3px;
 }
 
-@media (max-width: 859px) {
+@media (max-width: 899px) {
   .wrap {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -160,6 +150,11 @@
   }
 
   .mobileBrand {
-    display: flex;
+    display: inline-flex;
+  }
+
+  .formSide {
+    justify-content: flex-start;
+    padding-top: max(var(--space-12), 12vh);
   }
 }

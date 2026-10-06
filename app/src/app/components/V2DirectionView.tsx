@@ -93,26 +93,44 @@ const PATHS: PathKey[] = ["research", "further_study", "employment", "undecided"
 const TRACK_STATUS: Record<string, string> = { exploring: "在了解", following: "持续关注", paused: "先不看" };
 
 function sampleBody(s: { problem?: string | null; activities: string[]; sample: { steps: string[]; output: string } | null; basics: Array<{ label: string; needed: boolean }>; trial: { title: string; verifies: string; firstStep: string; estimateMinutes: number } | null }) {
+  const needed = s.basics.filter((b) => b.needed).map((b) => b.label);
+  const later = s.basics.filter((b) => !b.needed).map((b) => b.label);
   return (
     <>
-      {s.problem && <p className={styles.why}>{s.problem}</p>}
-      {s.activities.length > 0 && <p className={styles.muted}>平时做：{s.activities.join("、")}</p>}
-      {s.sample && (
-        <p className={styles.muted}>
-          工作样本：{s.sample.steps.join(" → ")}。产出：{s.sample.output}
-        </p>
-      )}
-      {s.trial && (
-        <p className={styles.muted}>
-          可试：{s.trial.title}（约 {s.trial.estimateMinutes} 分钟）——{s.trial.verifies}。第一步：{s.trial.firstStep}
-        </p>
-      )}
-      {s.basics.length > 0 && (
-        <p className={styles.muted}>
-          基础：{s.basics.filter((b) => b.needed).map((b) => b.label).join("、")}
-          {s.basics.some((b) => !b.needed) ? `；暂不需要：${s.basics.filter((b) => !b.needed).map((b) => b.label).join("、")}` : ""}
-        </p>
-      )}
+      {s.problem && <p className={styles.candLead}>{s.problem}</p>}
+      <dl className={styles.facts}>
+        {s.activities.length > 0 && (
+          <div>
+            <dt>平时做</dt>
+            <dd>{s.activities.join("、")}</dd>
+          </div>
+        )}
+        {s.sample && (
+          <div>
+            <dt>工作样本</dt>
+            <dd>
+              {s.sample.steps.join(" → ")}。产出：{s.sample.output}
+            </dd>
+          </div>
+        )}
+        {s.trial && (
+          <div>
+            <dt>可以试</dt>
+            <dd>
+              {s.trial.title}（约 {s.trial.estimateMinutes} 分钟）——{s.trial.verifies}。第一步：{s.trial.firstStep}
+            </dd>
+          </div>
+        )}
+        {s.basics.length > 0 && (
+          <div>
+            <dt>基础</dt>
+            <dd>
+              {needed.join("、")}
+              {later.length ? `；暂不需要：${later.join("、")}` : ""}
+            </dd>
+          </div>
+        )}
+      </dl>
     </>
   );
 }
@@ -154,8 +172,24 @@ export default function V2DirectionView() {
   };
 
   return (
-    <div className={styles.page}>
-      <section className={styles.card}>
+    <div className={styles.pageWide} data-page="direction">
+      <header className={styles.mast}>
+        <p className={styles.kicker}>方向 · 当前主要方向</p>
+        <h1 className={styles.mastTitle}>{data.mainGoal ? data.mainGoal.title : "还没有定"}</h1>
+        {!data.mainGoal && <p className={styles.lede}>不确定也没关系。想好了说一句，比如“这学期先打好数学基础”。</p>}
+        {data.goals.filter((g) => !g.primary).length > 0 && (
+          <p className={styles.muted}>
+            其他目标：
+            {data.goals
+              .filter((g) => !g.primary)
+              .map((g) => `${g.title}${g.status === "paused" ? "（暂停）" : ""}`)
+              .join("、")}
+          </p>
+        )}
+        <p className={styles.muted}>{data.honesty}</p>
+      </header>
+
+      <section className={`${styles.card} ${styles.stages}`}>
         <h2 className={styles.title}>四年阶段</h2>
         <p className={styles.lead}>
           {data.profile.stageLabel ? `你确认现在处于${data.profile.stageLabel}` : "还没确认现在处于哪一阶段——先看一类工作的样子，再试一次。"}
@@ -175,17 +209,31 @@ export default function V2DirectionView() {
               <h3 className={styles.subtitle}>
                 {s.label} · {s.title}
               </h3>
-              <p className={styles.muted}>{s.purpose}</p>
-              <p className={styles.muted}>共同基础：{s.foundations.join("；")}</p>
-              <p className={styles.muted}>值得验证：{s.choices.join("；")}</p>
-              {s.adopted.length > 0 && <p className={styles.muted}>你采用的：{s.adopted.map((i) => `${i.title}${i.status === "completed" ? "（完成）" : ""}`).join("、")}</p>}
-              {Object.entries(s.pathHints).map(([k, text]) =>
-                text ? (
-                  <p key={k} className={styles.muted}>
-                    {PATH_LABEL[k as PathKey]}：{text}
-                  </p>
-                ) : null,
-              )}
+              <p className={styles.candLead}>{s.purpose}</p>
+              <dl className={styles.facts} data-stack="true">
+                <div>
+                  <dt>共同基础</dt>
+                  <dd>{s.foundations.join("；")}</dd>
+                </div>
+                <div>
+                  <dt>值得验证</dt>
+                  <dd>{s.choices.join("；")}</dd>
+                </div>
+                {s.adopted.length > 0 && (
+                  <div>
+                    <dt>你采用的</dt>
+                    <dd>{s.adopted.map((i) => `${i.title}${i.status === "completed" ? "（完成）" : ""}`).join("、")}</dd>
+                  </div>
+                )}
+                {Object.entries(s.pathHints).map(([k, text]) =>
+                  text ? (
+                    <div key={k}>
+                      <dt>{PATH_LABEL[k as PathKey]}</dt>
+                      <dd>{text}</dd>
+                    </div>
+                  ) : null,
+                )}
+              </dl>
               <div className={styles.detailActions}>
                 <button type="button" className={styles.btn} onClick={() => act("update_direction_profile", { expectedVersion: data.profile.version, confirmedStage: s.key })}>
                   我现在在{s.label}
@@ -200,21 +248,6 @@ export default function V2DirectionView() {
           ))}
         </div>
         {error && <p className={styles.error}>{error}</p>}
-      </section>
-
-      <section className={styles.card}>
-        <h2 className={styles.title}>当前主要方向</h2>
-        {data.mainGoal ? <p className={styles.lead}>{data.mainGoal.title}</p> : <p className={styles.muted}>还没有定主要方向——不确定也没关系。想好了说一句，比如“这学期先打好数学基础”。</p>}
-        {data.goals.filter((g) => !g.primary).length > 0 && (
-          <p className={styles.muted}>
-            其他目标：
-            {data.goals
-              .filter((g) => !g.primary)
-              .map((g) => `${g.title}${g.status === "paused" ? "（暂停）" : ""}`)
-              .join("、")}
-          </p>
-        )}
-        <p className={styles.muted}>{data.honesty}</p>
       </section>
 
       {data.tracks.length > 0 && (
@@ -394,7 +427,7 @@ export default function V2DirectionView() {
 
       <section className={styles.card}>
         <h2 className={styles.title}>最近的实践记录</h2>
-        {data.practice.length === 0 && <p className={styles.muted}>还没有实践记录。在顶部输入框说一句「今天学了…」就会出现在这里。</p>}
+        {data.practice.length === 0 && <p className={styles.muted}>还没有实践记录。在底部说一句「今天学了…」就会出现在这里。</p>}
         {data.practice.map((p) => (
           <div key={p.id} className={styles.session}>
             <span className={styles.time}>{p.occurredOn.slice(5)}</span>

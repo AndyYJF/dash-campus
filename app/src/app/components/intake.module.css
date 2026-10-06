@@ -166,7 +166,6 @@
   flex-basis: 100%;
   font-size: 11.5px;
   font-weight: 600;
-  letter-spacing: 0.12em;
 }
 
 .intake > .recover,
@@ -497,7 +496,6 @@
   flex: none;
   font-size: 11.5px;
   font-weight: 600;
-  letter-spacing: 0.06em;
   color: var(--color-text-muted);
 }
 

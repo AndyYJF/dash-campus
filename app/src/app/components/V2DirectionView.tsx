@@ -174,7 +174,7 @@ export default function V2DirectionView() {
   return (
     <div className={styles.pageWide} data-page="direction">
       <header className={styles.mast}>
-        <p className={styles.kicker}>方向 · 当前主要方向</p>
+        <p className={styles.kicker}>当前主要方向</p>
         <h1 className={styles.mastTitle}>{data.mainGoal ? data.mainGoal.title : "还没有定"}</h1>
         {!data.mainGoal && <p className={styles.lede}>不确定也没关系。想好了说一句，比如“这学期先打好数学基础”。</p>}
         {data.goals.filter((g) => !g.primary).length > 0 && (

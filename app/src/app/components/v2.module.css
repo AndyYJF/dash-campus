@@ -27,14 +27,9 @@
   align-items: center;
   gap: 2px var(--space-2);
   margin: 0;
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
+  font-size: 14px;
+  font-weight: 500;
   color: var(--color-text-muted);
-}
-
-.kicker .tagBadge {
-  letter-spacing: 0.02em;
 }
 
 .mastTitle {
@@ -160,9 +155,8 @@
 
 .subtitle {
   margin: var(--space-2) 0 0;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.12em;
   color: var(--color-text-muted);
 }
 
@@ -442,8 +436,7 @@
 
 .time {
   flex: none;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -837,9 +830,8 @@
 }
 
 .facts dt {
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 600;
-  letter-spacing: 0.08em;
   color: var(--color-text-muted);
 }
 

@@ -186,7 +186,7 @@ export default function V2WeekView() {
         <div className={styles.weekBar}>
           <div>
             <p className={styles.kicker}>
-              {isThisWeek ? "本周" : "这一周"} · {Number(week.monday.slice(5, 7))}月{Number(week.monday.slice(8, 10))}日–{Number(week.days[6]!.date.slice(5, 7))}月{Number(week.days[6]!.date.slice(8, 10))}日
+              {Number(week.monday.slice(5, 7))}月{Number(week.monday.slice(8, 10))}日至{Number(week.days[6]!.date.slice(5, 7))}月{Number(week.days[6]!.date.slice(8, 10))}日
             </p>
             <h1 className={styles.mastTitle}>{week.teachingWeek ? `第 ${week.teachingWeek} 教学周` : isThisWeek ? "本周" : "这一周"}</h1>
           </div>

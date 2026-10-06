@@ -36,45 +36,23 @@
   letter-spacing: 0.01em;
 }
 
-.tagline em {
-  font-style: normal;
-  color: var(--color-accent);
-}
-
 .points {
   list-style: none;
   margin: var(--space-8) 0 0;
   padding: 0;
   max-width: 26em;
-  counter-reset: point;
 }
 
 .points li {
-  position: relative;
   margin: 0;
-  padding: var(--space-3) 0 var(--space-3) 2.4em;
+  padding: var(--space-3) 0;
   border-top: 1px solid var(--color-border);
   font-size: 16px;
   color: var(--color-text);
-  counter-increment: point;
-}
-
-.points li::before {
-  content: counter(point);
-  position: absolute;
-  left: 0;
-  top: 9px;
-  font-family: var(--font-serif);
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--color-text-muted);
 }
 
 .asideFoot {
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+  font-size: var(--text-small);
   color: var(--color-text-muted);
 }
 

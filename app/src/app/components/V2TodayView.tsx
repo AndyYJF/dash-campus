@@ -136,8 +136,7 @@ export default function V2TodayView() {
     <div className={styles.pageWide} data-page="today">
       <header className={styles.mast}>
         <p className={styles.kicker}>
-          今天
-          {t.calendar.teachingWeek ? <span> · 第 {t.calendar.teachingWeek} 教学周</span> : null}
+          {t.calendar.teachingWeek ? <span>第 {t.calendar.teachingWeek} 教学周</span> : <span>今天</span>}
           {badges.map((x) => (
             <em key={x} className={styles.tagBadge} data-tone={x.includes("待核对") ? "warn" : "plain"}>
               {x}
@@ -159,7 +158,7 @@ export default function V2TodayView() {
               <span className={styles.unit}>分钟</span>
               {b.source === "tentative" && <em className={styles.badge}>暂定</em>}
             </dd>
-            <dt className={styles.statLabel}>今天还能新排的学习 · 上限 {b.dailyLimit}</dt>
+            <dt className={styles.statLabel}>今天还能新排的学习（上限 {b.dailyLimit}）</dt>
           </div>
           <div className={styles.stat}>
             <dd className={styles.statNum}>
@@ -168,7 +167,7 @@ export default function V2TodayView() {
             </dd>
             <dt className={styles.statLabel}>
               已记录的实际学习
-              {b.estimatedMinutes + b.provisionalMinutes > 0 ? ` · 另有 ${b.estimatedMinutes + b.provisionalMinutes} 按计划暂扣` : ""}
+              {b.estimatedMinutes + b.provisionalMinutes > 0 ? `，另有 ${b.estimatedMinutes + b.provisionalMinutes} 按计划暂扣` : ""}
             </dt>
           </div>
           <div className={styles.stat}>
@@ -176,7 +175,7 @@ export default function V2TodayView() {
               {t.courseMinutes}
               <span className={styles.unit}>分钟</span>
             </dd>
-            <dt className={styles.statLabel}>今天的课程{t.fixedMinutes > 0 ? ` · 另有固定活动 ${t.fixedMinutes}` : ""}</dt>
+            <dt className={styles.statLabel}>今天的课程{t.fixedMinutes > 0 ? `，另有固定活动 ${t.fixedMinutes}` : ""}</dt>
           </div>
           <div className={styles.stat}>
             <dd className={styles.statText}>{snap.mainGoal ?? "还没定"}</dd>

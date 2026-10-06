@@ -26,8 +26,7 @@
   left: 0;
   width: 28px;
   padding-right: 4px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 16px;
   color: var(--color-text-muted);
   background: var(--color-bg);
@@ -75,9 +74,8 @@
 }
 
 .tag {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.08em;
   color: var(--color-text-muted);
 }
 
@@ -218,9 +216,8 @@
   right: 0;
   top: -17px;
   padding: 0 4px;
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.04em;
   color: var(--color-now);
   background: var(--color-bg);
 }

@@ -11,6 +11,13 @@ const optionalString = z.preprocess(
   z.string().min(1).optional(),
 );
 
+// 数字型可选项：空串当作未配置，走默认值
+const numberWithDefault = (min: number, max: number, fallback: number) =>
+  z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    z.coerce.number().int().min(min).max(max).default(fallback),
+  );
+
 export const configSchema = z.object({
   // 应用
   APP_BASE_URL: z.url().default("http://localhost:3000"),
@@ -36,6 +43,16 @@ export const configSchema = z.object({
   SMTP_PASSWORD: optionalString,
   MAIL_FROM: optionalString,
   MAIL_TO: optionalString,
+
+  // 展示模式（docs/demo-mode.md）。DEMO_URL 配在正式实例上：登录页出现“进入演示模式”入口，指向演示实例。
+  DEMO_URL: z.preprocess((v) => (typeof v === "string" && v.trim() === "" ? undefined : v), z.url().optional()),
+  // 以下只在演示实例上配置。DEMO_MODE=1 时免登录、只认带演示标记的合成数据库。
+  DEMO_MODE: z.preprocess((v) => v === true || v === "1" || v === "true", z.boolean()).default(false),
+  // 全站每日模型/搜索调用硬上限：访客改不了，设置页与对话里调高也不会超过它
+  DEMO_DAILY_MODEL_CALLS: numberWithDefault(0, 1000, 300),
+  DEMO_DAILY_SEARCH_CALLS: numberWithDefault(0, 1000, 20),
+  // 每天几点（实例时区）把数据恢复成初始示例
+  DEMO_RESET_HOUR: numberWithDefault(0, 23, 4),
 });
 
 export type AppConfig = z.infer<typeof configSchema>;

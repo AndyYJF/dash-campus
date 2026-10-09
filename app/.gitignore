@@ -34,6 +34,7 @@ yarn-error.log*
 .env*
 !.env.example
 !.env.campus-bridge.example
+!.env.demo.example
 
 # vercel
 .vercel
@@ -44,6 +45,7 @@ next-env.d.ts
 
 # 本地 SQLite 数据
 /data/
+/data-demo/
 *.db
 *.db-wal
 *.db-shm

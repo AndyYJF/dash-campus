@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { verifyPassword } from "@/domain/password";
-import { createSession, getOwnerPasswordHash, SESSION_COOKIE } from "@/domain/session";
+import { createSession, getOwnerPasswordHash, sessionCookieName } from "@/domain/session";
+import { isDemoMode } from "@/domain/demo";
 import { clearLoginFailures, clientKey, loginBlockedFor, recordLoginFailure } from "@/domain/login-limit";
 
 export const dynamic = "force-dynamic";
@@ -9,6 +10,10 @@ export const dynamic = "force-dynamic";
 const loginSchema = z.object({ password: z.string().min(1) });
 
 export async function POST(request: NextRequest) {
+  // 演示实例没有可用的密码，访客从 /api/v1/demo/enter 领会话
+  if (isDemoMode()) {
+    return NextResponse.json({ error: { code: "DEMO_DISABLED", message: "演示模式不需要密码，直接进入即可" } }, { status: 403 });
+  }
   const storedHash = getOwnerPasswordHash();
   if (!storedHash) {
     return NextResponse.json(
@@ -43,7 +48,7 @@ export async function POST(request: NextRequest) {
     { sessionId: session.id, csrfToken: session.csrfToken, expiresAt: session.expiresAt },
     { status: 200 },
   );
-  response.cookies.set(SESSION_COOKIE, token, {
+  response.cookies.set(sessionCookieName(), token, {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",

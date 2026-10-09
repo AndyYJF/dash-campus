@@ -1,5 +1,6 @@
 import { closeDb, schemaProblem } from "@/repositories/db";
 import { recoverOnStartup, runDueJobsOnce } from "@/worker/runner";
+import { demoStartupProblem, ensureDemoModelCapabilities, maintainDemo } from "@/workflows/demo";
 
 /**
  * worker 进程入口：`npm run worker`。
@@ -15,7 +16,7 @@ function sleep(ms: number): Promise<void> {
 
 async function main(): Promise<void> {
   // 只检查不改表：版本不兼容即退出并说明（计划 10.1）
-  const problem = schemaProblem();
+  const problem = schemaProblem() ?? demoStartupProblem();
   if (problem) {
     console.error(`[worker] ${problem}`);
     closeDb();
@@ -26,6 +27,10 @@ async function main(): Promise<void> {
   console.log(
     `[worker] 恢复完成：${recovered.unknownDeliveries} 个投递标记 unknown，${recovered.requeuedJobs} 个孤儿 job 重新排队`,
   );
+
+  // 演示实例：访客不能手动探测模型端点，没有有效结论时启动先探测一次
+  const probe = await ensureDemoModelCapabilities();
+  if (probe !== "skipped") console.log(`[worker] 演示实例模型端点探测：${probe === "probed" ? "已完成" : "失败，按兼容方式调用"}`);
 
   let stopped = false;
   let heldLogged = false;
@@ -38,6 +43,8 @@ async function main(): Promise<void> {
 
   while (!stopped) {
     try {
+      // 演示实例：到每日恢复时间就把数据恢复成初始示例（两趟任务之间执行，不打断在途任务）
+      if (maintainDemo()) console.log("[worker] 演示数据已恢复成初始示例");
       const stats = await runDueJobsOnce();
       if (stats.held && !heldLogged) {
         console.log("[worker] 实例处于恢复暂停（restored_hold）：不领取任务、不发起外部请求。确认后运行 scripts/resume-after-restore.sh");

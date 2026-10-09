@@ -101,6 +101,36 @@
   min-height: var(--tap);
 }
 
+/* 登录页的演示入口：表单下方另起一段，次要但找得到 */
+.demoEntry {
+  margin-top: var(--space-8);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+
+.demoLead {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-serif);
+  font-size: var(--text-section);
+  font-weight: 600;
+}
+
+a.demoButton {
+  width: 100%;
+  min-height: var(--tap);
+  text-decoration: none;
+}
+
+.demoNote {
+  margin: var(--space-3) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-small);
+}
+
+.panel > button {
+  min-height: var(--tap);
+}
+
 .foot {
   display: flex;
   align-items: center;

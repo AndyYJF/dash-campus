@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { getDb } from "@/repositories/db";
+import { DEMO_SESSION_COOKIE, isDemoMode } from "@/domain/demo";
 
 /**
  * 会话：明文 token 只发给客户端一次，库里只存 SHA-256 摘要。
@@ -8,6 +9,11 @@ import { getDb } from "@/repositories/db";
 
 export const SESSION_COOKIE = "dash_session";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 天
+
+/** 本实例实际使用的会话 Cookie 名：演示实例另用一个名字，和同域的正式实例互不覆盖 */
+export function sessionCookieName(): string {
+  return isDemoMode() ? DEMO_SESSION_COOKIE : SESSION_COOKIE;
+}
 
 export type SessionRecord = {
   id: string;
@@ -22,13 +28,13 @@ function hashToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-export function createSession(ownerId: number = 1): { session: SessionRecord; token: string } {
+export function createSession(ownerId: number = 1, ttlMs: number = SESSION_TTL_MS): { session: SessionRecord; token: string } {
   const db = getDb();
   const id = crypto.randomUUID();
   const token = crypto.randomBytes(32).toString("base64url");
   const csrfToken = crypto.randomBytes(24).toString("base64url");
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + SESSION_TTL_MS).toISOString();
+  const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
   db.prepare(
     `INSERT INTO sessions (id, owner_id, token_hash, csrf_token, created_at, expires_at)
      VALUES (?, ?, ?, ?, ?, ?)`,

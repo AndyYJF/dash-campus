@@ -9,6 +9,7 @@
 - [Agent操作与接口契约](docs/agent-first-v2/AGENT-INTERFACE-CONTRACT.md)
 - [校历、节假日与调休规格](docs/agent-first-v2/ACADEMIC-CALENDAR-AND-HOLIDAYS.md)
 - [本地配置、运行和部署](docs/deploy.md)
+- [展示模式：免登录的演示实例](docs/demo-mode.md)
 - [Agent-first V2 总规划](docs/agent-first-v2/MASTER-PLAN.md)
 - [Coding Agent 历史建设说明](docs/agent-first-v2/CODING-AGENT.md)
 - [方向页计划](../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md) / [方向页复验](../Plan/dash-campus-DIRECTION-ACCEPTANCE-2026-10-05.md)

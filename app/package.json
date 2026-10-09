@@ -14,6 +14,7 @@
     "backup": "tsx --env-file-if-exists=.env src/scripts/backup.ts",
     "restore": "tsx --env-file-if-exists=.env src/scripts/restore.ts",
     "resume-after-restore": "tsx --env-file-if-exists=.env src/scripts/resume.ts",
+    "demo:seed": "tsx --env-file-if-exists=.env src/scripts/demo-seed.ts",
     "legacy:snapshot": "tsx src/scripts/legacy-snapshot.ts",
     "legacy:campus-bridge": "tsx --env-file-if-exists=.env.campus-bridge src/scripts/campus-bridge.ts"
   },

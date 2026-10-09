@@ -7,6 +7,7 @@ import SessionGuard from "./SessionGuard";
 import ShellExtras, { RestoreHoldBanner } from "./ShellExtras";
 import ThemeToggle from "./ThemeToggle";
 import AgentLauncher from "./AgentLauncher";
+import DemoBar from "./DemoBar";
 
 /** 主导航为今天、本周、方向、AI资讯、对话；收件箱/回顾/探索记录入口放在方向页底部 */
 const NAV_ITEMS: Array<{ href: string; label: string; icon: IconName }> = [
@@ -97,6 +98,7 @@ export default function AppShell({
       <main id="main" className={styles.main} tabIndex={-1}>
         <div className={styles.content}>
           <RestoreHoldBanner />
+          <DemoBar />
           {children}
         </div>
       </main>

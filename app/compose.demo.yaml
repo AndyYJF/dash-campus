@@ -1,0 +1,57 @@
+# Dash Campus 演示实例（展示模式，docs/demo-mode.md）：给没有账号的人完整试用。
+# 和正式实例（compose.yaml）用同一个镜像，但是另一组容器、另一个数据目录 ./data-demo、另一份环境变量 .env.demo，
+# 两边不共用数据库、会话和密钥。端口同样只映射到宿主环回，由宿主上的反向代理提供 HTTPS。
+#
+#   docker compose build                                  # 镜像由 compose.yaml 构建（dash-campus:local）
+#   docker compose -f compose.demo.yaml up -d             # 建库/恢复示例 → 启动演示 web + worker
+#   docker compose -f compose.demo.yaml down              # 停止（数据可随时重建，不需要备份）
+#
+# DEMO_MODE 与数据库路径写死在这里，不从 .env.demo 读：这份 compose 起的容器只可能是演示模式、只可能用演示库。
+name: dash-campus-demo
+
+x-demo: &demo
+  image: dash-campus:local
+  env_file: .env.demo
+  environment:
+    DEMO_MODE: "1"
+    DATABASE_PATH: /app/data/dash-campus-demo.db
+    # 演示实例不初始化主人、不发邮件：即使 .env.demo 里误填了也清空
+    SETUP_TOKEN: ""
+    SMTP_HOST: ""
+    SMTP_USER: ""
+    SMTP_PASSWORD: ""
+    MAIL_FROM: ""
+    MAIL_TO: ""
+  volumes:
+    - ./data-demo:/app/data
+
+services:
+  # 每次 up 先跑一遍：全新的库执行迁移并写入合成示例；已有的演示库（包括升级后版本落后的）迁移并恢复成初始示例。
+  # 只肯写全新的库或带演示标记的库，见 src/scripts/demo-seed.ts。
+  seed:
+    <<: *demo
+    entrypoint: ["bash", "scripts/demo-seed.sh"]
+    restart: "no"
+
+  web:
+    <<: *demo
+    ports:
+      - "127.0.0.1:${DEMO_PORT:-3001}:3000"
+    restart: unless-stopped
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    <<: *demo
+    command: ["node", "node_modules/tsx/dist/cli.mjs", "src/worker/index.ts"]
+    stop_grace_period: 60s
+    restart: unless-stopped
+    depends_on:
+      seed:
+        condition: service_completed_successfully

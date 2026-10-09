@@ -86,6 +86,8 @@ export function setMailerForTests(m: Mailer | null): void {
 /** 实际发送前调用：null 表示 SMTP 未配置（503 INTEGRATION_UNAVAILABLE） */
 export function resolveMailer(): Mailer | null {
   if (mailerOverride) return mailerOverride;
+  // 演示实例永不发信：即使环境里误配了 SMTP，也按未配置处理
+  if (getConfig().DEMO_MODE) return null;
   if (!isSmtpConfigured()) return null;
   return createSmtpMailer();
 }

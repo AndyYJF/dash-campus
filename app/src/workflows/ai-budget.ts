@@ -58,7 +58,14 @@ export function intakeActiveRemainingMs(intakeId: string): number {
 
 export function getAiBudget(): { budget: AiBudget; version: number } {
   const { value, version } = getSetting(AI_BUDGET_SETTINGS_KEY);
-  return { budget: aiBudgetSchema.parse(value ?? {}), version };
+  const budget = aiBudgetSchema.parse(value ?? {});
+  // 演示实例：全站每日上限由环境变量封顶，访客在设置页或对话里调高也不会超过它
+  const cfg = getConfig();
+  if (cfg.DEMO_MODE) {
+    budget.dailyModelCalls = Math.min(budget.dailyModelCalls, cfg.DEMO_DAILY_MODEL_CALLS);
+    budget.dailySearchCalls = Math.min(budget.dailySearchCalls, cfg.DEMO_DAILY_SEARCH_CALLS);
+  }
+  return { budget, version };
 }
 
 export function saveAiBudget(value: AiBudget, expectedVersion: number): { version: number } | "conflict" {

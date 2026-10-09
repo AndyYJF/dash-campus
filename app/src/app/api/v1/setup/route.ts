@@ -15,6 +15,10 @@ const setupSchema = z.object({
 /** 一次性初始化：SETUP_TOKEN 验证 + 创建唯一主人；初始化后不再生效 */
 export async function POST(request: NextRequest) {
   const cfg = getConfig();
+  // 演示实例的主人记录由示例数据建立，不接受网页初始化
+  if (cfg.DEMO_MODE) {
+    return NextResponse.json({ error: { code: "DEMO_DISABLED", message: "演示模式不需要初始化" } }, { status: 403 });
+  }
   if (!cfg.SETUP_TOKEN) {
     return NextResponse.json(
       { error: { code: "INTEGRATION_UNAVAILABLE", message: "未配置 SETUP_TOKEN" } },

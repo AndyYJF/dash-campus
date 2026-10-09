@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { completeWithSchema } from "@/integrations/model-json";
 import { before, beforeEach, test } from "node:test";
 import { migrateAll, getDb } from "./helpers";
 import { parseNewsFeed, fetchNewsFeeds } from "@/integrations/news-feeds";
@@ -490,4 +491,35 @@ test("default fixture workflow never fetches real feeds", async () => {
     ),
   );
   assert.ok(getNewsRun(r.id)?.warnings.some((w) => w.includes("合成资料")));
+});
+
+test("provider can repair an ungrounded quote once before publishing; both HTTP calls count", async () => {
+  let attempts = 0;
+  setProvidersForTests({ model: { mode: "fixture", provider: { protocol: "test", call: (req) => completeWithSchema(req, async () => {
+    attempts++;
+    const output = digest(req);
+    if (attempts === 1) output.stories[0]!.citations[0]!.quote = "Translated or invented quote not present in this source";
+    return { ok: true, text: JSON.stringify(output) };
+  }) } }, search: null });
+  const run = startNews();
+  assert.equal((await runNewsJob(claim(), feeds)).kind, "done");
+  assert.equal(getNewsRun(run.id)!.status, "ready");
+  assert.equal(attempts, 2);
+  assert.equal((getDb().prepare("SELECT COUNT(*) AS n FROM ai_request_ledger").get() as { n: number }).n, 2);
+});
+test("persistently ungrounded quote stops after one repair, publishes nothing and retains previous digest", async () => {
+  const previous = startNews();
+  await runNewsJob(claim(), feeds);
+  let attempts = 0;
+  setProvidersForTests({ model: { mode: "fixture", provider: { protocol: "test", call: (req) => completeWithSchema(req, async () => {
+    attempts++;
+    const output = digest(req);
+    output.stories[0]!.citations[0]!.quote = "Invented quote not present in the source";
+    return { ok: true, text: JSON.stringify(output) };
+  }) } }, search: null });
+  const run = startNews();
+  assert.equal((await runNewsJob(claim(), feeds)).kind, "failed");
+  assert.equal(attempts, 2);
+  assert.equal(getNewsRun(run.id)!.digest, null);
+  assert.equal(latestNewsDigest()!.id, previous.id);
 });

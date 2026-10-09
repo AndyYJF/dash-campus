@@ -67,26 +67,28 @@ export function prepareNews(
     unknownDates,
   };
 }
-export function validateNewsDigest(
-  raw: unknown,
-  sources: NewsSource[],
-): NewsDigest {
-  const d = newsDigestSchema.parse(raw),
-    seen = new Set<string>();
-  if (sources.length && !d.stories.length)
-    throw new Error("有可用资料但模型未产生盘点");
-  for (const story of d.stories) {
-    for (const c of story.citations) {
-      const s = sources.find((x) => x.id === c.sourceId);
-      if (!s || locateQuote(s.text, c.quote) < 0)
-        throw new Error("资讯引用无法在本次来源中核对");
-    }
-    const key = story.citations
-      .map((c) => c.sourceId)
-      .sort()
-      .join(":");
-    if (seen.has(key)) throw new Error("同一来源被重复写成多条新闻");
-    seen.add(key);
-  }
-  return d;
+/** 来源约束同时交给 provider 的一次有界修复；最终保存前再用同一约束复核。 */
+export function newsDigestForSources(sources: NewsSource[]) {
+  return newsDigestSchema.superRefine((d, ctx) => {
+    if (sources.length && !d.stories.length)
+      ctx.addIssue({ code: "custom", path: ["stories"], message: "有可用资料但模型未产生盘点" });
+    const seen = new Set<string>();
+    d.stories.forEach((story, i) => {
+      story.citations.forEach((c, j) => {
+        const source = sources.find((s) => s.id === c.sourceId);
+        if (!source || locateQuote(source.text, c.quote) < 0)
+          ctx.addIssue({ code: "custom", path: ["stories", i, "citations", j],
+            message: source
+              ? `资讯引用无法核对；quote必须是text的连续原文，不翻译、不加省略号。可直接使用此原文片段：${JSON.stringify(source.text.slice(0, 120).trim())}`
+              : "资讯引用sourceId不在本次sources中，请复制给定来源的id" });
+      });
+      const key = story.citations.map((c) => c.sourceId).sort().join(":");
+      if (seen.has(key))
+        ctx.addIssue({ code: "custom", path: ["stories", i, "citations"], message: "同一来源被重复写成多条新闻，请合并" });
+      seen.add(key);
+    });
+  });
+}
+export function validateNewsDigest(raw: unknown, sources: NewsSource[]): NewsDigest {
+  return newsDigestForSources(sources).parse(raw);
 }

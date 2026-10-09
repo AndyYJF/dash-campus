@@ -172,3 +172,107 @@ test("没点空档也没写时间：直接拦在入口，说明怎么补", async
   assert.equal(r.status, 422);
   assert.match(r.error, /请写上时间/);
 });
+
+/**
+ * 以下是 2026-10-08 审计 3e66e01 时复现的六个问题的回归。
+ * 端到端的几条都排在明天或更后（今天 15:30–16:30 有上面插入的“社团例会”）。
+ */
+const show = (body: string, slot: typeof TOMORROW_SLOT | null = null, nowMinute: number | null = 750, durationOf?: (title: string) => number | null) =>
+  parseArrange(body, slot, TODAY, nowMinute, durationOf).map((x) => (x.ok ? `${x.title}|${x.date.slice(5)} ${x.start}-${x.end}|${x.timed}` : `!${x.error}`));
+const AFTERNOON_SLOT = { date: "2026-10-13", start: "16:00", end: "18:00" };
+
+test("回归①：“一点/三点”作数量时不是钟点——不排到 13:00，标题不被挖掉；真正的中文钟点照常读", () => {
+  for (const body of ["多背一点单词", "做一点高数题", "复习三点内容", "一点点高数", "多背一点儿单词", "看一点三国演义"]) {
+    assert.equal(hasClockTime(body), false, body);
+    assert.deepEqual(show(body, AFTERNOON_SLOT), [`${body}|10-13 16:00-18:00|none`], `${body}：用点选的空档，标题原样`);
+    assert.match(show(body)[0]!, /^!.*没说什么时候做/, `${body}：没点空档时要求补时间，不猜成 1 点`);
+  }
+  assert.deepEqual(show("三点写作业，然后四点背单词"), ["写作业|10-12 15:00-16:00|start", "背单词|10-12 16:00-17:00|start"], "句首的中文钟点");
+  assert.deepEqual(show("背单词下午一点"), ["背单词|10-12 13:00-14:00|start"], "带了下午");
+  assert.deepEqual(show("明天三点半复习"), ["复习|10-13 15:30-16:30|start"], "带了分钟");
+  assert.deepEqual(show("一点到两点整理笔记"), ["整理笔记|10-12 13:00-14:00|range"], "起止时间里的“一点”");
+  assert.equal(hasClockTime("写作业三点开始"), true, "后面跟着“开始”");
+  assert.equal(hasClockTime("多背一点单词，下午3点到4点写作业"), true, "别的分句里有钟点");
+});
+
+test("回归②（解析）：只说开始时间的那件按已有任务估时定时长，后一件接在它真正结束的地方", () => {
+  const durationOf = (title: string) => (title.includes("微积分") ? 90 : null);
+  assert.deepEqual(show("下午3点写微积分作业，然后背单词", null, 750, durationOf), ["写微积分作业|10-12 15:00-16:30|start", "背单词|10-12 16:30-17:30|start"]);
+  assert.deepEqual(show("下午3点写半小时微积分作业，然后背单词", null, 750, durationOf), ["写半小时微积分作业|10-12 15:00-15:30|start", "背单词|10-12 15:30-16:30|start"], "话里说了时长的按话里的");
+});
+
+test("回归③：换了一天不沿用前一天的“下午”；同一天里仍然接在前一件之后", () => {
+  assert.deepEqual(show("今天下午3点到4点写微积分，明天9点到10点写英语"), ["写微积分|10-12 15:00-16:00|range", "写英语|10-13 09:00-10:00|range"]);
+  assert.deepEqual(show("今天下午3点到4点写微积分，明天3点到4点写英语"), ["写微积分|10-12 15:00-16:00|range", "写英语|10-13 15:00-16:00|range"], "8 点前的钟点仍按下午");
+  assert.deepEqual(show("明天上午9点到10点写英语，下午2点到3点写物理，4点背单词"), ["写英语|10-13 09:00-10:00|range", "写物理|10-13 14:00-15:00|range", "背单词|10-13 16:00-17:00|start"]);
+});
+
+test("回归④：超过 6 件事时，多出来的单独说明，不悄悄丢掉", () => {
+  const body = ["甲甲", "乙乙", "丙丙", "丁丁", "戊戊", "己己", "庚庚", "辛辛"].map((t, i) => `${13 + i}:00-${13 + i}:20 ${t}`).join("，");
+  const pieces = show(body);
+  assert.equal(pieces.length, 7);
+  assert.equal(pieces[5], "己己|10-12 18:00-18:20|range");
+  assert.equal(pieces[6], "!一次最多安排 6 件事，后面 2 件没有排：19:00-19:20 庚庚，20:00-20:20 辛辛。请把它们再发一次");
+  assert.equal(show(body.split("，").slice(0, 6).join("，")).length, 6, "刚好 6 件不多说");
+});
+
+test("回归⑤：晚上12点不是中午，上午12点不是半夜", () => {
+  assert.match(show("晚上12点背单词")[0]!, /^!「背单词」说的「晚上12点」已经是第二天凌晨了，没有排/);
+  assert.match(show("晚上1点背单词")[0]!, /^!「背单词」说的「晚上1点」已经是第二天凌晨了/);
+  assert.deepEqual(show("晚上10点到晚上12点背单词"), ["背单词|10-12 22:00-24:00|range"]);
+  assert.deepEqual(show("晚上11点到12点背单词"), ["背单词|10-12 23:00-24:00|range"]);
+  assert.deepEqual(show("22点到24点背单词"), ["背单词|10-12 22:00-24:00|range"]);
+  assert.deepEqual(show("上午十二点到一点吃饭", null, null), ["吃饭|10-12 12:00-13:00|range"]);
+  assert.deepEqual(show("中午12点到1点吃饭", null, null), ["吃饭|10-12 12:00-13:00|range"]);
+  assert.deepEqual(show("凌晨12点到1点背单词", null, null), ["背单词|10-12 00:00-01:00|range"]);
+  assert.match(show("晚上11点到晚上1点背单词")[0]!, /^!「背单词」的时间跨过了半夜，没有排/);
+});
+
+test("回归⑥：紧贴钟点的日期不进标题；标题里本来的日期词留着", () => {
+  assert.deepEqual(show("周五下午3点到4点写作业"), ["写作业|10-16 15:00-16:00|range"]);
+  assert.deepEqual(show("下周三下午3点到4点写作业"), ["写作业|10-21 15:00-16:00|range"]);
+  assert.deepEqual(show("10月15日下午3点到4点写作业"), ["写作业|10-15 15:00-16:00|range"]);
+  assert.deepEqual(show("2026年10月15日 15:00-16:00 写作业"), ["写作业|10-15 15:00-16:00|range"]);
+  assert.deepEqual(show("写作业 周五下午3点到4点"), ["写作业|10-16 15:00-16:00|range"]);
+  assert.deepEqual(show("明早8点背单词"), ["背单词|10-13 08:00-09:00|start"]);
+  assert.deepEqual(show("写周五要交的作业 下午3点到4点"), ["写周五要交的作业|10-16 15:00-16:00|range"]);
+});
+
+test("回归②（端到端）：第一件对上估时 90 分钟的已有任务——两件都排上，不再撞在一起", async () => {
+  reset();
+  await say("/安排 后天下午2点到3点写微积分作业");
+  getDb().prepare(`UPDATE tasks SET estimate_minutes = 90 WHERE title = '写微积分作业'`).run();
+  const r = await say("/安排 明天下午3点写微积分作业，然后背单词");
+  assert.equal(r.result!.state, "applied", JSON.stringify(r.result));
+  assert.deepEqual(blocks(), ["写微积分作业 2026-10-13 15:00–16:30", "背单词 2026-10-13 16:30–17:30", "写微积分作业 2026-10-14 14:00–15:00"]);
+});
+
+test("回归①（端到端）：点了空档说“多背一点单词”——排在点的空档里；不带 /安排 的说法也一样；没点空档就拦在入口", async () => {
+  reset();
+  const slashed = await say("/安排 多背一点单词", { slot: AFTERNOON_SLOT });
+  assert.equal(slashed.result!.state, "applied", JSON.stringify(slashed.result));
+  assert.deepEqual(blocks(), ["多背一点单词 2026-10-13 16:00–17:00"]);
+  reset();
+  const plain = await say("做一点高数题", { slot: AFTERNOON_SLOT });
+  assert.equal(plain.result!.state, "applied", JSON.stringify(plain.result));
+  assert.deepEqual(blocks(), ["一点高数题 2026-10-13 16:00–17:00"], "规则回退路径：还是在点的空档里");
+  const blocked = await say("/安排 多背一点单词");
+  assert.equal(blocked.status, 422);
+  assert.match(blocked.error, /请写上时间/);
+});
+
+test("回归④⑤（端到端）：第 7 件作为没办成的一项报出来；“晚上12点”如实说明、不排到中午", async () => {
+  reset();
+  const body = ["甲甲", "乙乙", "丙丙", "丁丁", "戊戊", "己己", "庚庚"].map((t, i) => `${i === 0 ? "明天" : ""}${13 + i}:00-${13 + i}:20 ${t}`).join("，");
+  const many = await say(`/安排 ${body}`);
+  const items = many.result!.items.filter((i) => i.kind === "command");
+  assert.deepEqual(items.map((i) => i.state), ["applied", "applied", "applied", "applied", "applied", "applied", "failed"], JSON.stringify(items));
+  assert.match(items[6]!.error ?? "", /一次最多安排 6 件事，后面 1 件没有排：19:00-19:20 庚庚/);
+  assert.equal(many.result!.state, "partly_applied");
+  assert.equal(blocks().length, 6);
+  reset();
+  const midnight = await say("/安排 明天晚上12点背单词");
+  assert.equal(midnight.result!.items[0]!.state, "failed");
+  assert.match(midnight.result!.items[0]!.error ?? "", /「晚上12点」已经是第二天凌晨了/);
+  assert.deepEqual(blocks(), []);
+});

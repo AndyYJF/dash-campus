@@ -39,6 +39,7 @@ export type BindEnv = {
   answer: (key: string) => Record<string, unknown> | null;
   /**
    * “/安排”这一步的时间来自哪里：话里自带起止时间（range）或只带开始时间（start）。缺省 = 用点选的空档。
+   * 两种都照意图里的起止时间排（只带开始时间的，时长在解析时已经定好，见 arrangeDurationOf）。
    * 放在环境里而不是意图里：意图的结构也是给模型的输出格式，这个标记只由服务端的确定性解析产生。
    */
   arrangeTimed?: "range" | "start";
@@ -92,6 +93,17 @@ function activeSessions(env: BindEnv): SessionCand[] {
 
 function openTasks(): TaskRef[] {
   return getDb().prepare(`SELECT id, title FROM tasks WHERE status IN ('todo','doing','blocked') AND archived_at IS NULL ORDER BY created_at, id`).all() as TaskRef[];
+}
+
+/**
+ * “/安排”里只说了开始时间的一件事排多久：对得上唯一一个已有任务时按它的估时，一段最多 90 分钟；
+ * 对不上（或有几个并列）返回 null，由解析按一小时算。解析时就定下来，同一句里接在后面的事才知道从哪里开始。
+ */
+export function arrangeDurationOf(title: string): number | null {
+  const m = matchTask(title, openTasks());
+  if (m.kind !== "one") return null;
+  const known = (getDb().prepare(`SELECT estimate_minutes FROM tasks WHERE id = ?`).get(m.task.id) as { estimate_minutes: number | null } | undefined)?.estimate_minutes ?? null;
+  return Math.min(90, known ?? 60);
 }
 
 /** 还在定期关注的探索方向 */
@@ -582,8 +594,8 @@ function bindOne(intent: Intent, env: BindEnv): Bound {
         if (c.kind !== "one") return c;
         taskId = c.value.id;
       }
-      const known = taskId ? ((getDb().prepare(`SELECT estimate_minutes FROM tasks WHERE id = ?`).get(taskId) as { estimate_minutes: number | null } | undefined)?.estimate_minutes ?? null) : null;
-      const durationMinutes = timed === "range" ? endMin - startMin : (estimateFromText(intent.text) ?? Math.min(90, known ?? 60));
+      // 时长就是意图里的起止之差：只带开始时间的那种，解析时已经按话里的时长/任务估时算好了结束时间
+      const durationMinutes = endMin - startMin;
       if (durationMinutes > 240) return { kind: "fail", error: `「${intent.text}」一段有 ${durationMinutes} 分钟，一段最多排 4 小时：请拆成两段再说` };
       if (durationMinutes < 5) return { kind: "fail", error: `「${intent.text}」的时间不到 5 分钟，没有排` };
       return { kind: "run", command: { command: "schedule_session", ...(taskId ? { taskId } : { title: intent.text }), date: intent.date, startLocalTime: intent.start, durationMinutes } };

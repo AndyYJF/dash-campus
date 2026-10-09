@@ -36,7 +36,7 @@ import { sourceDateExclusions } from "@/domain/decision-dates";
 import { dueFromText, estimateFromText, isCompletionReport, matchTask, pickCandidate, type TaskRef } from "@/domain/task-text";
 import { intentSchema, parseInstruction, type Intent } from "@/domain/intent";
 import { nowDate } from "@/domain/clock";
-import { bindIntents, commandsForStandaloneAnswer, completionHasTarget, fixedEventRefs, isPolicyIntent, maybeAskRoutine, parseAnswerByPurpose, raisePlanQuestions, stepGroups, stepRefsOf, topicRefs, type BindEnv } from "@/workflows/agent";
+import { arrangeDurationOf, bindIntents, commandsForStandaloneAnswer, completionHasTarget, fixedEventRefs, isPolicyIntent, maybeAskRoutine, parseAnswerByPurpose, raisePlanQuestions, stepGroups, stepRefsOf, topicRefs, type BindEnv } from "@/workflows/agent";
 import { appendTurn, conversationExists, currentConversationId, reopenConversation, upsertAgentTurn, type EntityRef } from "@/repositories/conversations";
 import { HttpError } from "@/workflows/http";
 import { listChanges } from "@/repositories/journal";
@@ -1027,7 +1027,7 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
         // 一句话里可以有几件事，各自带时间：每件事是独立的一步，时间照话里说的来；说不清的那一件单独指出，不连累其他
         const now = nowDate();
         const nowMinute = localDateInTz(now, intake.timezone) === intake.referenceDate ? Math.floor((now.getTime() - wallTimeToUtc(intake.referenceDate, "00:00", intake.timezone).getTime()) / 60000) : null;
-        const pieces = parseArrange(textRest, slot, intake.referenceDate, nowMinute);
+        const pieces = parseArrange(textRest, slot, intake.referenceDate, nowMinute, arrangeDurationOf);
         if (!pieces.length) failure = "没看出要安排什么：请写上要做的事。";
         pieces.forEach((piece, n) => {
           const key = n === 0 ? "slash-command" : `slash-command-${n + 1}`;
@@ -1097,12 +1097,16 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
     }
     // 从时间轴空档发起、且只是一句“这里安排什么”：直接排进那个时段
     const slot = intake.context.slot as { date: string; start: string; end: string } | undefined;
-    const what = textRest.trim().replace(/^(在)?(这里|这段时间?|这个空档)?(帮我)?(安排|排上?|放|做|学)/, "").replace(/[。.!！]$/, "").trim();
+    const lead = /^(在)?(这里|这段时间?|这个空档)?(帮我)?(安排|排上?|放|做|学)/;
+    const said = textRest.trim().replace(/[。.!！]$/, "").trim();
+    const what = textRest.trim().replace(lead, "").replace(/[。.!！]$/, "").trim();
     if (slot && !isFlexibleAdjustment(textRest) && !groups.length && !kept.length && what.length >= 2 && what.length <= 40 && !/[\n，,；;]/.test(what)) {
-      // 话里自带钟点就照钟点排（只说了一件事时）；否则排在空档开头
-      const pieces = parseArrange(what, slot, intake.referenceDate, null);
-      const one = pieces.length === 1 && pieces[0]!.ok ? pieces[0]! : null;
-      groups.push({ intents: [one && one.ok ? { op: "schedule_here", text: one.title, date: one.date, start: one.start, end: one.end } : { op: "schedule_here", text: what, date: slot.date, start: slot.start, end: slot.end }], clauses: [textRest.trim()], ...(one && one.ok && one.timed !== "none" ? { arrangeTimed: one.timed } : {}) });
+      // 话里自带钟点就照钟点排（只说了一件事时）；否则排在空档开头。
+      // 钟点在原话上找，不在去掉“做/安排”之后的文字上找：“做一点高数题”去掉“做”以后，“一点”会被当成句首的钟点
+      const pieces = parseArrange(said, slot, intake.referenceDate, null, arrangeDurationOf);
+      const one = pieces.length === 1 && pieces[0]!.ok && pieces[0]!.timed !== "none" ? pieces[0]! : null;
+      const title = one ? one.title.replace(lead, "").trim() : "";
+      groups.push({ intents: [one && one.ok && title ? { op: "schedule_here", text: title, date: one.date, start: one.start, end: one.end } : { op: "schedule_here", text: what, date: slot.date, start: slot.start, end: slot.end }], clauses: [textRest.trim()], ...(one && one.ok && title ? { arrangeTimed: one.timed as "range" | "start" } : {}) });
       parsed.rest = "";
     }
     if (groups.length) {

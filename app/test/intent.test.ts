@@ -44,10 +44,11 @@ test("时间政策：持久规则、只这一次、时段边界、假期策略�
   assert.deepEqual(one("周末更适合"), { op: "prefer_window", part: "weekend" });
   assert.deepEqual(one("今天你看着重新安排"), { op: "replan", dateFrom: REF, dateTo: REF });
   assert.deepEqual(one("别再自动调整我的安排了"), { op: "revoke_replan" });
-  assert.deepEqual(one("按你推荐的来"), { op: "confirm_policy" });
+  assert.equal(one("按你推荐的来"), null, "未绑定上下文不能确认作息");
   assert.deepEqual(one("帮我自动获取节假日和调课安排"), { op: "calendar_sync", enabled: true, intervalDays: null });
   assert.deepEqual(one("别再自动更新校历了"), { op: "calendar_sync", enabled: false, intervalDays: null });
-  assert.deepEqual(one("你帮我决定"), { op: "confirm_policy" });
+  assert.equal(one("你帮我决定"), null, "委托必须先明确目标");
+  assert.equal(one("嗯，就这样吧"), null);
 });
 
 test("任务/课程/实践指令", () => {
@@ -93,4 +94,11 @@ test("不是指令的话不被误认：任务、实践、资料原样留给后�
   const mixed = parseInstruction("今晚不学了，另外明天前要交实验报告预计两小时", REF, NOW, TZ);
   assert.equal(mixed.intents.length, 1);
   assert.equal(mixed.rest, "另外明天前要交实验报告预计两小时", "认不出的分句留给分类");
+});
+
+test("模型降级不把部分任务、长度或密度否定扩大成整日/长期不学习", () => {
+  for (const text of ["今天的数学别排那么长，一小时就够", "明天不学英语，数学照旧", "明天的英语不学了", "明天不安排那么多", "假期别排太紧", "晚上十点后别排那么长", "九点前别排那么满"]) {
+    const result = parseInstruction(text, REF, NOW, TZ);
+    assert.ok(!result.intents.some(({ intent }) => intent.op === "no_study" || intent.op === "window_end" || intent.op === "window_start" || (intent.op === "holiday_policy" && intent.mode === "none")), `${text}: ${JSON.stringify(result)}`);
+  }
 });

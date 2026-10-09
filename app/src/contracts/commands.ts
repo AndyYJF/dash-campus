@@ -346,6 +346,10 @@ export const updateProjectStateSchema = z.object({
 });
 
 /** 找候选项目（检索有来源的资料，最多 3 个候选） */
+export const cancelAiNewsSchema = z.object({ command:z.literal("cancel_ai_news") });
+export const requestAiNewsSchema = z.object({ command: z.literal("request_ai_news"), days: z.number().int().min(1).max(30).default(7) });
+export const updateAiNewsPolicySchema = z.object({ command: z.literal("update_ai_news_policy"), expectedVersion: z.number().int().min(0).nullable().default(null), enabled: z.boolean().optional(), localTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/).optional(), days: z.number().int().min(1).max(30).optional() });
+
 export const requestExplorationSchema = z.object({
   command: z.literal("request_exploration"),
   query: z.string().trim().min(1).max(500),
@@ -507,6 +511,9 @@ export const commandSchema = z.discriminatedUnion("command", [
   selectCandidateSchema,
   updateProjectStateSchema,
   requestExplorationSchema,
+  requestAiNewsSchema,
+  cancelAiNewsSchema,
+  updateAiNewsPolicySchema,
   linkResourceSchema,
   updateDirectionProfileSchema,
   upsertDirectionTrackSchema,
@@ -538,7 +545,7 @@ export type OperationAuthorization = "auto" | "explicit" | "confirm" | "never";
 export type OperationSideEffect = "replan" | "reminders" | "mail" | "job";
 
 /** 有界只读工具（P2 实现）；元数据里声明执行这个操作之前通常要读什么 */
-export const READ_TOOL_NAMES = ["get_context", "find_entities", "get_entity_detail", "get_calendar_budget", "get_open_questions", "get_conversation", "get_operation_status", "get_evidence"] as const;
+export const READ_TOOL_NAMES = ["get_context", "find_entities", "get_entity_detail", "get_calendar_budget", "get_open_questions", "get_conversation", "get_operation_status", "get_evidence", "get_reviews", "get_ai_news"] as const;
 export type ReadToolName = (typeof READ_TOOL_NAMES)[number];
 
 /** 执行后的确定性核验（P5 Verify 阶段使用） */
@@ -569,7 +576,7 @@ export type OperationMeta = {
 };
 
 /** entity：命令里点名对象的版本；preferences：命令要改的作息字段当前值；rules：同类或日期重叠的生效规则 */
-export type FactSet = "entity" | "preferences" | "rules" | "direction_profile";
+export type FactSet = "entity" | "preferences" | "rules" | "direction_profile" | "agent_policy" | "ai_news_policy";
 
 export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   upsert_course_set: { title: "课表更新", description: "用确定性课表文本（SDCT1）和学期首周一建立/替换本学期课程。", group: "course", authorization: "auto", undo: "journal", affects: ["plan", "calendar"], sideEffects: ["replan"], reads: ["get_context"], verify: ["entity_state_matches", "plan_consistent"] },
@@ -599,6 +606,9 @@ export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   upsert_goal: { title: "目标", description: "新建或修改目标；primary=true 设为当前唯一的主要方向。", group: "goal", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["find_entities"], verify: ["entity_state_matches"] },
   select_candidate: { title: "开始项目", description: "选一个候选开始试做（默认两周、只建第一步）或正式投入。不代表对外报名。", group: "goal", authorization: "explicit", undo: "journal", affects: ["plan", "direction"], sideEffects: ["replan"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "plan_consistent"] },
   update_project_state: { title: "项目状态", description: "暂停/恢复/结束项目，或把试做转为正式投入。", group: "goal", authorization: "explicit", undo: "journal", affects: ["plan", "direction"], sideEffects: ["replan"], reads: ["find_entities", "get_entity_detail"], verify: ["entity_state_matches", "plan_consistent"] },
+  cancel_ai_news: { title:"停止本次资讯更新", description:"停止当前尚未完成的AI资讯更新，保留已有盘点，不改变自动更新开关。",group:"agent",authorization:"explicit",undo:"none",affects:[],sideEffects:["job"],reads:["get_ai_news"],verify:["side_effect_status"] },
+  request_ai_news: { title: "更新AI资讯", description: "获取并总结最近1–30天AI新闻；查看已保存资讯用get_ai_news，不启动更新。", group: "agent", authorization: "explicit", undo: "none", affects: [], sideEffects: ["job"], reads: ["get_ai_news"], verify: ["side_effect_status"] },
+  update_ai_news_policy: { title: "AI资讯自动更新设置", description: "设置每天资讯更新时间、近期范围或开关，不改变定期AI总开关和调用预算。", group: "agent", authorization: "explicit", undo: "journal", affects: [], sideEffects: [], reads: ["get_ai_news"], verify: ["policy_saved"], facts: ["ai_news_policy"] },
   request_exploration: { title: "找候选项目", description: "按主人给的问题检索有来源的资料并生成最多 3 个候选。", group: "goal", authorization: "explicit", undo: "none", affects: ["direction"], sideEffects: ["job"], reads: ["get_context"], verify: ["side_effect_status"] },
   link_resource: { title: "资料", description: "把资料存下来、关联到项目，或纠正它是参考资料/别人的要求/自己的成果；主人线索可带关注方向 trackId、阶段 stageKey 与类型 noteKind（只存档，不建任务）。", group: "goal", authorization: "auto", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["find_entities"], verify: ["entity_state_matches"] },
   update_direction_profile: { title: "阶段与去向", description: "记录主人明确说的当前阶段（year1–year4）、入学年与去向偏好（research/further_study/employment/undecided，可多选）。不从任务数推算阶段，不生成目标或任务。", group: "goal", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["get_context"], verify: ["entity_state_matches"], facts: ["direction_profile"] },
@@ -606,7 +616,7 @@ export const OPERATIONS: { [N in Command["command"]]: OperationMeta } = {
   update_roadmap_item: { title: "阶段项", description: "主人采用或修订一条阶段项（stageKey + 标题/目的，可引用已有目标或关注方向）；completed 只在主人明确确认时用。不生成任务。", group: "goal", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["get_context", "find_entities"], verify: ["entity_state_matches"] },
   link_direction_project: { title: "项目关联方向", description: "把已有项目关联到关注方向（可附阶段项），或 remove 解除；项目本身和它的安排不变。", group: "goal", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["find_entities"], verify: ["entity_state_matches"] },
   record_direction_reflection: { title: "实践感受", description: "保存主人对实践的原话感受，关联项目/关注方向/实践记录至少一个。只记主人说的，不记分钟数（实际用时走实践记录）。", group: "practice", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: [], reads: ["find_entities"], verify: ["entity_state_matches"] },
-  update_agent_policy: { title: "主动程度与预算", description: "每日模型/搜索调用上限；是否运行定期探索和定期复盘。", group: "agent", authorization: "explicit", undo: "journal", affects: [], sideEffects: [], reads: ["get_context"], verify: ["policy_saved"] },
+  update_agent_policy: { title: "主动程度与预算", description: "每日模型/搜索调用上限；是否运行定期探索和定期复盘。", group: "agent", authorization: "explicit", undo: "journal", affects: [], sideEffects: [], reads: ["get_context"], verify: ["policy_saved"], facts: ["agent_policy"] },
   request_review: { title: "复盘", description: "按一周已记录的事实生成复盘与建议；建议不自动执行。", group: "agent", authorization: "explicit", undo: "none", affects: [], sideEffects: ["job"], reads: ["get_context"], verify: ["side_effect_status"] },
   configure_exploration: { title: "定期探索", description: "新建、调整或停用一个关注方向及其每周探索时间。", group: "agent", authorization: "explicit", undo: "journal", affects: ["direction"], sideEffects: ["job"], reads: ["find_entities"], verify: ["policy_saved"] },
   request_owner_digest: { title: "发送摘要", description: "现在给主人本人发一份今日或本周摘要；已发出的邮件不能撤回。", group: "reminder", authorization: "explicit", undo: "none", affects: [], sideEffects: ["mail", "job"], reads: ["get_context"], verify: ["side_effect_status"] },
@@ -630,6 +640,8 @@ export type CommandContext = {
   inferred?: boolean;
   /** 主人已经确认过这份绑定后的方案（确认与方案指纹一致） */
   confirmed?: boolean;
+  /** 服务端标记：主人输入中形成的策略提案；仅可请求确认，不能让模型自行增大预算 */
+  ownerPolicyProposal?: boolean;
   /** 规划时刻；缺省取当前时间（测试用固定时钟） */
   now?: Date;
   conversationId?: string | null;

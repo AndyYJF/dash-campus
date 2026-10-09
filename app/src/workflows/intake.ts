@@ -32,6 +32,7 @@ import { instanceTimezone, localDateInTz, mondayOf, addDays, wallTimeToUtc } fro
 import { parseTimetable, TimetableError } from "@/domain/timetable";
 import { executeCommand, executeOperation } from "@/workflows/commands";
 import { rebuildPlan } from "@/workflows/plan";
+import { sourceDateExclusions } from "@/domain/decision-dates";
 import { dueFromText, estimateFromText, isCompletionReport, matchTask, pickCandidate, type TaskRef } from "@/domain/task-text";
 import { intentSchema, parseInstruction, type Intent } from "@/domain/intent";
 import { nowDate } from "@/domain/clock";
@@ -544,7 +545,8 @@ async function processIntakeJob(job: JobRow): Promise<{ kind: string }> {
     const g = guard();
     if (g === "cancel") return cancel();
     if (g === "fenced") return { kind: "fenced" };
-    resolveReplyItem(intake, item);
+    // 回答、恢复原分支、收起旧定位及结果卡是一组同步数据库写入；中断不能只提交答案。
+    db.transaction(() => resolveReplyItem(intake, item)).immediate();
   }
 
   // 目标在执行前可能已被改口或停下：本轮不再是当前版本就不继续决策与执行
@@ -641,7 +643,7 @@ async function processIntakeJob(job: JobRow): Promise<{ kind: string }> {
     }
     if (!decision) {
       const ownerConstraints = [...(goal ? listGoalConstraints(goal.id).map((c) => ({ value: c.value, excerpt: c.excerpt })) : []), ...((item.payload.constraints as AcceptedConstraint[] | undefined) ?? []).map((c) => ({ value: c.value, excerpt: c.excerpt }))];
-      const context = decisionContext({ text: ownerText, date: today, now: nowDate(), selected: intake.context.selectedEntityRef ?? null, replies, goal: (live.goalRevision ?? 1) > 1 || pending ? goal : null, conversationId: intake.conversationId, intakeId, ownerConstraints, pendingProposal: pending, inheritedScope });
+      const context = decisionContext({ text: ownerText, date: today, now: nowDate(), selected: intake.context.selectedEntityRef ?? null, replies, goal: (live.goalRevision ?? 1) > 1 || pending ? goal : null, conversationId: intake.conversationId, intakeId, ownerConstraints, pendingProposal: pending, inheritedScope, sourceDateExclusions: (item.payload.sourceDateExclusions as string[] | undefined) ?? [], ownerPolicyProposal: item.payload.explicit === true && item.payload.ownerPolicyProposal === true });
       const result = await callModel(AGENT_DECIDE_WORKFLOW, context, AGENT_DECIDE_INSTRUCTIONS, agentDecisionSchema, item.id);
       if (getJob(job.id)?.cancelRequested) return cancel();
       if (!leaseValid(job.id, token, job.generation, now())) return { kind: "fenced" };
@@ -652,9 +654,10 @@ async function processIntakeJob(job: JobRow): Promise<{ kind: string }> {
     const accepted = acceptOnItem(item, decision.constraints ?? [], today, replies);
     const own = accepted.constraints as AcceptedConstraint[];
     const choice = item.payload.scopeChoice as ScopeChoice | null | undefined;
-    const scope = decisionScope(scopeText([ownerText], own), today, replies.map((r) => ({ answer: scopeText([r.answer], own) })), inheritedScope, choice?.mode === "deadline" ? [choice.date] : []);
+    const sourceDates = [...new Set([...((item.payload.sourceDateExclusions as string[] | undefined) ?? []), ...sourceDateExclusions(decision.sourceDates, ownerText, today)])];
+    const scope = decisionScope(scopeText([ownerText], own), today, replies.map((r) => ({ answer: scopeText([r.answer], own) })), inheritedScope, [...sourceDates, ...(choice?.mode === "deadline" ? [choice.date] : [])]);
     const decidedScope = scope.explicit ? { dateFrom: scope.dateFrom, dateTo: scope.dateTo } : (inheritedScope ?? null);
-    updateItem(item.id, { payload: { ...item.payload, ...accepted, decisionScope: decidedScope, decisionReplies: replies, ...(pending ? { overrideInherited: false, releaseProposed: null, releaseAuthorized: null } : {}) } });
+    updateItem(item.id, { payload: { ...item.payload, ...accepted, sourceDateExclusions: sourceDates, decisionScope: decidedScope, decisionReplies: replies, ...(pending ? { overrideInherited: false, releaseProposed: null, releaseAuthorized: null } : {}) } });
     const row = getItem(item.id)!;
     if (decision.kind === "ask") {
       if (replies.length >= 3) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error: "经过三轮仍未形成可执行调整；原话和回答已保留，没有修改安排。" } }); continue; }
@@ -667,7 +670,7 @@ async function processIntakeJob(job: JobRow): Promise<{ kind: string }> {
         if (amb) { askScopeChoice(intake, row, amb, { needsDecision: true, pendingDecision: null, pendingPlanHash: null, decisionQuestionKey: null }); continue; }
       }
       // 决策输出按每个意图自己的日期语义核对；范围与保护约束由统一门核对、收窄或拒绝
-      const error = item.payload.decisionText ? validateDecision(decision.intents, today, scope) : null;
+      const error = item.payload.decisionText ? validateDecision(decision.intents, today, scope, { ownerPolicyProposal: item.payload.explicit === true && item.payload.ownerPolicyProposal === true }) : null;
       if (error) { updateItem(item.id, { state: "failed", evidence: { ...item.evidence, error } }); continue; }
       if (confirmedHashes === undefined) {
         // 是否要确认按过门后的命令做参数级授权：临时上限/临时重排直接执行，长期规则、具体块、截止要确认
@@ -984,6 +987,8 @@ function resolveCalendarItem(intake: IntakeRow, item: IntakeItemRow): void {
 const TIMETABLE_TEXT = /(周|星期)[一二三四五六日天1-7]|第?\s*\d+\s*[-–~至]\s*\d+\s*节/;
 const CALENDAR_TEXT = /\d{1,4}\s*[年月/.\-]\s*\d{1,2}|第\s*[一二三四五六七八九十\d]+\s*周/;
 const ROUTED_REST_VERSION = "route-v1";
+/** 显式重试仅把未理解的片段送回路由，不重放同次已成功的部分。 */
+const ROUTE_RETRY_VERSION = "route-retry-v1";
 /** slash 指令已处理完主人的指令部分：剩余正文只当资料，分类出的“指令”不算主人授权 */
 const SLASH_REST_VERSION = "slash-v1";
 
@@ -999,7 +1004,9 @@ function toolEnvOf(intake: IntakeRow): ToolEnv {
 async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: IntakeItemRow[], router: RouteCall | null, guard: () => "ok" | "cancel" | "fenced"): Promise<{ rest: string; routed: boolean } | "cancel" | "fenced"> {
   const db = getDb();
   const saved = db.prepare(`SELECT content_text, extractor_version FROM extracted_documents WHERE intake_id = ? AND source_kind = 'owner-rest'`).get(intake.id) as { content_text: string; extractor_version: string } | undefined;
-  if (saved) return { rest: saved.content_text, routed: saved.extractor_version === ROUTED_REST_VERSION || saved.extractor_version === SLASH_REST_VERSION };
+  const retryRouting = saved?.extractor_version === ROUTE_RETRY_VERSION;
+  if (saved && !retryRouting) return { rest: saved.content_text, routed: saved.extractor_version === ROUTED_REST_VERSION || saved.extractor_version === SLASH_REST_VERSION };
+  if (retryRouting) textRest = saved!.content_text;
   let rest = textRest;
   const directive = parseAgentText(intake.text);
   // Explicit modes are deterministic and never fall back to creating a task when malformed.
@@ -1063,7 +1070,7 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
     return { rest, routed: true };
   }
   // 已有事项说明这份投递在引入指令解析之前就处理过：不回头重解析
-  const fresh = Boolean(textRest.trim()) && !items.some((i) => i.kind !== "timetable");
+  const fresh = Boolean(textRest.trim()) && (retryRouting || !items.some((i) => i.kind !== "timetable"));
   const fastItems: Array<{ key: string; excerpt: string; intents: Intent[]; arrangeTimed?: "range" | "start" }> = [];
   if (fresh) {
     // 已有的非课程固定活动名给解析器作提示：只有话里点到名字才当成对它的修改
@@ -1100,7 +1107,7 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
     }
     if (groups.length) {
       rest = [parsed.rest, ...kept].filter(Boolean).join("\n");
-      groups.forEach((g, n) => fastItems.push({ key: `cmd-${n + 1}`, excerpt: g.clauses.join("，"), intents: g.intents, ...(g.arrangeTimed ? { arrangeTimed: g.arrangeTimed } : {}) }));
+      groups.forEach((g, n) => fastItems.push({ key: `${retryRouting ? `retry-${crypto.createHash("sha256").update(textRest).digest("hex").slice(0, 12)}-` : ""}cmd-${n + 1}`, excerpt: g.clauses.join("，"), intents: g.intents, ...(g.arrangeTimed ? { arrangeTimed: g.arrangeTimed } : {}) }));
     }
   }
   const hasAttachments = listAttachments(intake.id).length > 0;
@@ -1114,13 +1121,14 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
   if (fresh && router && !materialOnly && !bareReply) {
     const hints = fastItems.map((f) => ({ clause: f.excerpt, intents: f.intents }));
     const goal = intake.goalId ? getGoal(intake.goalId) : intake.conversationId ? recentGoalInConversation(intake.conversationId) : null;
-    const currentGoal = goal ? { objective: goal.objective.slice(0, 500), revision: goal.revision, state: goal.state, lastResult: goal.summary.lastResult?.slice(0, 1000) ?? null, scope: goal.summary.scope ?? null, constraints: listGoalConstraints(goal.id).map((c) => ({ value: c.value, excerpt: c.excerpt })) } : null;
-    route = await routeOwnerText(router, { text: textRest, env: toolEnvOf(intake), slot: intake.context.slot, hints, currentGoal, openQuestions: openQs.map((q) => ({ id: q.id, prompt: q.prompt.slice(0, 300), options: q.options ?? [] })) });
+    const currentGoal = goal ? { id: goal.id, previousDecision: goal.summary.lastDecision ? { rationale: goal.summary.lastDecision.rationale.slice(0, 500), intents: goal.summary.lastDecision.intents.slice(0, 6) } : null, objective: goal.objective.slice(0, 500), revision: goal.revision, state: goal.state, lastResult: goal.summary.lastResult?.slice(0, 1000) ?? null, scope: goal.summary.scope ?? null, constraints: listGoalConstraints(goal.id).map((c) => ({ value: c.value, excerpt: c.excerpt })) } : null;
+    route = await routeOwnerText(router, { text: textRest, env: toolEnvOf(intake), slot: intake.context.slot, hints, currentGoal, openQuestions: openQs.map((q) => ({ id: q.id, prompt: q.prompt.slice(0, 300), options: q.options ?? [], purpose: q.purpose, goalId: q.intakeId ? getIntake(q.intakeId)?.goalId ?? null : null })) });
     const g = guard();
     if (g !== "ok") return g;
   }
   const flexible = !route?.ok && !bareReply && isFlexibleAdjustment(rest.trim()) && !hasAttachments;
   return db.transaction(() => {
+    if (retryRouting) db.prepare("DELETE FROM extracted_documents WHERE intake_id=? AND source_kind='owner-rest' AND extractor_version=?").run(intake.id, ROUTE_RETRY_VERSION);
     let routed = false;
     if (bareReply) {
       createItem({ intakeId: intake.id, stableItemKey: "reply", kind: "command", payload: { summary: textRest.slice(0, 200), explicit: true, routedBy: "fast", reply: { questionId: null, text: textRest.trim() } }, evidence: { excerpt: textRest } });
@@ -1137,6 +1145,15 @@ async function ownerInstructionPass(intake: IntakeRow, textRest: string, items: 
       }
       if (flexible) {
         createItem({ intakeId: intake.id, stableItemKey: "owner-adjustment", kind: "command", payload: { summary: rest.slice(0, 200), explicit: true, needsDecision: true, decisionText: rest, routedBy: "fast" }, evidence: { excerpt: rest } });
+        rest = "";
+      }
+      // 路由没有理解成功，未认领的主人原话不是已经确认的资料。
+      // 不能再让分类器猜成 task/command 并写入；确定性假日仍可识别，其他原话保留错误供重试。
+      if (route && !route.ok && rest.trim()) {
+        if (!holidayPass(intake.id, rest, { kind: "owner", ref: "" })) {
+          const { item } = createItem({ intakeId: intake.id, stableItemKey: "route-failure", kind: "command", payload: { summary: rest.slice(0, 200), text: rest, retryable: true, routeFailure: true } });
+          updateItem(item.id, { state: "failed", evidence: { excerpt: rest, error: `这次没能理解你的要求（${route.reason}）；未识别的原话已保留，没有按任务或资料执行，可以稍后重试` } });
+        }
         rest = "";
       }
     }
@@ -1184,6 +1201,7 @@ function resolveReplyItem(intake: IntakeRow, item: IntakeItemRow): void {
       const chosen = optionIndex !== undefined ? `（${q.options![optionIndex]}）` : "";
       const summary = [`已作为对${label}的回答${chosen}，接着处理。`, r.note].filter(Boolean).join("\n");
       updateItem(item.id, { state: "applied", waitingQuestionId: null, payload: { ...item.payload, readOnly: true, answeredQuestionId: q.id, applied: { batchId: null, summary, noChange: true } } });
+      if (q.purpose !== "locate") retireReplyLocators(q, intake.id);
     } else if (r.kind === "unparseable") fail(`这句没能当作对${label}的回答：${r.hint}`);
     else fail(`${label}已经被回答或作废，这句没有执行；请看最新的问题再答`);
   };
@@ -1201,12 +1219,23 @@ function resolveReplyItem(intake: IntakeRow, item: IntakeItemRow): void {
     if (!q || q.status !== "open") return fail("要回答的那个问题已经被回答或作废，这句没有执行");
     return answerTo(q);
   }
-  const open = intake.conversationId ? openQuestionsInConversation(intake.conversationId, intake.id).filter((q) => q.purpose !== "locate") : [];
-  const named = reply.questionId ? open.find((q) => q.id === reply.questionId) : undefined;
-  if (named) return answerTo(named);
+  const allOpen = intake.conversationId ? openQuestionsInConversation(intake.conversationId, intake.id) : [];
+  // 模型明确指向的问题只能答它：读到问题后另一设备可能已经回答/作废，不能退回答仅剩的其他问题。
+  if (reply.questionId) {
+    // 显式 ID 不受最近问题列表的截断影响，但仍严格限制在当前对话且确实待答。
+    const named = getQuestion(reply.questionId);
+    if (!named || named.status !== "open" || named.conversationId !== intake.conversationId || named.intakeId === intake.id) return fail("要回答的那个问题已经被回答或作废，或不在这段对话里；这句没有执行，请看最新的问题再答");
+    return answerTo(named);
+  }
+  const t = reply.text.trim().replace(/[。！!.]$/, "");
+  const locators = allOpen.filter((q) => q.purpose === "locate");
+  const open = allOpen.filter((q) => q.purpose !== "locate");
+  // “这是回答哪一个”也是待答问题。后续“第二个/作为新的要求”先答它，由原定位事项携带原回答继续。
+  // 若主人直接说某个业务问题的独有选项，仍允许按该选项落位，避免定位卡挡住明确回答。
+  const businessOption = open.some((q) => (q.options ?? []).some((o) => o.trim() === t));
+  if (locators.length === 1 && (!businessOption || ORDINAL_ANSWER.test(t))) return answerTo(locators[0]!);
   if (!open.length) return fail("现在没有在等回答的问题，这句没有执行；如果是新的要求，请说得完整一点");
   if (open.length === 1) return answerTo(open[0]!);
-  const t = reply.text.trim().replace(/[。！!.]$/, "");
   // “可以/第一个”这类通用短答对哪个问题都说得通：多个问题在等时一律先定位；只有具体的选项原文才按唯一匹配落位
   const byOption = BARE_ANSWER.test(t) ? [] : open.filter((q) => (q.options ?? []).some((o) => o.trim() === t));
   if (byOption.length === 1) return answerTo(byOption[0]!);
@@ -1221,6 +1250,23 @@ function resolveReplyItem(intake: IntakeRow, item: IntakeItemRow): void {
     conversationId: intake.conversationId,
   });
   updateItem(item.id, { state: "awaiting_input", waitingQuestionId: question.id, payload: { ...item.payload, reply: { ...reply, locateKey: key, candidates: candidates.map((q) => q.id) } } });
+}
+
+/** 主人绕过定位卡，已经明确答了其中一个问题：收掉旧定位，不把旧“可以”再套到别的问题。 */
+function retireReplyLocators(answered: QuestionRow, replyIntakeId: string): void {
+  if (!answered.conversationId) return;
+  const rows = getDb().prepare(`SELECT id FROM clarification_questions WHERE conversation_id = ? AND purpose = 'locate' AND status = 'open'`).all(answered.conversationId) as Array<{ id: string }>;
+  for (const row of rows) {
+    const q = getQuestion(row.id)!;
+    if (q.intakeId === replyIntakeId || !q.intakeId || !q.itemId || !(q.context.candidates as string[] | undefined)?.includes(answered.id)) continue;
+    const original = getItem(q.itemId);
+    if (!original?.payload.reply || original.waitingQuestionId !== q.id) continue;
+    supersedeQuestion(q.id);
+    const summary = `你已经明确回答「${answered.prompt.slice(0, 60)}」；先前没有指明对象的回答已收起，不再套用到其他问题。`;
+    updateItem(original.id, { state: "applied", waitingQuestionId: null, payload: { ...original.payload, reply: null, readOnly: true, answeredQuestionId: answered.id, applied: { batchId: null, summary, noChange: true } } });
+    setIntakeStatus(q.intakeId, deriveIntakeStatus(listItems(q.intakeId)));
+    upsertAgentTurn({ conversationId: answered.conversationId, intakeId: q.intakeId, text: summary, refs: [], batchIds: [] });
+  }
 }
 
 /** 后台任务（复盘/探索/摘要）结束：引用了它的投递重新核验（只核验不修正），目标状态跟着刷新 */
@@ -1266,9 +1312,11 @@ function syncGoalFromIntake(intakeId: string): void {
   const replies = items.flatMap((i) => [...((i.payload.decisionReplies as Array<{ question: string; answer: string }> | undefined) ?? []), ...(((i.payload.routeAsk as { replies?: Array<{ question: string; answer: string }> } | null)?.replies) ?? [])]);
   const batches = (getDb().prepare(`SELECT id FROM agent_action_batches WHERE intake_id = ? AND status = 'applied' ORDER BY created_at, rowid`).all(intakeId) as Array<{ id: string }>).map((b) => b.id);
   const lastResult = items.map((i) => (i.payload.applied as { summary?: string } | undefined)?.summary ?? (i.state === "failed" ? `没有办成：${String(i.evidence?.error ?? "")}` : "")).filter(Boolean).join("\n").slice(0, 2000);
+  // A pending proposal is context for revision, not an executed result. Its state stays awaiting_confirmation.
+  const pendingDecision = decided?.payload.pendingDecision as AgentDecision | undefined;
   const summary: GoalSummary = {
     scope: (items.map((i) => i.payload.decisionScope as GoalSummary["scope"]).find(Boolean)) ?? prev.scope ?? null,
-    lastDecision: decided ? { rationale: String(decided.payload.decisionRationale).slice(0, 500), intents: (decided.payload.intents as unknown[] | undefined) ?? [] } : prev.lastDecision ?? null,
+    lastDecision: pendingDecision?.kind === "act" ? { rationale: pendingDecision.rationale.slice(0, 500), intents: pendingDecision.intents } : decided ? { rationale: String(decided.payload.decisionRationale).slice(0, 500), intents: (decided.payload.intents as unknown[] | undefined) ?? [] } : prev.lastDecision ?? null,
     lastResult: lastResult || prev.lastResult || null,
     constraints: [...new Set([...(prev.constraints ?? []), ...replies.map((r) => `${r.question.slice(0, 80)} → ${r.answer.slice(0, 80)}`)])].slice(-10),
     openQuestionIds: [...new Set([...waiting.map((q) => q.id), ...(verified?.checks ?? []).map((c) => c.questionId).filter((x): x is string => Boolean(x))])],
@@ -1283,6 +1331,19 @@ function attachGoal(intake: IntakeRow, continues: boolean): void {
   if (getIntake(intake.id)?.goalId || intake.channel === "source") return;
   const previous = intake.conversationId ? recentGoalInConversation(intake.conversationId) : null;
   if (continues && previous) {
+    // 新投递修订一个待确认的纯AI策略提案：从原事项的服务端来源标记继承提案能力。
+    // 不从模型摘要/工具资料推断授权，已完成策略或普通排程不会因此获得额度修改能力。
+    if (previous.state === "awaiting_confirmation") {
+      const origins = getDb().prepare("SELECT id FROM intakes WHERE goal_id=? AND goal_revision=?").all(previous.id, previous.revision) as Array<{ id: string }>;
+      const pendingPolicy = origins.some((origin) => listItems(origin.id).some((old) => {
+        const proposal = old.payload.pendingDecision as AgentDecision | undefined;
+        return old.state === "awaiting_input" && old.payload.explicit === true && old.payload.ownerPolicyProposal === true
+          && proposal?.kind === "act" && proposal.intents.length > 0 && proposal.intents.every((intent) => intent.op === "agent_policy");
+      }));
+      if (pendingPolicy) for (const item of listItems(intake.id)) {
+        if (item.payload.explicit === true && item.payload.needsDecision === true) updateItem(item.id, { payload: { ...item.payload, ownerPolicyProposal: true } });
+      }
+    }
     reviseGoal(previous.id, { intakeId: intake.id, cause: "revise", ownerText: intake.text });
     return;
   }
@@ -1345,12 +1406,12 @@ function applyRouteOutcome(intake: IntakeRow, item: IntakeItemRow, it: RoutedIte
   } else if (outcome.kind === "act") {
     const corroborated = corroboratedByRules(outcome.intents, hints);
     const constraints = acceptOnItem({ ...item, payload: base }, outcome.constraints, intake.referenceDate);
-    updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, ...constraints, intents: outcome.intents, inferred: !isReadOnlyAct(outcome) && !corroborated, ...(corroborated ? { ruleCorroborated: true } : {}), decisionRationale: outcome.rationale } });
+    updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, ...constraints, intents: outcome.intents, ownerPolicyProposal: item.payload.explicit !== false && outcome.intents.some((i) => i.op === "agent_policy"), inferred: !isReadOnlyAct(outcome) && !corroborated, ...(corroborated ? { ruleCorroborated: true } : {}), decisionRationale: outcome.rationale } });
   } else if (outcome.kind === "reply") {
     updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, reply: { questionId: outcome.questionId, text: String(item.evidence?.excerpt ?? it.evidence.excerpt) } } });
   } else if (outcome.kind === "decide") {
     const constraints = acceptOnItem({ ...item, payload: base }, outcome.constraints, intake.referenceDate);
-    updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, ...constraints, needsDecision: true, decisionText: [String(item.evidence?.excerpt ?? it.evidence.excerpt), ...replies.map((r) => r.answer)].join("\n"), objective: outcome.objective, decisionRationale: outcome.rationale, decisionReplies: [] } });
+    updateItem(item.id, { state: "extracted", waitingQuestionId: null, payload: { ...base, ...constraints, sourceDateExclusions: sourceDateExclusions(outcome.sourceDates, String(item.evidence?.excerpt ?? it.evidence.excerpt), intake.referenceDate), needsDecision: true, decisionText: [String(item.evidence?.excerpt ?? it.evidence.excerpt), ...replies.map((r) => r.answer)].join("\n"), objective: outcome.objective, decisionRationale: outcome.rationale, decisionReplies: [] } });
   } else {
     if (replies.length >= 3) {
       updateItem(item.id, { state: "failed", waitingQuestionId: null, payload: base, evidence: { ...item.evidence, error: "经过三轮追问仍不清楚要做什么；原话和回答已保留，没有修改任何数据" } });
@@ -1387,6 +1448,7 @@ function bindEnvFor(intake: IntakeRow, itemId: string | null, now: Date, item?: 
     seen: (item?.payload.seenRefs as EntityRef[] | undefined) ?? [],
     stepRefs: item ? stepRefsFor(intake.id, item) : undefined,
     observations: (item?.payload.observations as Array<{ id: string; label: string }> | undefined) ?? [],
+    ownerPolicyProposal: item?.payload.explicit !== false && item?.payload.ownerPolicyProposal === true,
   };
 }
 
@@ -1458,8 +1520,9 @@ function gateContextFor(intake: IntakeRow, item: IntakeItemRow, opts: { skipInhe
   const live = getIntake(intake.id) ?? intake;
   // 主人说明过是截止日的那一天：按它读出的“只涉及那一天”不是这件事的范围，不记到目标上
   const choice = item.payload.scopeChoice as ScopeChoice | null | undefined;
-  const notScope = choice?.mode === "deadline" ? [choice.date] : [];
-  const isNotScope = (s: { dateFrom: string; dateTo: string }) => notScope.includes(s.dateFrom) && s.dateFrom === s.dateTo;
+  const notScope = [...((item.payload.sourceDateExclusions as string[] | undefined) ?? []), ...(choice?.mode === "deadline" ? [choice.date] : [])];
+  // 来源日提示只改变原话的日期推断，不撤销主人明确的 date_scope；只有已回答的截止歧义可排除该约束。
+  const isNotScope = (s: { dateFrom: string; dateTo: string }) => choice?.mode === "deadline" && s.dateFrom === choice.date && s.dateFrom === s.dateTo;
   const own = ((item.payload.constraints as AcceptedConstraint[] | undefined) ?? []).filter((c) => !(c.value.kind === "date_scope" && isNotScope(c.value)));
   const goal = live.goalId ? getGoal(live.goalId) : null;
   let values = own.map((a) => a.value);
@@ -1670,7 +1733,7 @@ function resolveCommandItem(intake: IntakeRow, item: IntakeItemRow, env: BindEnv
     updateItem(item.id, { state: "applied", waitingQuestionId: null, payload: { ...item.payload, readOnly: true, readLinks: bound.links ?? [], applied: { batchId: null, summary: bound.text, noChange: true } } });
   } else if (bound.kind === "run") {
     // 预检查：授权在绑定时就判断，拒绝的不进入执行，需确认的先停在这一步（依赖它的步骤一起等）
-    const auth = authorizeCommand(bound.command as Record<string, unknown> & { command: string }, { origin: item.payload.explicit === false ? "material" : item.payload.inferred === true ? "inferred" : "owner", confirmed: item.payload.confirmed === true });
+    const auth = authorizeCommand(bound.command as Record<string, unknown> & { command: string }, { origin: item.payload.explicit === false ? "material" : item.payload.inferred === true ? "inferred" : "owner", confirmed: item.payload.confirmed === true, ownerPolicyProposal: item.payload.explicit !== false && item.payload.ownerPolicyProposal === true });
     if (auth.kind === "deny") {
       updateItem(item.id, { state: "failed", waitingQuestionId: null, evidence: { ...item.evidence, error: auth.reason, code: "NOT_AUTHORIZED", retryable: false } });
       return;
@@ -1734,7 +1797,7 @@ function applyCommandItem(intake: IntakeRow, item: IntakeItemRow, now: Date): { 
   const gate = item.payload.gate as { notes?: string[]; frozenDates?: string[]; frozenTaskIds?: string[]; key?: string } | undefined;
   const outcome = executeOperation(
     command,
-    { intakeId: intake.id, itemId: item.id, itemKey: item.stableItemKey, instanceEpoch: intake.instanceEpoch, evidence: (item.evidence?.excerpt as string) ?? "", explicit: item.payload.explicit !== false, inferred: item.payload.inferred === true, confirmed: item.payload.confirmed === true, conversationId: intake.conversationId, now, expectedFacts: (item.payload.expectedFacts as string | null | undefined) ?? null },
+    { intakeId: intake.id, itemId: item.id, itemKey: item.stableItemKey, instanceEpoch: intake.instanceEpoch, evidence: (item.evidence?.excerpt as string) ?? "", explicit: item.payload.explicit !== false, inferred: item.payload.inferred === true, confirmed: item.payload.confirmed === true, ownerPolicyProposal: item.payload.explicit !== false && item.payload.ownerPolicyProposal === true, conversationId: intake.conversationId, now, expectedFacts: (item.payload.expectedFacts as string | null | undefined) ?? null },
     { replanDates: (item.payload.replanDates as string[] | undefined) ?? [], frozenDates: gate?.frozenDates ?? [], frozenTaskIds: gate?.frozenTaskIds ?? [] },
   );
   const view = operationResultView(String(command.command), outcome);
@@ -2048,6 +2111,12 @@ export function retryIntake(intakeId: string, expectedVersion: number): RetryRes
       if (intake.version !== expectedVersion) return { kind: "stale" };
       const failed = listItems(intakeId).filter((i) => i.state === "failed" && i.payload.retryable);
       if (!failed.length) return { kind: "nothing" };
+      const routeFailures = failed.filter((f) => f.payload.routeFailure === true);
+      if (routeFailures.length) {
+        // 正式重试仍受同一投递的持久预算；成功事项、步骤记录和外部效果均保留。
+        getDb().prepare("DELETE FROM extracted_documents WHERE intake_id=? AND source_kind IN ('owner-rest','owner-route')").run(intakeId);
+        createExtractedDocument({ intakeId, sourceKind: "owner-rest", extractorVersion: ROUTE_RETRY_VERSION, contentText: routeFailures.map((f) => String(f.payload.text ?? f.evidence?.excerpt ?? "")).join("\n") });
+      }
       for (const f of failed) deleteItem(f.id);
       setIntakeStatus(intakeId, "processing");
       createJob({
@@ -2099,7 +2168,8 @@ export type SubmitAnswerResult =
  */
 export function submitAnswer(input: { questionId: string; expectedVersion: number; text: string; optionIndex?: number; now?: Date; recordTurn?: boolean }): SubmitAnswerResult {
   const question = getQuestion(input.questionId);
-  if (!question) return { kind: "not_open" };
+  if (!question || question.status !== "open") return { kind: "not_open" };
+  if (question.version !== input.expectedVersion) return { kind: "stale" };
   const tz = instanceTimezone();
   const now = input.now ?? nowDate();
   const referenceDate = localDateInTz(now, tz);
@@ -2187,5 +2257,8 @@ export function submitAnswer(input: { questionId: string; expectedVersion: numbe
       appendTurn({ conversationId: question.conversationId, role: "agent", questionId: question.id, text: summary, batchIds });
     }
   }
+  // 卡片与自然语言共用回答结果：直接答清后，旧的“是在回答哪个”也已经没有继续定位的意义。
+  // 自然语言调用者在它的回复项事务中清理，卡片调用则随 HTTP 幂等事务一起提交。
+  if (question.purpose !== "locate" && input.recordTurn !== false) retireReplyLocators(question, question.intakeId ?? "");
   return { kind: "answered", question: getQuestion(input.questionId)!, results, note };
 }

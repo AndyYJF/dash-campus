@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api, ApiError, newIdempotencyKey } from "./api";
 import { DASH_COMPOSE, emitChanged, useDashRefresh, type ComposeDetail } from "./dashBus";
@@ -32,6 +32,8 @@ type Result = {
   goal?: { id: string; revision: number; current: boolean; state: string; objective: string; constraints?: string[] } | null;
   verification?: { status: "verified" | "partial" | "needs_action" | "blocked" | "pending"; label: string; checks: Array<{ kind: string; ok: boolean | null; subject: string; detail: string }>; repairs: Array<{ reason: string; steps: string[] }> } | null;
 };
+type ChatTurn = { id: string; seq: number; role: "owner" | "agent"; text: string; intakeId: string | null; questionId: string | null; createdAt: string; result: Result | null; replyTo?: { prompt: string; intakeId: string | null } | null; replyResult?: Result | null };
+type Conversation = { conversationId: string | null; turns: ChatTurn[]; nextBeforeSeq: number | null };
 type GoalRef = { id: string; revision: number; objective: string };
 type OpenGoal = { id: string; revision: number; objective: string; state: string; lastResult: string | null };
 
@@ -82,7 +84,7 @@ function csrf(): string {
   }
 }
 
-export default function UniversalIntake() {
+export default function UniversalIntake({ fullPage = false }: { fullPage?: boolean }) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [context, setContext] = useState<ComposeDetail | null>(null);
@@ -91,11 +93,17 @@ export default function UniversalIntake() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<Result[]>([]);
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [turns, setTurns] = useState<ChatTurn[]>([]);
+  const [beforeSeq, setBeforeSeq] = useState<number | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const conversationRef = useRef<string | null>(null);
+  const loadEpoch = useRef(0);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
+  const olderOffset = useRef<{ height: number; top: number } | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [expanded, setExpanded] = useState(false);
-  // 焦点在栏内（点进输入框或栏里的按钮）：细条展开成完整输入
-  const [focused, setFocused] = useState(false);
   const rootRef = useRef<HTMLElement>(null);
   const [showCommands, setShowCommands] = useState(false);
   const [feedback, setFeedback] = useState("");
@@ -104,7 +112,6 @@ export default function UniversalIntake() {
   const draftRef = useRef<Draft>({ text: "", files: [], context: null });
   const lastAttempt = useRef<{ value: string; contextJson: string; files: File[] } | null>(null);
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  const [showHistory, setShowHistory] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [wrong, setWrong] = useState<{ intakeId: string; verdict: Verdict; text: string; key: string } | null>(null);
   const [wrongSent, setWrongSent] = useState<Record<string, boolean>>({});
@@ -113,18 +120,29 @@ export default function UniversalIntake() {
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (): Promise<Result[]> => {
-    const [page, q, goals] = await Promise.all([
+    const epoch = ++loadEpoch.current;
+    const [page, q, goals, conversation] = await Promise.all([
       api<{ intakes: Result[]; nextCursor: string | null }>("/api/v2/intakes?limit=6").catch(() => null),
       api<{ questions: Question[] }>("/api/v2/questions").catch(() => null),
       api<{ goals: OpenGoal[] }>("/api/v2/goals?limit=5").catch(() => null),
+      api<Conversation>("/api/v2/conversations/current?limit=30").catch(() => null),
     ]);
-    if (page) {
-      setResults(page.intakes);
-      setNextCursor(page.nextCursor);
+    if (epoch !== loadEpoch.current) return page?.intakes ?? [];
+    if (page) setResults(page.intakes);
+    setLoadError(!conversation);
+    if (conversation) {
+      const same = conversation.conversationId === conversationRef.current;
+      conversationRef.current = conversation.conversationId;
+      if (!same) { stickToBottom.current = true; olderOffset.current = null; }
+      setTurns((current) => same
+        ? [...current.filter((t) => !conversation.turns.some((n) => n.id === t.id)), ...conversation.turns].sort((a, b) => a.seq - b.seq)
+        : conversation.turns);
+      if (!same) setBeforeSeq(conversation.nextBeforeSeq);
+      else setBeforeSeq((current) => current === null ? null : Math.min(current, conversation.nextBeforeSeq ?? current));
     }
     if (q) setQuestions(q.questions.map((x) => ({ ...x, options: x.options ?? [] })));
     if (goals) setOpenGoals(goals.goals.filter((g) => g.state !== "cancelled"));
-    return page?.intakes ?? [];
+    return [...(page?.intakes ?? []), ...(conversation?.turns.flatMap((t) => [t.result, t.replyResult].filter((r): r is Result => Boolean(r))) ?? [])];
   }, []);
 
   useEffect(() => {
@@ -132,9 +150,25 @@ export default function UniversalIntake() {
     return () => clearTimeout(timer);
   }, [load]);
   useDashRefresh(load);
+  const isOpen = fullPage || expanded;
+  useLayoutEffect(() => {
+    const el = transcriptRef.current;
+    if (!el || !isOpen) return;
+    if (olderOffset.current) {
+      el.scrollTop = olderOffset.current.top + el.scrollHeight - olderOffset.current.height;
+      olderOffset.current = null;
+    } else if (stickToBottom.current) el.scrollTop = el.scrollHeight;
+  }, [turns, results, isOpen]);
+  useEffect(() => {
+    const el = transcriptRef.current;
+    if (!el || !isOpen) return;
+    const observer = new ResizeObserver(() => { if (stickToBottom.current) el.scrollTop = el.scrollHeight; });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [isOpen]);
 
   // 还有处理中的投递就每 2 秒看一次，落定即停并通知各页刷新
-  const hasActive = results.some((r) => ACTIVE.has(r.state));
+  const hasActive = results.some((r) => ACTIVE.has(r.state)) || turns.some((t) => [t.result, t.replyResult].some((r) => r && ACTIVE.has(r.state)));
   useEffect(() => {
     if (!hasActive) return;
     const timer = setInterval(async () => {
@@ -148,7 +182,7 @@ export default function UniversalIntake() {
   }, [hasActive, load]);
 
   // 后台任务（复盘、探索、邮件）可能要几分钟：放慢到 15 秒看一次，终态核验回来就停
-  const hasBackground = !hasActive && results.some((r) => r.state === "in_background");
+  const hasBackground = !hasActive && (results.some((r) => r.state === "in_background") || turns.some((t) => [t.result, t.replyResult].some((r) => r?.state === "in_background")));
   useEffect(() => {
     if (!hasBackground) return;
     const timer = setInterval(async () => {
@@ -179,28 +213,19 @@ export default function UniversalIntake() {
         setFeedback("");
         setShowCommands(false);
       }
-      if (detail.question) setExpanded(true);
-      setFocused(true);
+      setExpanded(true);
+      stickToBottom.current = true;
       boxRef.current?.focus();
     };
     const shortcut = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); boxRef.current?.focus(); }
-      if (e.key === "Escape") { setShowCommands(false); setExpanded(false); setFocused(false); boxRef.current?.blur(); }
-    };
-    // 点到或聚焦到栏外：收回细条（还有没发出去的内容时输入区仍保留）。按“外面”判断而不是 blur，
-    // 这样点栏里的按钮不会先把栏收掉。
-    const outside = (e: Event) => {
-      if (rootRef.current && e.target instanceof Node && !rootRef.current.contains(e.target)) { setFocused(false); setExpanded(false); setShowCommands(false); }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setExpanded(true); boxRef.current?.focus(); }
+      if (e.key === "Escape") { setShowCommands(false); setExpanded(false); boxRef.current?.blur(); }
     };
     window.addEventListener(DASH_COMPOSE, onCompose);
     window.addEventListener("keydown", shortcut);
-    document.addEventListener("pointerdown", outside);
-    document.addEventListener("focusin", outside);
     return () => {
       window.removeEventListener(DASH_COMPOSE, onCompose);
       window.removeEventListener("keydown", shortcut);
-      document.removeEventListener("pointerdown", outside);
-      document.removeEventListener("focusin", outside);
     };
   }, []);
 
@@ -253,8 +278,9 @@ export default function UniversalIntake() {
       if (!res.ok) throw new ApiError(res.status, "FAILED", body?.error?.message ?? `提交失败（${res.status}），内容保留在输入框`);
       idemKey.current = newIdempotencyKey();
       lastAttempt.current = null;
-      setFeedback(body?.answered ? [...(body.results ?? []).map((r) => r.error?.message ?? r.summary), body.note].filter(Boolean).join("\n") || "回答已收到" : "已收到，正在处理；结果会显示在这里。");
+      setFeedback(body?.answered ? [...(body.results ?? []).map((r) => r.error?.message ?? r.summary), body.note].filter(Boolean).join("\n") : "");
       setExpanded(true);
+      stickToBottom.current = true;
       setShowCommands(false);
       setText("");
       setFiles([]);
@@ -297,11 +323,19 @@ export default function UniversalIntake() {
   }
 
   async function more() {
-    if (!nextCursor) return;
-    const page = await api<{ intakes: Result[]; nextCursor: string | null }>(`/api/v2/intakes?limit=10&cursor=${encodeURIComponent(nextCursor)}`).catch(() => null);
-    if (!page) return;
-    setResults((cur) => [...cur, ...page.intakes.filter((x) => !cur.some((c) => c.intakeId === x.intakeId))]);
-    setNextCursor(page.nextCursor);
+    const id = conversationRef.current;
+    if (!id || beforeSeq === null || historyBusy) return;
+    setHistoryBusy(true);
+    try {
+      const page = await api<Conversation>(`/api/v2/conversations/${id}?limit=30&beforeSeq=${beforeSeq}`);
+      if (conversationRef.current !== id) return;
+      const el = transcriptRef.current;
+      if (el) olderOffset.current = { height: el.scrollHeight, top: el.scrollTop };
+      stickToBottom.current = false;
+      setTurns((current) => [...page.turns.filter((t) => !current.some((c) => c.id === t.id)), ...current].sort((a, b) => a.seq - b.seq));
+      setBeforeSeq(page.nextBeforeSeq);
+    } catch { setError("更早的消息暂时没加载出来，可以重试。"); }
+    finally { setHistoryBusy(false); }
   }
 
   function answerInBar(q: Question, value = "") {
@@ -324,80 +358,30 @@ export default function UniversalIntake() {
   const commandQuery = /^\/[^\s]*$/.test(text) ? text : null;
   const visibleCommands = AGENT_COMMANDS.filter((c) => !commandQuery || c.token.includes(commandQuery));
   const paletteOpen = showCommands || commandQuery !== null;
-  const shown = showHistory ? results : results.slice(0, 1);
   const canSend = (text.trim().length > 0 || files.length > 0) && !busy;
-  // 细条什么时候展开：正在用（聚焦/看对话/选指令），或还有没发出去的东西、要看的提示
-  const isOpen = focused || expanded || paletteOpen || busy || text.length > 0 || files.length > 0 || Boolean(context?.label) || Boolean(goal) || Boolean(error) || Boolean(savedDraft);
   const latest = results[0];
   const badge = hasActive ? "处理中…" : questions.length ? `${questions.length} 个待回答` : latest && latest.state === "failed" ? "上一条没有办成" : null;
 
-  return (
-    <section
-      ref={rootRef}
-      className={`${styles.intake}${dragging ? ` ${styles.dragging}` : ""}`}
-      data-open={isOpen ? "true" : "false"}
-      aria-label="统一 Agent 输入"
-      id="intake"
-      onFocusCapture={() => setFocused(true)}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDragging(false);
-        setFocused(true);
-        if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
-      }}
-    >
-      {isOpen && (
-        <div className={styles.dockHead}>
-          <strong>Agent</strong>
-          <span className={styles.dockStatus}>{hasActive ? "处理中…" : "直接说，或用 / 指令"}</span>
-          <button type="button" className={styles.headButton} onClick={() => setShowCommands((v) => !v)} aria-expanded={paletteOpen}>/ 指令</button>
-          <button type="button" className={styles.headButton} onClick={() => setExpanded((v) => !v)} aria-expanded={expanded} aria-label={expanded ? "收起 Agent 对话" : "展开 Agent 对话"}>{expanded ? "收起对话" : questions.length ? `${questions.length} 个待回答` : "对话 / 历史"}</button>
-          <button type="button" className={styles.headClose} onClick={() => { setFocused(false); setExpanded(false); setShowCommands(false); boxRef.current?.blur(); }} aria-label="收起 Agent 栏">
-            收起
-          </button>
-        </div>
-      )}
-      {isOpen && expanded && <div className={styles.transcript} aria-label="Agent 对话与结果">
-      {questions.length > 0 && (
-        <div className={styles.questions}>
-          {questions.map((q) => (
-            <div key={q.id} className={styles.question}>
-              <p className={styles.prompt}>{q.prompt}</p>
-              {q.reason && <p className={styles.reason}>为什么问：{q.reason}</p>}
-              {q.options.length > 0 && (
-                <div className={styles.options}>
-                  {q.options.map((o) => (
-                    <button key={o} type="button" className={styles.option} onClick={() => answerInBar(q, o)}>
-                      {o}
-                    </button>
-                  ))}
-                </div>
-              )}
-              <button type="button" className={styles.linkBtn} onClick={() => answerInBar(q)}>在统一栏回答…</button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {shown.length > 0 && (
-        <ul className={styles.results}>
-          {shown.map((r) => (
-            <li key={r.intakeId} className={styles.result} data-state={r.state}>
+  const renderQuestion = (q: Question) => (
+    <div key={q.id} className={styles.question}>
+      <p className={styles.prompt}>{q.prompt}</p>
+      {q.reason && <p className={styles.reason}>{q.reason}</p>}
+      <div className={styles.options}>
+        {q.options.map((o, i) => <button key={i} type="button" className={styles.option} onClick={() => answerInBar(q, o)}>{o}</button>)}
+      </div>
+      <button type="button" className={styles.linkBtn} onClick={() => answerInBar(q)}>用自己的话回答</button>
+    </div>
+  );
+  const renderReply = (r: Result) => (
+            <div className={styles.result} data-state={r.state}>
               <div className={styles.resultHead}>
                 <span className={styles.status} data-state={r.state}>
                   {STATE_LABEL[r.state]}
                 </span>
-                <span className={styles.said}>{r.text || "（文件）"}</span>
-                <span className={styles.when}>{timeLabel(r.createdAt)}</span>
               </div>
               {r.state === "working" && <p className={styles.when}>正在理解你的话，必要时先查相关安排与记录</p>}
               {!ACTIVE.has(r.state) && <p className={styles.summary}>{r.summary}</p>}
-              {!ACTIVE.has(r.state) && understandingLine(r.understanding) && <p className={styles.when}>{understandingLine(r.understanding)}</p>}
+              {r.questions.filter((q) => questions.some((current) => current.id === q.id)).map(renderQuestion)}
               {r.followUps.map((f) => (
                 <p key={f.summary} className={styles.followUp} data-state={f.state}>
                   {f.summary}
@@ -458,6 +442,11 @@ export default function UniversalIntake() {
                   <p className={styles.when}>只记录这次理解供改进，不会改动任何安排</p>
                 </div>
               )}
+              {(understandingLine(r.understanding) || Boolean(r.verification?.checks.length)) && <details className={styles.explanation}>
+                <summary>处理依据与核对</summary>
+                {understandingLine(r.understanding) && <p className={styles.when}>{understandingLine(r.understanding)}</p>}
+                {r.verification?.checks.map((c, i) => <p key={i} className={styles.when}>{c.subject}：{c.detail}</p>)}
+              </details>}
               {open[r.intakeId] && (
                 <ul className={styles.changes}>
                   {r.changes.map((c, i) => (
@@ -467,38 +456,71 @@ export default function UniversalIntake() {
                   ))}
                 </ul>
               )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {results.length > 1 && (
-        <div className={styles.historyBar}>
-          <button type="button" className={styles.linkBtn} onClick={() => setShowHistory((v) => !v)} aria-expanded={showHistory}>
-            {showHistory ? "收起历史" : `历史（${results.length}${nextCursor ? "+" : ""}）`}
-          </button>
-          {showHistory && nextCursor && (
-            <button type="button" className={styles.linkBtn} onClick={more}>
-              更早的
-            </button>
-          )}
-      {openGoals.length > 0 && (
-        <div className={styles.recover} aria-label="最近的目标">
-          <span>最近的目标</span>
-          {openGoals.map((g) => (
-            <button
-              key={g.id}
-              type="button"
-              className={styles.linkBtn}
-              title={g.lastResult ?? g.objective}
-              onClick={() => { setGoal({ id: g.id, revision: g.revision, objective: g.objective }); boxRef.current?.focus(); }}
-            >
-              继续：{g.objective}
-            </button>
-          ))}
-        </div>
-      )}
-        </div>
-      )}
+            </div>
+  );
+  const visibleQuestionIds = new Set(turns.flatMap((t) => [...(t.result?.questions ?? []), ...(t.replyResult?.questions ?? [])].map((q) => q.id)));
+  const otherQuestions = questions.filter((q) => !visibleQuestionIds.has(q.id));
+  const pending = [...results].reverse().filter((r) => ACTIVE.has(r.state) && !turns.some((t) => t.role === "agent" && t.intakeId === r.intakeId));
+
+  return (
+    <section
+      ref={rootRef}
+      className={`${styles.intake}${dragging ? ` ${styles.dragging}` : ""}`}
+      data-open={isOpen ? "true" : "false"}
+      data-mode={fullPage ? "page" : "dock"}
+      aria-label="Agent 对话"
+      id="intake"
+      onFocusCapture={() => setExpanded(true)}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        setExpanded(true);
+        if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+      }}
+    >
+      {isOpen && <div className={styles.dockHead}>
+        <div className={styles.chatTitle}><strong>Agent 对话</strong><span>{hasActive ? "正在处理…" : "学习、计划和探索，都可以直接聊"}</span></div>
+        {!fullPage && <Link href="/chat" className={styles.headButton}>打开对话页</Link>}
+        {fullPage ? <Link href="/today" className={styles.headButton}>返回工作台</Link> : <button type="button" className={styles.headClose} onClick={() => { setExpanded(false); setShowCommands(false); boxRef.current?.blur(); }} aria-label="收起 Agent 对话">收起</button>}
+      </div>}
+      {isOpen && <div ref={transcriptRef} className={styles.transcript} role="log" aria-label="对话消息" aria-live="polite" onScroll={(e) => {
+        const el = e.currentTarget;
+        stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      }}>
+        {loadError && <div className={styles.loadError} role="status">暂时无法读取对话，已显示的消息和草稿还在。<button type="button" className={styles.linkBtn} onClick={() => void load()}>重试</button></div>}
+        {beforeSeq !== null && <button type="button" className={styles.historyLoad} disabled={historyBusy} onClick={() => void more()}>{historyBusy ? "正在加载…" : "查看更早的消息"}</button>}
+        {!turns.length && !pending.length && !loadError && <div className={styles.empty}>
+          <h2>今天想聊什么？</h2><p>把想法、课表或卡住的事发过来，我们一起理清下一步。</p>
+          <div className={styles.starters}>
+            <button type="button" onClick={() => { setText("今天的课程和学习安排是什么？"); boxRef.current?.focus(); }}>看看今天的安排</button>
+            <button type="button" onClick={() => { setText("帮我规划这周的学习，先问清楚我的情况"); boxRef.current?.focus(); }}>一起规划这周</button>
+            <button type="button" onClick={() => fileRef.current?.click()}>导入课表或资料</button>
+          </div>
+        </div>}
+        {turns.map((t) => {
+          const firstReply = t.role === "agent" && t.intakeId ? turns.find((n) => n.seq > t.seq && n.replyTo?.intakeId === t.intakeId) : null;
+          const laterReply = t.replyTo?.intakeId ? turns.find((n) => n.seq > t.seq && n.replyTo?.intakeId === t.replyTo!.intakeId) : null;
+          return <div key={t.id}>
+            <div className={t.role === "owner" ? styles.userMessage : styles.agentMessage} data-role={t.role}>
+              <div className={styles.messageMeta}>{t.role === "owner" ? "你" : "Agent"}<time dateTime={t.createdAt}>{timeLabel(t.createdAt)}</time></div>
+              {firstReply ? <p className={styles.messageText}>{firstReply.replyTo!.prompt}</p> : t.role === "agent" && t.result ? renderReply(t.result) : <p className={styles.messageText}>{t.text || "已上传文件"}</p>}
+            </div>
+            {t.replyResult && <div className={styles.agentMessage} data-role="agent"><div className={styles.messageMeta}>Agent</div>{laterReply ? <p className={styles.messageText}>{laterReply.replyTo!.prompt}</p> : renderReply(t.replyResult)}</div>}
+          </div>;
+        })}
+        {pending.map((r) => <div key={`pending-${r.intakeId}`} className={styles.agentMessage} data-role="agent">
+          {!turns.some((t) => t.role === "owner" && t.intakeId === r.intakeId) && <p className={styles.messageText}>{r.text || "已上传文件"}</p>}
+          <div className={styles.messageMeta}>Agent</div><p className={styles.thinking} role="status">正在理解和处理，需要补充信息时会问你…</p>
+        </div>)}
+        {otherQuestions.length > 0 && <div className={styles.agentMessage}><div className={styles.messageMeta}>还有待回答的事</div>{otherQuestions.map(renderQuestion)}</div>}
+        {openGoals.length > 0 && <details className={styles.previousGoals}><summary>继续以前的目标</summary>
+          {openGoals.map((g) => <button key={g.id} type="button" className={styles.linkBtn} onClick={() => { setGoal({ id: g.id, revision: g.revision, objective: g.objective }); boxRef.current?.focus(); }}>继续：{g.objective}</button>)}
+        </details>}
       </div>}
       {paletteOpen && <div className={styles.commands} aria-label="Agent 指令列表">
         {visibleCommands.map((c) => <button type="button" key={c.name} onClick={() => chooseCommand(c.name)} title={c.hint}><strong>{c.token}</strong><span>{c.label}</span></button>)}
@@ -539,28 +561,32 @@ export default function UniversalIntake() {
             }
           }}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit();
+            if (e.key === "Enter" && !e.nativeEvent.isComposing && (e.metaKey || e.ctrlKey || (!e.shiftKey && window.matchMedia("(pointer: fine)").matches))) {
+              e.preventDefault();
+              void submit();
+            }
           }}
-          placeholder={selectedCommand?.hint ?? (isOpen ? "直接说，或用 / 指令；可以粘贴截图、拖文件进来" : "说一句…")}
+          placeholder={selectedCommand?.hint ?? (context?.question ? "回答这个问题…" : "发消息，或粘贴图片、拖入文件…")}
           rows={text.includes("\n") || text.length > 80 ? 3 : 1}
           maxLength={100_000}
           aria-label="把材料或想法放进来"
         />
         {!isOpen && badge && (
-          <button type="button" className={styles.badge} data-kind={hasActive ? "working" : questions.length ? "question" : "failed"} onClick={() => { setExpanded(true); setFocused(true); }}>
+          <button type="button" className={styles.badge} data-kind={hasActive ? "working" : questions.length ? "question" : "failed"} onClick={() => { setExpanded(true); stickToBottom.current = true; }}>
             {badge}
           </button>
         )}
         <div className={styles.actions}>
           <input ref={fileRef} type="file" multiple accept={ACCEPT} className={styles.fileInput} onChange={(e) => e.target.files && addFiles(e.target.files)} aria-label="添加文件" />
           <button type="button" className={styles.attach} disabled={busy} onClick={() => fileRef.current?.click()}>
-            添加图片/文件
+            添加文件
           </button>
           <button type="button" className={styles.send} onClick={submit} disabled={!canSend}>
             {busy ? "提交中…" : "发送"}
           </button>
         </div>
       </div>
+      {isOpen && <div className={styles.composerHint}><button type="button" className={styles.linkBtn} onClick={() => setShowCommands((v) => !v)} aria-expanded={paletteOpen}>/ 快捷指令</button><span>Enter 发送 · Shift + Enter 换行</span></div>}
       {files.length > 0 && (
         <ul className={styles.files}>
           {files.map((f, i) => (

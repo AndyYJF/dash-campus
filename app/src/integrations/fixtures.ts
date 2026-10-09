@@ -55,6 +55,10 @@ type FixtureEvidence = { id: string; text: string };
 
 /** 按证据文本构造候选：只引用真实存在的片段；GPU/受限数据标 unknown（F7） */
 export function fixtureModelResponder(req: ModelRequest): ModelResult {
+  if (req.workflow === "ai_news_digest") {
+    const ctx=req.context as {sources:Array<{id:string;title:string;text:string}>};
+    return {ok:true,validatedResult:{stories:ctx.sources.filter(s=>s.text.length>=8).slice(0,4).map(s=>({title:`（演示）${s.title.slice(0,100)}`,category:"model",summary:s.text.slice(0,200),relevance:"（演示）仅验证资讯流程，不代表真实模型的分析结论。",uncertainty:"这是fixture结果，请勿作为真实新闻解读。",citations:[{sourceId:s.id,quote:s.text.slice(0,80)}]}))}};
+  }
   if (req.workflow === NOTICE_EXTRACTION_JOB_TYPE) {
     const {text} = req.context as {text: string};
     const quote = text.includes("本科生") ? "本科生" : text.includes("研究生") ? "研究生" : null;
@@ -186,4 +190,9 @@ function firstSentence(text: string): string {
   const m = text.match(/[^。.!?！？]+[。.!?！？]/g);
   const pick = m?.find((s) => /所需|需要|练习内容/.test(s)) ?? m?.[0] ?? text;
   return pick.trim().slice(0, 300);
+}
+
+/** 新闻演示数据：fake模式不访问真实订阅；显式注入来源的测试仍可核对真实解析。 */
+export function fixtureNewsSources(at: Date): import("@/contracts/ai-news").NewsSource[] {
+ return ["模型", "Agent", "科研", "应用"].map((name,i)=>({id:`fixture-news-${i}`,title:`（示例）${name}合成动态`,url:`https://example.org/fixture/news-${i}`,publisher:"合成示例",publishedAt:new Date(at.getTime()-3600000).toISOString(),retrievedAt:at.toISOString(),text:`这是${name}分类的合成示例资讯，仅用于本地验证，不是真实新闻。`,evidence:"feed"}));
 }

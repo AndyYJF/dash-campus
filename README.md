@@ -4,9 +4,9 @@
 
 **日常使用先看 [用户手册](app/docs/USER-MANUAL.md)**：从首次登录、导入课表到自然语言调整、计时记录、复盘和排错，按当前界面的实际操作讲解。
 
-**智能体接手先读 [START-HERE](app/docs/agent-first-v2/START-HERE.md) 和根 [AGENTS.md](AGENTS.md)。当前状态见 [STATUS](app/docs/STATUS.md)，产品取舍见 [决策记录](app/docs/decisions.md)。** 当前已发布业务版本为 `95c8cf1`、schema **29**；统一 Agent 输入栏、只读查询、模糊调整的事实判断与追问，以及按日历范围重排均已实现。文档提交可能晚于业务版本，不代表生产应用已升级到文档提交。
+**智能体接手先读根 [AGENTS.md](AGENTS.md) 和 [START-HERE](app/docs/agent-first-v2/START-HERE.md)。交付与最近部署记录统一见 [STATUS](app/docs/STATUS.md)，产品取舍见 [决策记录](app/docs/decisions.md)。** `app/AGENTS.md` 只补充应用规则，`app/CLAUDE.md` 是导入入口；普通 `CODING-AGENT.md` 不另构成一套目录规则。
 
-下一轮待实施方案：[模型优先路由、执行闭环与多轮对话](Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) v1.1，包含P0–P6工作包及G01–G12旅程。它是开发计划，不代表新增能力已上线。
+模型优先路由、执行核验、有限修正与多轮续办的 P0–P6 已实施；历史方案见 [Agent 增强 v1.1](Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md)，验证边界见 STATUS。当前方向页的阶段地图、工作样本与五个操作（D0/D1）已交付，F01–F03 已复验关闭；D2–D5 仍需完成。见 [方向计划](Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md) 与 [方向验收报告](Plan/dash-campus-DIRECTION-ACCEPTANCE-2026-10-05.md)。
 
 工作台已有课表可视化、共享预算与每日安排，校历、官方节假日和学校补课共同影响行动。继续开发应按当前状态补足真实服务与用户试用验证，不从旧P0重建，也不要把下面的历史审计缺口全部当成待实现。旧Todo只读保护是硬边界。
 

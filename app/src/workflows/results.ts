@@ -393,7 +393,7 @@ export function intakeResultView(intake: IntakeRow): IntakeResultView {
     text: intake.text.slice(0, 500),
     state,
     summary,
-    links: items.flatMap((i) => i.state === "applied" ? (i.payload.readLinks as Array<{ label: string; href: string }> | undefined) ?? [] : []).filter((l) => typeof l.label === "string" && ["/today", "/week", "/direction", "/settings"].includes(l.href)),
+    links: items.flatMap((i) => i.state === "applied" ? (i.payload.readLinks as Array<{ label: string; href: string }> | undefined) ?? [] : []).filter((l) => typeof l.label === "string" && ["/today", "/week", "/direction", "/settings", "/news"].includes(l.href)),
     items: itemViews,
     understanding,
     changes: changes.slice(0, 30),

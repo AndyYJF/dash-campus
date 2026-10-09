@@ -1,18 +1,12 @@
-# Coding Agent 开工指令
+# Coding Agent 历史建设说明
 
-当前接手补充（2026-10-04）：业务 `95c8cf1` 已验证部署，schema29；代码与文档已推送 `agentbox/dashcampus`。先读 [STATUS](../STATUS.md)、[decisions](../decisions.md)、[模糊调整的实现与证据](../flexible-adjustments-2026-10-04.md) 与 [START-HERE](./START-HERE.md)。后续从实际缺口继续；下文P0–P6是历史建设上下文，不能按其旧状态重建或重复迁移。时间调整允许Agent补合理方案，具体范围/冲突仍由程序核对；查看请求只读。
+更新：2026-10-06。本文件是普通交接文档，不是目录指令文件。仓库规则在 [根 AGENTS](../../../AGENTS.md)，应用补充在 [app/AGENTS](../../AGENTS.md)，当前任务从 [STATUS](../STATUS.md) 与 [START-HERE](./START-HERE.md) 接手。
 
-你要在现有Dash Campus工程继续修复Agent-first V2。先读 [START-HERE.md](./START-HERE.md)，基础契约见 [MASTER-PLAN.md](./MASTER-PLAN.md)。新修复/接口/校历规格优先于初始规格和旧Plan/T0–T8中的冲突规定。
+R0–R5 和 Agent 增强 v1.1 P0–P6 已实施；方向页 D0/D1 与 F01–F03 已交付，D2–D5 未完成。当前部署记录与验证边界只在 STATUS 维护。下文 P0–P6 是初始 V2 建设历史，不是 Agent 增强方案的同名工作包，也不是当前开工顺序。
 
-**2026-10-04 修复入口：** 已有 V2 实施后的易用性修复，以及新增课表可视化与每日智能安排，按 [REPAIR-PLAN-2026-10-04.md](./REPAIR-PLAN-2026-10-04.md) 的 R0–R5 推进。下文 P0–P6 保留为初始建设历史；不要重新建空壳，不把旧验收全绿当作真实流程已完成。修复计划状态为待实施。
+## 当前阅读方式
 
-## 开工前必读
-
-1. 本文件和MASTER-PLAN全篇；已有 V2 的修复还须阅读 REPAIR-PLAN-2026-10-04、[AGENT-INTERFACE-CONTRACT.md](./AGENT-INTERFACE-CONTRACT.md) 与 [ACADEMIC-CALENDAR-AND-HOLIDAYS.md](./ACADEMIC-CALENDAR-AND-HOLIDAYS.md) 全篇，定义自研 Agent 的全业务操作、接口与校历/假日规则。
-2. 仓库适用AGENTS.md/用户指令、README、`app/docs/deploy.md`、`app/docs/legacy-compatibility-2026-10-03.md`。
-3. `app/src/domain/workload.ts`、`calendar-occurrences.ts`、`schedule.ts`、`app/src/worker/runner.ts`、`app/src/workflows/http.ts`、`app/src/contracts/exports.ts`、`app/src/integrations/openai-chat.ts`。
-
-工作在dash-campus，不在andy-blog。先读`app/docs/STATUS.md`，核对提交和工作区，保留运行时出现的既有未提交变更；未要求不commit/push。命令用Git Bash并先写脚本。生产状态另行核对，不能把Git分支或文档当作实时生产证明。
+先读当前状态、决策与对应任务计划，再按需读 [接口契约](./AGENT-INTERFACE-CONTRACT.md)、[校历规格](./ACADEMIC-CALENDAR-AND-HOLIDAYS.md)、[MASTER-PLAN](./MASTER-PLAN.md) 和实际源码。不要求为了当前局部任务重读全部历史计划。可复制的当前启动指令放在 START-HERE。
 
 ## 不可变边界
 
@@ -24,7 +18,7 @@
 
 ## 初始建设历史：P0 + P1的最小可运行切片
 
-以下是历史开工顺序。当前第一工作包为 START-HERE 的R0/R1；只有核对源码后发现能力缺失，才按需补下列基础能力。
+以下是历史开工顺序，仅用于理解已有系统。当前任务以 START-HERE 为准；只有核对源码后发现基础能力缺失，才按需补下列能力。
 
 先完成以下切片，再扩大：
 
@@ -66,6 +60,6 @@ P0/P1交付后立即继续P2/P3，目标是课表影响今天/周预算和安排
 
 ## 初始建设的历史启动Prompt
 
-已有 V2 的易用性修复请使用 REPAIR-PLAN-2026-10-04 第 9 节的启动指令，下文仅保留初始建设上下文。
+当前开发使用 START-HERE 的启动指令。下文与旧 REPAIR-PLAN 的启动指令均保留作历史，不应直接作为当前任务投递。
 
 > 在dash-campus现有工程实施app/docs/agent-first-v2/MASTER-PLAN.md和CODING-AGENT.md。先核对基线、保留未提交改动、保护旧Todo只读，创建独立开发库。从P0/P1最小可运行切片开始，完成后按依赖推进P2–P6。目标是统一输入自动整理、关键缺口主动问答、课程/任务/实际投入共同驱动今天和本周、实践证据驱动方向。允许重建Dash业务数据但先备份和隔离切换，绝不修改或停止Todo。普通实现决策自主完成，不停在计划或空壳；按阶段真实验证并记录完成证据。规划文件不是生产功能证明；真实缺口明确标注。使用Git Bash，先写脚本再执行，不提交密钥、私人业务数据或生产连接信息，未要求不commit/push。

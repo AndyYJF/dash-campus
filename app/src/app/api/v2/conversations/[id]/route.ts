@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { requireOwner } from "@/workflows/auth-guard";
 import { notFound404 } from "@/workflows/http";
-import { conversationExists, latestConversationId, listTurns } from "@/repositories/conversations";
-import { listOpenQuestions } from "@/repositories/questions";
+import { acceptedAnswerTurnId, conversationExists, latestConversationId, listTurns } from "@/repositories/conversations";
+import { getQuestion, listOpenQuestions } from "@/repositories/questions";
 import { intakeResultById } from "@/workflows/results";
 
 export const dynamic = "force-dynamic";
@@ -27,16 +27,22 @@ export async function GET(request: NextRequest, ctx: Params) {
   const turns = listTurns(id, { limit, beforeSeq: before });
   return NextResponse.json({
     conversationId: id,
-    turns: turns.map((t) => ({
-      id: t.id,
-      seq: t.seq,
-      role: t.role,
-      text: t.text,
-      intakeId: t.intakeId,
-      questionId: t.questionId,
-      createdAt: t.createdAt,
-      result: t.role === "agent" && t.intakeId ? intakeResultById(t.intakeId) : null,
-    })),
+    turns: turns.map((t) => {
+      const answered = t.role === "owner" && t.questionId ? getQuestion(t.questionId) : null;
+      const reply = answered?.status === "answered" && acceptedAnswerTurnId(answered.id) === t.id ? answered : null;
+      return {
+        id: t.id,
+        seq: t.seq,
+        role: t.role,
+        text: t.text,
+        intakeId: t.intakeId,
+        questionId: t.questionId,
+        createdAt: t.createdAt,
+        result: t.role === "agent" && t.intakeId ? intakeResultById(t.intakeId) : null,
+        replyTo: reply ? { prompt: reply.prompt, intakeId: reply.intakeId } : null,
+        replyResult: reply?.intakeId ? intakeResultById(reply.intakeId) : null,
+      };
+    }),
     questions,
     nextBeforeSeq: turns.length === limit && turns[0] ? turns[0].seq : null,
   });

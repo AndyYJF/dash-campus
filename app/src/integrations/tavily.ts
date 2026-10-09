@@ -27,7 +27,7 @@ export class TavilySearchProvider implements SearchProvider {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
-  async search(args: { query: string; maxResults: number; signal?: AbortSignal }): Promise<SearchHit[]> {
+  async search(args: { query: string; maxResults: number; topic?: "general" | "news"; days?: number; signal?: AbortSignal }): Promise<SearchHit[]> {
     const body = await this.post("/search", {
       query: args.query,
       max_results: Math.min(Math.max(args.maxResults, 1), 20),
@@ -35,6 +35,8 @@ export class TavilySearchProvider implements SearchProvider {
       include_answer: false,
       include_raw_content: false,
       include_published_date: true,
+      ...(args.topic ? { topic: args.topic } : {}),
+      ...(args.topic === "news" && args.days ? { days: args.days } : {}),
     }, args.signal) as { results?: Array<{ title?: string; url?: string; content?: string; published_date?: string }> };
     return (body.results ?? [])
       .filter((r) => typeof r.url === "string" && /^https?:\/\//.test(r.url))

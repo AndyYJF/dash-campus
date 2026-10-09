@@ -1,3 +1,4 @@
+import { getQuestion } from "@/repositories/questions";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { NextRequest } from "next/server";
@@ -249,7 +250,11 @@ test("E14/E28：对象有歧义只问选哪一个；等待期间对象变了，�
   const ask2 = await say("把报告挪到周六");
   const q2 = ask2.result.questions[0]!;
   getDb().prepare(`UPDATE plan_sessions SET status = 'completed', version = version + 1 WHERE id = ?`).run(os.id);
-  assert.equal((await answer(q2, "操作系统的")).status, 202);
+  assert.equal((await answer(q2, "操作系统的")).status, 422, "同一任务有两段时，仅说任务名仍不够，不能默认选第一段");
+  const options = getQuestion(q2.id)!.context.candidates as Array<{ id: string; label: string }>;
+  const staleOption = options.find((c) => c.id === os.id)!;
+  assert.ok(staleOption, "选中实际被完成的原学习块，而非同名另一段");
+  assert.equal((await answer(q2, staleOption.label)).status, 202);
   const stale = await resultOf(ask2.intakeId);
   assert.equal(stale.state, "failed");
   assert.match(stale.items[0]!.error ?? "", /已经变了/);

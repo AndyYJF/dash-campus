@@ -34,7 +34,7 @@ function isPureCreate(cmd: Raw): boolean {
   return false;
 }
 
-export function authorizeCommand(cmd: Raw, opts: { origin: AuthOrigin; confirmed?: boolean }): AuthDecision {
+export function authorizeCommand(cmd: Raw, opts: { origin: AuthOrigin; confirmed?: boolean; ownerPolicyProposal?: boolean }): AuthDecision {
   const meta = (OPERATIONS as Record<string, (typeof OPERATIONS)[keyof typeof OPERATIONS] | undefined>)[cmd.command];
   if (!meta) return { kind: "deny", reason: `未注册的操作「${cmd.command}」` };
   if (meta.authorization === "never") return { kind: "deny", reason: `「${meta.title}」不开放给 Agent` };
@@ -43,6 +43,11 @@ export function authorizeCommand(cmd: Raw, opts: { origin: AuthOrigin; confirmed
   }
   if (opts.origin === "owner") {
     return meta.authorization === "confirm" && !opts.confirmed ? { kind: "confirm", reason: `「${meta.title}」执行前需要你再确认一次` } : { kind: "allow" };
+  }
+  // 主人输入产生的设置提案只允许等待明确确认，模型输出本身不是额度授权。
+  // 此标记由服务端写入，资料/后台规划不能携带；普通 confirmed 不解除 INFERRED_NEVER。
+  if (cmd.command === "update_agent_policy" && opts.ownerPolicyProposal === true) {
+    return opts.confirmed ? { kind: "allow" } : { kind: "confirm", reason: "按你提出的设置要求形成了具体策略，确认每日上限和修改内容后才执行" };
   }
   // inferred
   if (INFERRED_NEVER.has(cmd.command as Command["command"])) return { kind: "deny", reason: `「${meta.title}」只能由你本人明确提出，Agent 不会自己决定` };

@@ -72,6 +72,9 @@ export const intentSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("direction_reflection"), text: z.string().trim().min(1).max(4000), date: dateStr.optional(), project: refSchema.nullable().default(null), track: refSchema.nullable().default(null) }),
   z.object({ op: z.literal("direction_note"), track: refSchema.nullable().default(null), stage: z.enum(STAGE_KEYS).nullable().default(null), noteKind: z.enum(["advice", "policy", "opportunity", "industry", "question", "other"]).default("other") }),
   z.object({ op: z.literal("project_state"), ref: refSchema, status: z.enum(["active", "paused", "completed"]).nullable().default(null), commit: z.boolean().default(false) }),
+  z.object({ op: z.literal("stop_ai_news") }),
+  z.object({ op: z.literal("ai_news"), days: z.number().int().min(1).max(30).default(7) }),
+  z.object({ op: z.literal("ai_news_policy"), enabled: z.boolean().optional(), localTime: timeStr.optional(), days: z.number().int().min(1).max(30).optional() }),
   z.object({ op: z.literal("explore"), query: z.string().min(1).max(500) }),
   z.object({ op: z.literal("resource_link"), projectText: z.string().min(1).max(100) }),
   z.object({ op: z.literal("resource_role"), role: z.enum(["reference", "requirement", "achievement"]) }),
@@ -415,9 +418,11 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
     return { op: "calendar_sync", enabled: !off, intervalDays };
   }
 
+  // 降级只接受明确的“不学习/不排学习”结尾，不把“不排那么长/不学英语”扩大为全局停学。
+  const noStudyTail = /(?:不学(?:习)?(?:了)?|不想学|(?:不|别|不要)(?:再)?(?:排|安排)(?:学习(?:时间)?|自主学习|任务)?(?:了)?|休息一下|歇一歇|歇了)(?:吧|啊|呀|呢)?$/;
   // 假期策略（在“某天不学”之前判断，避免把“假期不安排”当成具体日期）
   if (/(假期|节假日|放假期间|放假时)/.test(c)) {
-    if (/(不安排|不学|别排|别安排|不要安排|休息)/.test(c)) return { op: "holiday_policy", mode: "none" };
+    if (noStudyTail.test(c)) return { op: "holiday_policy", mode: "none" };
     if (/(少排|少学|少安排|轻松点|少一点)/.test(c)) return { op: "holiday_policy", mode: "reduced" };
     if (/(照常|正常|按周末|和周末一样|照样)/.test(c)) return { op: "holiday_policy", mode: "weekend_template" };
   }
@@ -441,18 +446,18 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
   // 时段边界：“晚上十点后不排”“九点前别排”；同一分句里点明工作日/周末的只改那一类
   const days = /(工作日|平时|周一到周五|上课日)/.test(c) ? "workday" : /(周末|双休)/.test(c) ? "weekend" : "all";
   const after = /(.+?点\s*(?:半|一刻|\d{1,2}\s*分?)?)\s*(?:以后|之后|后)\s*(?:就)?(?:不排|不学|不安排|别排|别安排|不要安排|不再安排)/.exec(c);
-  if (after) {
+  if (after && noStudyTail.test(c)) {
     const time = eveningTime(after[1]!.replace(/工作日|平时|周一到周五|上课日|周末|双休日?/g, ""));
     if (time) return { op: "window_end", time, days };
   }
   const beforeT = /(.+?点\s*(?:半|一刻|\d{1,2}\s*分?)?)\s*(?:以前|之前|前)\s*(?:不排|不学|不安排|别排|别安排|不要安排)/.exec(c);
-  if (beforeT) {
+  if (beforeT && noStudyTail.test(c)) {
     const time = timeFromText(beforeT[1]!.replace(/工作日|平时|周一到周五|上课日|周末|双休日?/g, ""));
     if (time) return { op: "window_start", time, days };
   }
 
   // 某天/某晚不学、某段日期不安排
-  if (/(不学了?|不学习了?|不想学|不安排|别安排|别排|不要安排|休息一下|歇一歇|歇了)/.test(c) && !/(以后|点后|点之后)/.test(c)) {
+  if (noStudyTail.test(c) && !/(以后|点后|点之后)/.test(c)) {
     const range = new RegExp(`(${DATE_WORD})\\s*(?:到|至|-|—|~)\\s*(${DATE_WORD}|\\d{1,2}\\s*[日号])`).exec(c);
     if (range) {
       const from = dateFromText(range[1]!, referenceDate);
@@ -461,7 +466,8 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
       if (from && to && to >= from) return { op: "no_study", dateFrom: from, dateTo: to, fromTime: null, label: /回家/.test(c) ? "回家" : /旅行|出去玩|旅游/.test(c) ? "出行" : "不安排学习" };
     }
     const date = dateFromText(c, referenceDate);
-    if (date) {
+    const wholeDay = new RegExp(`^(?:我)?(?:${DATE_WORD})(?:晚上|上午|下午)?\\s*(?:就|先)?${noStudyTail.source}`).test(c);
+    if (date && wholeDay) {
       const tonight = /今晚|明晚|晚上/.test(c);
       const today = date === referenceDate;
       const current = hhmm(now, tz);
@@ -478,7 +484,7 @@ function parseClause(clause: string, referenceDate: string, now: Date, tz: strin
     return { op: "replan", dateFrom: date, dateTo: to };
   }
   if (/(别|不要|不用|不许)(再)?(自动)?(帮我)?(调整|动|改|重排|重新安排)/.test(c) && /安排|计划|学习块/.test(c)) return { op: "revoke_replan" };
-  if (/^(那)?(就)?按(你|您)?(的)?(推荐|建议|说的)(的)?(来|安排|办|排)?(吧|就行)?$|^你(帮我|来)?(决定|定|安排)(吧|就行|就好)?$|^(那)?就这样(吧)?$/.test(c)) return { op: "confirm_policy" };
+  // 无对象的同意/委托不是确认作息；由待答问题或当前方案绑定，不能制造确认授权。
 
   // 集中时段偏好
   const prefer = /(晚上|晚间|上午|早上|下午|周末).{0,8}(更适合|比较适合|最适合|集中学|效率高|效率更高|学得进|状态好)/.exec(c) ?? /(?:我)?(?:一般|习惯|喜欢)(?:在)?(晚上|晚间|上午|早上|下午|周末)(?:集中)?(?:学|学习|做)/.exec(c);

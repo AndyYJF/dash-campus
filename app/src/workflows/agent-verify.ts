@@ -179,6 +179,15 @@ function effectChecks(item: IntakeItemRow, effects: Array<{ kind: string; id: st
         if (j && ["failed", "cancelled"].includes(j.status)) add(false, `找候选项目的任务已结束但没有结果：${j.last_error ?? j.status}`);
         else add(null, `找候选项目${r.status === "queued" ? "还在排队" : "正在进行"}，完成后会自动再核对`);
       }
+    } else if (e.kind === "ai_news_cancellation") {
+      const r=db.prepare("SELECT status FROM ai_news_runs WHERE id=?").get(e.id) as {status:string}|undefined;
+      if(!r)add(false,"资讯更新记录不存在");else if(r.status==="cancelled")add(true,"本次AI资讯更新已停止，已有盘点保留");else if(["ready","empty","failed"].includes(r.status))add(false,"停止请求到达时这次更新已经结束");else add(null,"已请求停止资讯更新，等待后台结束");
+    } else if (e.kind === "ai_news_run") {
+      const r = db.prepare("SELECT status,error_message,job_id FROM ai_news_runs WHERE id=?").get(e.id) as {status:string;error_message:string|null;job_id:string|null}|undefined;
+      if (!r) add(false,"AI资讯更新记录不存在");
+      else if (["ready","empty"].includes(r.status)) add(true,r.status==="ready"?"AI资讯已生成，结果在「AI资讯」页":"已核对新闻来源，本次时间范围内没有可收录的资讯");
+      else if (["failed","cancelled"].includes(r.status)) add(false,`AI资讯未完成：${r.error_message ?? r.status}`);
+      else { const j=r.job_id ? job(r.job_id):undefined; if (j && ["failed","cancelled"].includes(j.status)) add(false,"资讯后台任务已结束但未生成结果");else add(null,"AI资讯仍在后台更新，完成后会再次核对"); }
     } else if (e.kind === "review") {
       const r = db.prepare(`SELECT status, job_id FROM reviews WHERE id = ?`).get(e.id) as { status: string; job_id: string | null } | undefined;
       if (!r) add(false, "复盘记录找不到了");

@@ -4,6 +4,7 @@ import { getInstanceState } from "@/repositories/instance";
 import { listTasks } from "@/repositories/planning";
 import { refreshReminders } from "@/workflows/reminders";
 import { reminderTriggerUtc } from "@/domain/reminders";
+import { localDateInTz, instanceTimezone } from "@/domain/time";
 import { nextWeeklyRun } from "@/domain/exploration";
 
 /**
@@ -134,6 +135,9 @@ export function resumeAfterRestore(now = new Date()): ResumeResult {
       `UPDATE assistant_requests SET status = 'cancelled', error_code = 'RESTORED', error_message = '从备份恢复后取消，可重新分析', updated_at = ?
        WHERE status IN ('queued', 'running')`,
     ).run(nowIso);
+
+    db.prepare("UPDATE ai_news_runs SET status='cancelled',error_message='从备份恢复后取消，可重新更新',updated_at=? WHERE status IN ('queued','running')").run(nowIso);
+    db.prepare("INSERT INTO settings(key,value_json,version,updated_at) VALUES('aiNewsScheduleDate',?,1,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json,version=settings.version+1,updated_at=excluded.updated_at").run(JSON.stringify(localDateInTz(now, instanceTimezone())),nowIso);
 
     // 恢复之前还没处理完的投递：它们的后台任务已取消，epoch 也已过期，不会再执行。
     // 没执行的事项和挂着的问题一并收掉并写明原因；已经生效的部分保留、仍可撤销。原件都还在，需要就重新发一次。

@@ -6,7 +6,8 @@ import { dateFromText, estimateFromText, parseNumber } from "./task-text";
  * - “下午3点写微积分”：只有开始时间，时长交给后面按估时决定；
  * - 没写时间：接在上一件之后，或排在点选的空档开头；
  * - 起止相同或倒着的时间不猜，原样指出。
- * 没写上午/下午的钟点按上下文判断：先沿用前一件的时段，再看哪个落在点选的空档里，最后才按“8 点前算下午”。
+ * “几点”没写上午/下午时按同日上下文判断；HH:mm 是24小时制，换日不沿用上一天的半天。
+ * 一次最多执行六件，超出的内容必须作为未处理项返回，不能静默丢弃。
  */
 
 export type ArrangeSlot = { date: string; start: string; end: string };
@@ -42,9 +43,12 @@ function halfOf(part: string | undefined): Half | "noon" | null {
 }
 
 /** 钟点 → 当天分钟。half 为空表示话里没说上午还是下午，由 pick 在两种读法里选 */
-function resolve(hour: number, minute: number, half: Half | "noon" | null, pick: (am: number, pm: number) => number): number | null {
-  if (!Number.isInteger(hour) || hour > 24 || !Number.isInteger(minute) || minute > 59) return null;
-  if (hour >= 13) return (hour === 24 ? 0 : hour) * 60 + minute;
+function resolve(hour: number, minute: number, half: Half | "noon" | null, pick: (am: number, pm: number) => number, clock = false): number | null {
+  if (!Number.isInteger(hour) || hour < 0 || hour > 24 || !Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+  if (hour === 24) return minute === 0 && !half ? 1440 : null;
+  // 无上午/下午前缀的 HH:mm 是24小时制，不能被上一件事的半天上下文改写。
+  if (clock && !half) return hour * 60 + minute;
+  if (hour >= 13) return hour * 60 + minute;
   if (half === "pm") return (hour === 12 ? 12 : hour + 12) * 60 + minute;
   if (half === "noon") return (hour <= 2 ? hour + 12 : hour) * 60 + minute; // 中午1点 = 13:00
   if (half === "am") return (hour === 12 ? 0 : hour) * 60 + minute;
@@ -69,16 +73,20 @@ export function parseArrange(body: string, slot: ArrangeSlot | null, referenceDa
   const clauses = body
     .split(/[，,；;。\n]+/)
     .map((c) => c.trim())
-    .filter(Boolean)
-    .slice(0, MAX_PIECES);
+    .filter(Boolean);
   const pieces: ArrangePiece[] = [];
   const slotRange = slot ? ([toMin(slot.start), slot.end >= "24:00" ? 1440 : toMin(slot.end)] as const) : null;
   let lastHalf: Half | null = null;
   let lastEnd: number | null = null;
   let lastDate = null as string | null;
 
-  for (const clause of clauses) {
+  for (const clause of clauses.slice(0, MAX_PIECES)) {
     const date: string = dateFromText(clause, referenceDate) ?? lastDate ?? slot?.date ?? referenceDate;
+    // 明确换了日期就不沿用上一天的下午或结束钟点。
+    if (lastDate !== null && date !== lastDate) {
+      lastHalf = null;
+      lastEnd = null;
+    }
     // 没说上午/下午时的取舍：接着上一件 → 落在点选的空档里 → 今天已经过去的不选 → 8 点前算下午
     const pick = (am: number, pm: number): number => {
       if (lastEnd !== null && date === lastDate) return am >= lastEnd ? am : pm;
@@ -96,20 +104,20 @@ export function parseArrange(body: string, slot: ArrangeSlot | null, referenceDa
     if (range) {
       const title = titleOf(clause, range[0]);
       const startHalf = halfOf(range[1]);
-      const start = resolve(parseNumber(range[2]!), minuteOf(range[3], range[4]), startHalf, pick);
-      if (start === null) {
+      const start = resolve(parseNumber(range[2]!), minuteOf(range[3], range[4]), startHalf, pick, range[3] !== undefined);
+      if (start === null || start >= 1440) {
         pieces.push({ ok: false, title: title || clause, error: `没看懂「${range[0]}」是几点` });
         continue;
       }
       // 结束钟点没另说上午/下午：跟开始在同一个半天，倒过来了再往后推半天（11点到1点 = 13:00）
       const endHalf = halfOf(range[5]);
       const sameHalf: Half = start >= 12 * 60 ? "pm" : "am";
-      let end = resolve(parseNumber(range[6]!), minuteOf(range[7], range[8]), endHalf ?? null, (am, pm) => (sameHalf === "pm" ? pm : am));
+      let end = resolve(parseNumber(range[6]!), minuteOf(range[7], range[8]), endHalf ?? null, (am, pm) => (sameHalf === "pm" ? pm : am), range[7] !== undefined);
       if (end === null) {
         pieces.push({ ok: false, title: title || clause, error: `没看懂「${range[0]}」到几点` });
         continue;
       }
-      if (!endHalf && end < start && end + 12 * 60 <= 24 * 60) end += 12 * 60;
+      if (!endHalf && range[7] === undefined && end < start && end + 12 * 60 <= 24 * 60) end += 12 * 60;
       if (!title) {
         pieces.push({ ok: false, title: clause, error: `「${clause}」只有时间，没说要安排什么` });
         continue;
@@ -132,9 +140,9 @@ export function parseArrange(body: string, slot: ArrangeSlot | null, referenceDa
     const single = SINGLE.exec(clause);
     if (single) {
       const title = titleOf(clause, single[0]);
-      const start = resolve(parseNumber(single[2]!), minuteOf(single[3], single[4]), halfOf(single[1]), pick);
-      if (start === null || !title) {
-        pieces.push({ ok: false, title: title || clause, error: start === null ? `没看懂「${single[0]}」是几点` : `「${clause}」只有时间，没说要安排什么` });
+      const start = resolve(parseNumber(single[2]!), minuteOf(single[3], single[4]), halfOf(single[1]), pick, single[3] !== undefined);
+      if (start === null || start >= 1440 || !title) {
+        pieces.push({ ok: false, title: title || clause, error: start === null || start >= 1440 ? `「${single[0]}」不是有效的当天开始时间，请写0:00到23:59之间的钟点` : `「${clause}」只有时间，没说要安排什么` });
         continue;
       }
       // 只有开始时间：话里说了时长就按它算结束，否则先按一小时占位，由后面按任务估时决定
@@ -162,6 +170,10 @@ export function parseArrange(body: string, slot: ArrangeSlot | null, referenceDa
       continue;
     }
     pieces.push({ ok: false, title, error: `「${title}」没说什么时候做：写上时间（比如“下午3点到4点”），或先点时间线上的一个空档` });
+  }
+  if (clauses.length > MAX_PIECES) {
+    const remaining = clauses.slice(MAX_PIECES).join("，");
+    pieces.push({ ok: false, title: remaining, error: `一次最多安排 ${MAX_PIECES} 件事；后面 ${clauses.length - MAX_PIECES} 件没有处理，请另发一次：${remaining}` });
   }
   return pieces;
 }

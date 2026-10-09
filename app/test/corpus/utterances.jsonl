@@ -49,7 +49,7 @@
 {"id":"u049","split":"dev","text":"周末更适合","expect":{"kind":"act","ops":["prefer_window"],"fields":{"part":"weekend"}},"source":"intent.test","tags":["policy","preference"],"fallback":true}
 {"id":"u050","split":"dev","text":"今天你看着重新安排","expect":{"kind":"act","ops":["replan"],"fields":{"dateFrom":"2026-10-12","dateTo":"2026-10-12"}},"source":"intent.test","tags":["replan"],"fallback":true}
 {"id":"u051","split":"dev","text":"别再自动调整我的安排了","expect":{"kind":"act","ops":["revoke_replan"]},"source":"intent.test","tags":["policy","autonomy"],"fallback":true}
-{"id":"u052","split":"dev","text":"按你推荐的来","expect":{"kind":"act","ops":["confirm_policy"]},"source":"intent.test","tags":["policy","confirm"],"fallback":true}
+{"id":"u052","split":"dev","text":"按你推荐的来","expect":{"kind":"ask","readOnly":true},"source":"owner-clarification","tags":["ask","bare-answer","missing-proposal"]}
 {"id":"u053","split":"dev","text":"早上八点前不要排","expect":{"kind":"act","ops":["window_start"],"fields":{"time":"08:00"}},"source":"synthetic","tags":["policy","window"]}
 {"id":"u054","split":"dev","text":"周末每天最多三小时","expect":{"kind":"act","ops":["group_limit"],"fields":{"group":"weekend","limitMinutes":180}},"source":"synthetic","tags":["policy"]}
 {"id":"u055","split":"dev","text":"下周二不学习，要去体检","expect":{"kind":"act","ops":["no_study"],"fields":{"dateFrom":"2026-10-20","dateTo":"2026-10-20"}},"source":"synthetic","tags":["policy","no-study"]}

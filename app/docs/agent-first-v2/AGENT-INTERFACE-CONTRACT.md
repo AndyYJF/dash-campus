@@ -270,3 +270,85 @@ HTTP 202 只表示 accepted，HTTP 200 不能代替领域成功判断。版本�
 - **写（名称固定）**：`update_direction_profile`、`upsert_direction_track`、`update_roadmap_item`、`link_direction_project`、`record_direction_reflection`。`select_candidate` 可选 `trackId`/`roadmapItemId`；`link_resource` 可选 `trackId`/`stageKey`/`noteKind`。
 - **阶段键** `year1`–`year4`；去向 `research`/`further_study`/`employment`/`undecided`；关注状态 `exploring`/`following`/`paused`；阶段项 `adopted`/`completed`/`paused`。
 - **边界**：采用模板不建目标或任务；“先不看了”只改关注状态；感受保存原话、不另记分钟。
+
+
+## 2026-10-06：方向版本、撤销引用与样本读取
+
+本节补充 D0/D1 的当前实现；详见 [方向复验](../../../Plan/dash-campus-DIRECTION-ACCEPTANCE-2026-10-05.md)。
+
+- `update_direction_profile.expectedVersion` 允许整数 0：只匹配尚未创建的 profile；已有记录仍核对真实版本。并发创建后再提交 0 返回 `STALE_VERSION`，不覆盖新记录。nullable 兼容字段的实际处理沿用领域实现，前端明确传快照版本。
+- 撤销创建方向/阶段项前核对本批次之外的入站引用；后续关联存在返回 `conflict` 并保留记录，不抛裸外键错误、不级联删除主人资料。同批次关联按逆序撤销后可删除创建对象。
+- `GET /api/v2/direction.workSamples` 保留所有内容模板，附 `follow` 状态；关注/暂停/恢复不从目录过滤模板。页面仍展示步骤、产出、基础；这些按钮走同一操作执行器，不自动创建 goal/task。
+- 共享预算投入预览、样本直达推荐/有限试做、正式投入的真实下一步、长期反思与完整恢复仍按方向计划补齐。本节没有新增这些能力的交付承诺。
+
+## 2026-10-07：自然语言回答绑定和定点安排（本地，未部署）
+
+- `reply.questionId` 非空时直接读问题，必须为 open、同 conversation 且不属于当前投递；不存在或失效就停止，不能退回别的问题。未指定 ID 的自然语言回答仍走唯一问题/业务选项/定位逻辑。
+- `purpose=locate` 的唯一问题接受序号与选项原文，恢复所保存的原回答；无效选择不执行。明确业务独有选项优先直答；成功后 supersede 相关旧定位问题，将旧未定位投递收为只读结果，不再执行其原短答。
+- `openQuestionsInConversation` 默认窗口10，取 created_at/rowid 最新十条再反转，维持窗口内旧到新。窗口不代表全部待办数量；显式 ID 不受限制。
+- `/安排` 解析最多执行六件，超限尾项生成 failed command item；已处理和未处理并存时 intake、goal、verification 为部分完成。非法开始钟点、倒序与跨夜区间不猜；24:00只作为结束。无时段前缀的 HH:mm 按24小时制，换日期重置半天与前次结束上下文。
+- HTTP 字段、操作名与迁移未改；自然语言路由和领域执行门继续复用。行为及模型证据见 [本轮复验](../agent-dialogue-robustness-2026-10-07.md)。
+
+## 2026-10-07：聊天恢复字段与回答原子性（本地，未部署）
+
+- `GET /api/v2/conversations/:id`（含 `current`）保留有限分页和 owner 校验，turn 增加可空的 `replyTo: {prompt, intakeId}` 与 `replyResult`（已有 intake result 结构）。只给确已接受的 owner 问题回答附这两个字段，通过 questionId、已落库回答原文及对应 owner turn 核对；失效/未接受尝试不能呈现成功。GET 仍为纯读取，不写 turn、任务或批次。
+- `replyResult` 是原投递的当前结果，不是回复时刻的不可变结果快照。UI 将已答问题放在回答前、当前续办结果放在最后一次接受的回答后；不得把后来的结果写成当时已经完成。无迁移。
+- 自然语言 `resolveReplyItem` 的同步落库在 immediate 事务内执行，包含问题回答、旧定位收起、恢复 job 与回复项/投递结果；异常整体回滚，worker 的租约恢复可再次处理。模型调用不包含在该事务内。
+- `submitAnswer` 先读问题状态和 expectedVersion，失效返回 409，再做语义/选项解析与主人 turn 记录。过期或已答请求不因内容无效而变成 422，不产生成功回复元数据。
+- `/chat` 与工作台浮层共享 root-layout composer，已有 `/指令`、selectedEntityRef、slot、questionId/version、goalId/revision、文件投递及幂等字段沿用。刷新恢复依赖服务端 turns；未提交草稿仍只在页面内存里保存。
+
+### 发布后补充：卡片回答的旧定位清理（本地，未部署）
+
+- 成功回答业务问题时，所有关联该问题的 open 定位卡收起为 superseded，旧未定位原话不能再应用到剩余问题。卡片回答和统一栏携明确 questionId 的回答也遵循此规则。
+- HTTP `submitAnswer(recordTurn != false)` 在现有幂等事务内清理；自然语言 `recordTurn=false` 由 `resolveReplyItem` 在事项事务内清理，避免重复收尾。清理中断时答案、问题状态、恢复job、主人turn与结果一起回滚；同键重试/重放至多接受一次。
+- 已收起定位卡再提交答案返回409，不切换回答对象；无新增HTTP字段、操作名或迁移。证据为11项回答回归与485项完整隔离测试，尚未上线。
+
+### 条件续办的路由上下文补充（本地，未部署）
+
+- 内部currentGoal增加可选id和previousDecision（rationale至多500字、intents至多6项）；从当前目标摘要读回。摘要在等待确认时保留pendingDecision的原方案，state继续区分待确认和已执行，不能据此声称执行成功。
+- 内部openQuestions增加可选purpose与goalId，goalId从问题来源投递读回，无来源则null。这些字段用于理解回答/改口归属，不授予模型写权限或自动确认权限。
+- HTTP入参、业务操作名、迁移不变；模型决定续办/回复后仍经过原版本与约束门。条件修改需沿用原目标语义，不能机械转成replan或自动批准旧方案。
+- 新真实模型3场景通过；完整回放仍因提示词改动待重录57条，不能以局部通过替代全套通过。
+
+
+### 2026-10-08：查询与来源日期语义（本地，未部署）
+
+- 实际只读注册表是get_context/find_entities/get_entity_detail/get_calendar_budget/get_open_questions/get_conversation/get_operation_status/get_evidence/get_reviews，共9个。早期get_budget_and_calendar是目标命名，不能当成实际调用名。
+- get_reviews参数：列表支持dateFrom/dateTo、limit≤5、cursor；详情id必须先在该工具列表中出现，id不与列表筛选混用。每份结果≤4000字符，长原文分页；详情游标绑定id/版本/时区，旧版本不能拼接新版本。日期按复盘周期与当前时区筛选。草案不代表本人结论或已执行操作。
+- decide路由与agent_decide可选sourceDates:[{date,excerpt}]；只有引用的日期词确实在主人原话、且按参考日解析一致才接受。sourceDateExclusions是来源元数据，不是授权；原话推范围时排除来源日，后续明确回答、已有目标范围和明确date_scope仍有效，不允许用来源提示撤销范围。
+- 孤立同意/委托不能机械转为confirm_policy；需与主人已看到的方案/待答问题绑定，否则问清所指。已绑定的作息确认问题仍可正常回答。
+- 语料评测同时检查journal和具有实际结果引用的agent_step_executions；生成复盘/后台任务也属于副作用。failed事项或failed投递不能因路由种类正确而通过。录制stale不能跳过或改指纹；真实模型、录制兼容和实际执行分开报告。
+
+
+## 2026-10-08 对象选择与降级范围补充（已包含reference-20261008发布）
+
+对象绑定补充：Resolved.none可携带仅由服务端当前事实生成的alternatives；仅有真实候选时转为entity_ref。answered ref必须重新落在原范围候选内；同一任务多段返回many，不选第一段。未见ID/步骤未完成/明确对象失效不提供替代写入。来源ref.date/part不扩大到其他日期或时段。具体行为与证据见../agent-reference-clarification-2026-10-08.md。
+
+
+## 2026-10-08 路由失败重试补充（已随budget-20261008发布）
+
+路由失败占位为command，payload含routeFailure/text/retryable，state=failed；原文与错误保留，无任务/资料命令授权。POST /api/v2/intakes/:id/retry沿用expectedVersion及幂等约束，仅将失败原话片段重新路由（owner-rest的内部route-retry-v1版本），不重放成功步骤、不重置模型预算。确定性规则与独立附件可各自完成；结果如实显示失败或部分完成。近期对象仍要求真实引用、版本与确认；本轮完整真实指代2/2不替代整体Agent验收。见[复验报告](../agent-routing-failures-2026-10-08.md)。
+
+## 2026-10-08 agent_policy 交互确认补充
+
+update_agent_policy 声明 agent_policy 事实集合（settings 版本与预算值）。主人交互得到的策略提案由服务端标记 ownerPolicyProposal，推断策略只允许先提出具体确认，确认后执行；模型输出 confirmed/ownerPolicyProposal 不作为授权，材料和后台泛化规划仍不能改预算。缺周期先问，目前支持每日调用次数。preview 展示每天具体旧值→新值及长期范围；确认与执行均核对事实指纹，跨设备更新触发重新确认。六项隔离回归通过，真实预算对话尚待验。见[报告](../agent-budget-dialogue-2026-10-08.md)。
+
+## 2026-10-08 预算提案改口接续（本地）
+
+继续调优目标已恢复active。agent_decide读取aiPolicy现值，ownerPolicyProposal仅由服务端从同目标、当前待确认的纯策略原事项继承；模型摘要/工具资料/已完成策略不能授权新预算。新提案仍需具体确认与版本门。三文件33/33及类型/静态检查通过；统一聊天真实多轮3/3，最终值250/1000/200单次保存，事实保护通过，详见[报告](../agent-budget-revisions-2026-10-08.md)。尚未部署/提交/推送，下一步修缺对象可恢复提问、假日范围、超时和完整真实网页；旧59条/录制失败保持原证据。
+
+## 2026-10-09：任务/列表对象缺匹配与连续选择（本地补充）
+
+resolveTask和resolvePooled对named/recent缺匹配返回同类真实alternatives（最多8）；id/step失效不返回替代写入。chooseOrAsk的问题键为entity_ref:<itemId>:<entityKind>，结构化答案ref.kind必须与当前类型一致；兼容旧entity_ref:<itemId>键也必须校验类型。选择后在当前事实重绑，不能执行失效选择或跳过授权确认。未展示候选的继续搜索尚未完成。具体证据与真实provider失败见[报告](../agent-missing-targets-2026-10-09.md)。
+
+## 2026-10-09：resource_source与资料确认（本地补充）
+
+资料关联/类型/方向线索缺实际来源时，问题purpose=info、fieldPath=resource.url、questionKey=resource_source:<itemId>；答案保存structured.url，绑定只接受HTTP(S)，并传入现有link_resource统一操作。来源答案独立于entity_ref:<itemId>:project等选择。旧选择失效不换项目，未确认不创建资源；resourceId作为resource对象及resources版本纳入commandEntities/commandFacts。确认说明实际资料名称或URL、角色及明确projectId的当前项目名称。链接创建仅表示资料保存，不表示网络抓取完成。资料HTTP/worker和跨设备确认隔离通过，普通聊天真实续答场景已准备未调用。见[报告](../agent-missing-targets-2026-10-09.md)。
+
+## 2026-10-09 AI资讯接口补充（本地已实现，待部署）
+
+`GET /api/v2/ai-news`只读已保存盘点、近期运行摘要、版本化政策、时区和全局自动开关，要求主人会话。写入统一`POST /api/v2/actions`：`request_ai_news({days?:1..30})`、`cancel_ai_news({})`、`update_ai_news_policy({enabled?,localTime?,days?,expectedVersion?})`，对应`ai_news/stop_ai_news/ai_news_policy`。明确主人授权，CSRF/幂等和事务执行，不新增旁路写接口。
+
+`get_ai_news({query?,category?,cursor?})`只读工具先列标题，按query/category取得新闻事实、Agent解读与引用，长文本分页且每次封顶4000字符。只有明确更新或定期授权触发背景检索/总结；查看不调模型、不创建任务。
+
+更新核验跟踪`ai_news_run`与job，停止跟踪`ai_news_cancellation`与job；排队或进行中为等待，来源成功但无近期资料明确empty，失败/取消不冒充完成。政策确认依赖`ai_news_policy`版本事实；旧确认作废。数据表/预算/恢复契约与证据见[AI资讯说明](../ai-news-2026-10-09.md)。

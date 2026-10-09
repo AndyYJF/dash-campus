@@ -58,7 +58,7 @@ export function planOf(intents: Intent[], env: BindEnv, fallbackNeedsConfirm: bo
   }
   let needsConfirm = bound ? false : fallbackNeedsConfirm;
   for (const c of commands) {
-    const a = authorizeCommand(c as Record<string, unknown> & { command: string }, { origin: "inferred" });
+    const a = authorizeCommand(c as Record<string, unknown> & { command: string }, { origin: "inferred", ownerPolicyProposal: env.ownerPolicyProposal === true });
     if (a.kind === "deny") denied ??= a.reason;
     if (a.kind === "confirm") needsConfirm = true;
   }

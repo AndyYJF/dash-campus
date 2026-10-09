@@ -66,6 +66,14 @@ export function latestConversationId(): string | null {
   return (getDb().prepare(`SELECT id FROM conversations ORDER BY updated_at DESC LIMIT 1`).get() as { id: string } | undefined)?.id ?? null;
 }
 
+/** 已接收的卡片回答对应哪条主人消息；未解析/过时的尝试不能被展示为成功回答。 */
+export function acceptedAnswerTurnId(questionId: string): string | null {
+  const row = getDb().prepare(`SELECT t.id FROM conversation_turns t
+    JOIN clarification_answers a ON a.question_id = t.question_id AND a.raw_text = t.text
+    WHERE t.question_id = ? AND t.role = 'owner' ORDER BY t.seq DESC LIMIT 1`).get(questionId) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
 export function appendTurn(input: { conversationId: string; role: "owner" | "agent"; intakeId?: string | null; questionId?: string | null; text: string; refs?: EntityRef[]; batchIds?: string[] }): TurnRow {
   const db = getDb();
   const id = crypto.randomUUID();

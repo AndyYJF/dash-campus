@@ -344,9 +344,12 @@
     padding-top: 0;
     border-top: none;
     min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 
   .navLink {
+    flex: 0 0 auto;
     min-height: 52px;
     padding: 0 var(--space-3);
     font-family: var(--font-serif);
@@ -412,6 +415,11 @@
 
 @media (max-width: 359px) {
   .navLink {
-    padding: 0 10px;
+    padding: 0 8px;
+    font-size: 15px;
   }
 }
+
+/* 五个栏目在手机上收紧，极窄屏优先保留全部文字入口。 */
+@media (max-width: 767px) { .navLink { padding: 0 8px; font-size: 15px; } }
+@media (max-width: 359px) { .brand { display: none; } .navLink { padding: 0 6px; font-size: 14px; } }

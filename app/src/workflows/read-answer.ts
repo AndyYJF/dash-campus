@@ -2,8 +2,9 @@ import { getDb } from "@/repositories/db";
 import { addDays, mondayOf } from "@/domain/time";
 import { dateFromText } from "@/domain/task-text";
 import { dashboardSnapshot } from "./snapshot";
+import { readReviewPage, readReviewById, reviewReadText } from "./review-read";
 
-export type ReadLink = { label: string; href: "/today" | "/week" | "/direction" | "/settings" };
+export type ReadLink = { label: string; href: "/today" | "/week" | "/direction" | "/settings" | "/reviews" };
 export type ReadAnswer = { text: string; links: ReadLink[] };
 type Env = { referenceDate: string; now: Date; tz: string; selected?: { kind: string; id: string } | null };
 
@@ -22,6 +23,16 @@ export function answerReadRequest(text: string, env: Env): ReadAnswer {
   const time = (iso: string) => new Intl.DateTimeFormat("en-GB", { timeZone: env.tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(iso));
   const titles = (rows: { title: string }[]) => rows.map((r) => `• ${r.title}`).join("\n");
   const answer = (body: string, href: ReadLink["href"], label: string): ReadAnswer => ({ text: body, links: [{ href, label }] });
+  if (/复盘|周报/.test(text)) {
+    const dates = dateRange(text, env.referenceDate);
+    const explicitPeriod = /下周|本周|这周|上周/.test(text) || dateFromText(text, env.referenceDate) !== null;
+    const selected = env.selected?.kind === "review" ? readReviewById(env.selected.id, env.tz) : null;
+    const page = readReviewPage({ timezone: env.tz, ...(explicitPeriod ? { dateFrom: dates[0], dateTo: dates.at(-1) } : {}) }, 0, 1);
+    const review = selected ?? (page.items[0] ? readReviewById(page.items[0].id, env.tz) : null);
+    if (!review) return answer(`没有找到${explicitPeriod ? `${dates[0]}–${dates.at(-1)} 的` : "已保存的"}复盘。这里只查看，没有重新生成；需要生成时可以另行提出。`, "/reviews", "打开复盘");
+    const stored = reviewReadText(review);
+    return answer(stored.length > 6000 ? `${stored.slice(0, 6000)}\n\n内容较长，这里显示前 6000 字；完整内容请打开复盘。` : stored, "/reviews", "打开已有复盘");
+  }
   if (/空闲|空余|可用|剩余.*时间|还有.*(?:时间|空档)|预算|空档/.test(text)) {
     const lines = dateRange(text, env.referenceDate).map((date) => {
       const day = dashboardSnapshot(date, env.now).today;

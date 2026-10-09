@@ -40,7 +40,7 @@ function req(url: string, method: string, body?: unknown): NextRequest {
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
 }
-type Result = { state: string; summary: string; items: Array<{ kind: string; state: string; summary: string; error: string | null }> };
+type Result = { state: string; summary: string; items: Array<{ kind: string; state: string; summary: string; error: string | null }>; goal?: { state: string }; verification?: { status: string } };
 async function say(text: string, extra: Record<string, unknown> = {}): Promise<{ status: number; result: Result | null; error: string }> {
   const res = await createIntakeRoute(req("/api/v2/intakes", "POST", { text, ...extra }));
   if (res.status !== 202) return { status: res.status, result: null, error: ((await res.json()) as { error?: { message?: string } }).error?.message ?? "" };
@@ -94,6 +94,43 @@ test("准入：/安排 没点空档时，话里写了钟点就可以；两样都
   assert.equal(agentInputIssue(parseAgentText("/安排 下午3点到4点写微积分作业"), ctx), null);
   assert.match(agentInputIssue(parseAgentText("/安排 写微积分作业"), ctx) ?? "", /请写上时间.*或先点时间线上的一个空档/);
   assert.equal(agentInputIssue(parseAgentText("/安排 写微积分作业"), { ...ctx, hasSlot: true }), null);
+});
+
+test("跨日期不沿用上一天下午，24小时钟点不被改成另一个半天，午夜结束保留24:00", () => {
+  const pieces = parseArrange("今天下午3点到4点复习数学，明天9点到10点写英语，后天08:00-09:00写报告", null, TODAY, 750);
+  assert.deepEqual(pieces.map((p) => p.ok && [p.date, p.start, p.end]), [
+    [TODAY, "15:00", "16:00"], ["2026-10-13", "09:00", "10:00"], ["2026-10-14", "08:00", "09:00"],
+  ]);
+  assert.deepEqual(parseArrange("下午3点到4点数学，明天00:30-01:00英语", null, TODAY, 750)[1], {
+    ok: true, title: "英语", date: "2026-10-13", start: "00:30", end: "01:00", timed: "range",
+  });
+  assert.deepEqual(parseArrange("23:00-24:00整理笔记", null, TODAY, 750)[0], {
+    ok: true, title: "整理笔记", date: TODAY, start: "23:00", end: "24:00", timed: "range",
+  });
+});
+
+test("非法午夜钟点和倒序24小时区间不猜成中午或另一日", () => {
+  for (const body of ["明天24:30写作业", "明天24:00写作业", "明天08:00-07:00写作业", "明天23:00-00:00写作业"]) {
+    assert.equal(parseArrange(body, null, TODAY, 750)[0]!.ok, false, body);
+  }
+});
+
+test("一句超过六件事明确报告未处理的尾项，不能静默丢掉并声称全完成", async () => {
+  reset();
+  const clauses = Array.from({ length: 7 }, (_, i) => {
+    const start = 15 * 60 + i * 10;
+    const hm = (n: number) => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, "0")}`;
+    return `${hm(start)}-${hm(start + 10)}复习第${i + 1}章`;
+  });
+  const r = await say(`/安排 ${clauses.join("，")}`);
+  assert.equal(r.status, 202);
+  assert.equal(r.result!.state, "partly_applied", JSON.stringify(r.result));
+  assert.equal(r.result!.goal?.state, "partial");
+  assert.equal(r.result!.verification?.status, "partial");
+  assert.deepEqual(r.result!.items.map((i) => i.state), [...Array(6).fill("applied"), "failed"]);
+  assert.match(r.result!.items[6]!.error ?? "", /六|6/);
+  assert.match(r.result!.items[6]!.error ?? "", /第7章/);
+  assert.equal(blocks().length, 6);
 });
 
 test("主人报告的原句：点了明天上午的空档再说两件事——微积分排在话里说的 15:00–16:00，不是空档开头；英语那件说明原因，没有乱排", async () => {

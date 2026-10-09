@@ -1,10 +1,10 @@
 # 自研 Agent 开工方案：模型优先路由、执行闭环与多轮对话
 
-日期：2026-10-04。修订：v1.1。状态：**待实施规划，本文新增能力未开发**。
+日期：2026-10-04。设计修订：v1.1；状态对齐：2026-10-06。**P0–P6 已实施，保留为设计与验收目标，不能再从 P0 开工。** 当前交付与最近部署见 [STATUS](../app/docs/STATUS.md)，分层证据见 [G01–G12](../app/docs/agent-first-v2/acceptance-g01-g12.md)。主人七天试用、真实邮件与复杂视觉等未验证项仍不能称为通过。
 
-核对基线：`main @ 7e76745`，现有业务版本 `95c8cf1`、schema29。开工时重新核对最新代码、工作区与迁移最大号。
+初稿基线：`main @ 7e76745`，当时业务版本 `95c8cf1`、schema29。下文“当前实现”与迁移预期均指初稿；接手时核对最新代码、工作区与迁移最大号。
 
-本文件是本轮 Agent 增强的实施入口，补充 [接口契约](../app/docs/agent-first-v2/AGENT-INTERFACE-CONTRACT.md) 与 [决策记录](../app/docs/decisions.md)。本轮冲突以本文件为准；既有领域行为、E01–E49 与 Todo 只读边界继续有效。原始 v1.0 保留在 Git 提交 `7e76745`，不再按其有歧义的条款实施。
+本文件是该轮 Agent 增强的历史设计，后续语义修复和接口决策已补充或取代部分条款；当前开工入口为 [START-HERE](../app/docs/agent-first-v2/START-HERE.md)。本方案补充 [接口契约](../app/docs/agent-first-v2/AGENT-INTERFACE-CONTRACT.md) 与 [决策记录](../app/docs/decisions.md)。在该轮设计中冲突以本文件为准；现在优先遵守最新任务、接口和后续决策，既有领域行为、E01–E49 与 Todo 只读边界继续有效。原始 v1.0 保留在 Git 提交 `7e76745`，不再按其有歧义的条款实施。
 
 ## 0. 本轮目标与取舍
 
@@ -346,7 +346,9 @@ completed / partial / blocked → 主人明确继续 → 新revision的active
 - 不提交key、.env、生产连接信息、私人原文、数据库、.planning。诊断记录不是用户事实，也不是可公开的评测fixture。
 - 未获指令不commit/push/部署；Todo所有数据、附件、配置、服务与同步任务始终只读。
 
-## 9. 可复制的Coding Agent开工指令
+## 9. 历史 Coding Agent 开工指令
+
+以下是该轮初始建设指令，不再直接执行。当前继续开发请使用 [START-HERE](../app/docs/agent-first-v2/START-HERE.md)；不得重建已经交付的 P0–P6。
 
 > 接手dash-campus。本轮实施Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md v1.1：模型优先理解、有界读工具、参数级授权、多轮对话与执行核验修正闭环。先读根AGENTS、STATUS、START-HERE、本方案、decisions与接口契约，再读app/AGENTS和相关实际代码。基线main 7e76745、业务95c8cf1、schema29仅供核对，以最新代码和迁移最大号为准。
 >

@@ -1,0 +1,122 @@
+import assert from "node:assert/strict";
+import { after, before, test } from "node:test";
+import { NextRequest } from "next/server";
+import { migrateAll, getDb } from "./helpers";
+import { bindIntents, type BindEnv } from "@/workflows/agent";
+import { setNowForTests } from "@/domain/clock";
+import { createOwner, createSession, SESSION_COOKIE } from "@/domain/session";
+import { hashPassword } from "@/domain/password";
+import { setProvidersForTests } from "@/integrations";
+import { ScriptedChatProvider } from "@/integrations/fake-model-provider";
+import { POST } from "@/app/api/v2/intakes/route";
+import { POST as answerRoute } from "@/app/api/v2/questions/[id]/answers/route";
+import { runDueJobsOnce } from "@/worker/runner";
+import { intakeResultById } from "@/workflows/results";
+import type { Intent } from "@/domain/intent";
+import { getResource, updateResource } from "@/repositories/resources";
+
+const NOW = new Date("2026-10-12T09:00:00+08:00");
+const projectId = "e679c86c-b2e9-4982-905e-81922b901a75";
+const env = (extra: Partial<BindEnv> = {}): BindEnv => ({ intakeId: "missing-resource", itemId: "one", conversationId: null, referenceDate: "2026-10-12", now: NOW, tz: "Asia/Shanghai", selected: null, answer: () => null, ...extra });
+const intent: Intent = { op: "resource_link", projectText: "科研项目" };
+const business = () => JSON.stringify([getDb().prepare("SELECT * FROM resources ORDER BY id").all(), getDb().prepare("SELECT * FROM resource_links ORDER BY id").all(), getDb().prepare("SELECT * FROM tasks ORDER BY id").all()]);
+let token = "", csrf = "";
+before(() => {
+  migrateAll(); setNowForTests(NOW); createOwner(hashPassword("missing-resource-isolated"));
+  const session = createSession(1); token = session.token; csrf = session.session.csrfToken;
+  getDb().prepare("INSERT INTO projects (id,title,status,created_at,updated_at) VALUES (?,'论文复现实验','active',?,?)").run(projectId,NOW.toISOString(),NOW.toISOString());
+});
+after(() => { setNowForTests(null); setProvidersForTests({ model: null, search: null }); });
+
+test("缺实际链接主动问，不创建空资料；补链接后项目未匹配仍追问，两个答案不混用", () => {
+  const before = business();
+  const first = bindIntents([intent], env());
+  assert.equal(first.kind, "ask", JSON.stringify(first));
+  if (first.kind !== "ask") return;
+  assert.equal(first.question.purpose, "info"); assert.match(first.question.prompt, /链接/);
+  assert.equal(business(), before);
+  const answers = new Map<string, Record<string, unknown>>([[first.question.key, { url: "https://example.org/reference" }]]);
+  const continuedEnv = () => env({ answer: (key) => answers.get(key) ?? null });
+  const second = bindIntents([intent], continuedEnv());
+  assert.equal(second.kind, "ask", JSON.stringify(second));
+  if (second.kind !== "ask") return;
+  assert.equal(second.question.fieldPath, "project.ref");
+  answers.set(second.question.key, { ref: { kind: "project", id: projectId } });
+  const final = bindIntents([intent], continuedEnv());
+  assert.equal(final.kind, "run", JSON.stringify(final));
+  if (final.kind === "run") { assert.equal(final.command.command, "link_resource"); assert.equal(final.command.url, "https://example.org/reference"); assert.equal(final.command.projectId, projectId); assert.equal(final.command.origin, "user"); }
+  assert.equal(business(), before);
+});
+
+test("补充链接只接受HTTP(S)，不能用其他协议制造资料；原来选择的项目失效不换项目", () => {
+  const unsafe = bindIntents([intent], env({ answer: (key) => key.startsWith("resource_source:") ? { url: "javascript:alert(1)" } : null }));
+  assert.equal(unsafe.kind, "fail", JSON.stringify(unsafe));
+  getDb().prepare("UPDATE projects SET archived_at=? WHERE id=?").run(NOW.toISOString(),projectId);
+  const stale = bindIntents([intent], env({ answer: (key) => key.startsWith("resource_source:") ? { url: "https://example.org/reference" } : { ref: { kind: "project", id: projectId } } }));
+  assert.equal(stale.kind, "fail", JSON.stringify(stale));
+  getDb().prepare("UPDATE projects SET archived_at=NULL WHERE id=?").run(projectId);
+});
+
+test("HTTP/worker：索取实际链接→补URL→选择项目→原关联完成；重复回答不重复创建，不建学习任务", async () => {
+  const excerpt = "这个链接是参考资料，放到科研项目下";
+  setProvidersForTests({ model: { mode: "fixture", provider: new ScriptedChatProvider((r) => r.workflow === "agent_route" ? { ok: true, text: JSON.stringify({ items: [{ itemKey: "resource", excerpt, outcome: { kind: "act", intents: [intent], rationale: "资料关联" } }] }) } : { ok: false, code: "HTTP_ERROR", message: "unexpected workflow", retryable: false }) } });
+  const request = (body: unknown, key: string) => new NextRequest("http://localhost/api/v2/intakes", { method: "POST", headers: { cookie: `${SESSION_COOKIE}=${token}`, "x-csrf-token": csrf, "content-type": "application/json", "idempotency-key": key }, body: JSON.stringify(body) });
+  const drain = async () => { for (let n=0; n<5; n++) await runDueJobsOnce(); };
+  const post = await POST(request({ text: excerpt }, "resource-post"));
+  assert.equal(post.status,202); const { intakeId } = await post.json() as { intakeId: string }; await drain();
+  const q = intakeResultById(intakeId)!.questions.find((q) => q.purpose === "info")!;
+  assert.ok(q,JSON.stringify(intakeResultById(intakeId)));
+  const urlAnswer = await answerRoute(request({ text: "https://example.org/reference", expectedVersion:q.version }, "resource-answer-url"),{params:Promise.resolve({id:q.id})});
+  assert.equal(urlAnswer.status,202); await drain();
+  const choose = intakeResultById(intakeId)!.questions.find((q) => q.purpose === "entity_ref")!;
+  assert.ok(choose,JSON.stringify(intakeResultById(intakeId)));
+  assert.equal((getDb().prepare("SELECT COUNT(*) AS n FROM resources").get() as {n:number}).n,0);
+  const picked = await answerRoute(request({ text:"论文复现实验", expectedVersion:choose.version }, "resource-answer-project"),{params:Promise.resolve({id:choose.id})});
+  assert.equal(picked.status,202); await drain();
+  const pendingConfirm = intakeResultById(intakeId)!;
+  const confirm = pendingConfirm.questions.find((q) => q.purpose === "confirm")!;
+  assert.ok(confirm,JSON.stringify(pendingConfirm));
+  assert.match(confirm.prompt,/https:\/\/example\.org\/reference/); assert.match(confirm.prompt,/论文复现实验/);
+  assert.equal((getDb().prepare("SELECT COUNT(*) AS n FROM resources").get() as {n:number}).n,0);
+  const approved = await answerRoute(request({ text:"可以",expectedVersion:confirm.version },"resource-confirm"),{params:Promise.resolve({id:confirm.id})});
+  assert.equal(approved.status,202); await drain();
+  const final = intakeResultById(intakeId)!;
+  assert.equal(final.state,"applied",JSON.stringify(final));
+  const resources = getDb().prepare("SELECT id,url FROM resources").all() as Array<{id:string;url:string}>;
+  assert.equal(resources.length,1); assert.equal(resources[0]!.url,"https://example.org/reference");
+  const link = getDb().prepare("SELECT resource_id,entity_kind,entity_id,role,origin FROM resource_links").get();
+  assert.deepEqual(link,{resource_id:resources[0]!.id,entity_kind:"project",entity_id:projectId,role:"reference",origin:"user"});
+  const before = business();
+  const replay = await answerRoute(request({ text:"论文复现实验", expectedVersion:choose.version }, "resource-answer-project"),{params:Promise.resolve({id:choose.id})});
+  assert.equal(replay.status,202); await drain(); assert.equal(business(),before);
+  assert.equal((getDb().prepare("SELECT COUNT(*) AS n FROM tasks").get() as {n:number}).n,0);
+});
+
+test("已有资料确认期间其他设备修改版本，旧确认作废后重新问，不能直接覆盖类型", async () => {
+  const resource = getDb().prepare("SELECT id FROM resources LIMIT 1").get() as {id:string};
+  assert.ok(resource);
+  const excerpt="这份不是参考资料，是我完成的成果";
+  const roleIntent: Intent={op:"resource_role",role:"achievement"};
+  setProvidersForTests({ model:{mode:"fixture",provider:new ScriptedChatProvider((r)=>r.workflow==="agent_route"?{ok:true,text:JSON.stringify({items:[{itemKey:"correct-role",excerpt,outcome:{kind:"act",intents:[roleIntent],rationale:"更正资料类型"}}]})}:{ok:false,code:"HTTP_ERROR",message:"unexpected workflow",retryable:false})}});
+  const request=(body:unknown,key:string)=>new NextRequest("http://localhost/api/v2/intakes",{method:"POST",headers:{cookie:`${SESSION_COOKIE}=${token}`,"x-csrf-token":csrf,"content-type":"application/json","idempotency-key":key},body:JSON.stringify(body)});
+  const drain=async()=>{for(let n=0;n<5;n++)await runDueJobsOnce();};
+  const post=await POST(request({text:excerpt,selectedEntityRef:{kind:"resource",id:resource.id}},"resource-version-post"));
+  assert.equal(post.status,202);const {intakeId}=await post.json() as {intakeId:string};await drain();
+  const confirm=intakeResultById(intakeId)!.questions.find((q)=>q.purpose==="confirm")!;
+  assert.ok(confirm,JSON.stringify(intakeResultById(intakeId)));
+  const current=getResource(resource.id)!;
+  const changed=updateResource(resource.id,{title:"别处修正过标题"},current.version);
+  assert.ok(typeof changed!=="string");
+  const old=await answerRoute(request({text:"可以",expectedVersion:confirm.version},"resource-version-old-answer"),{params:Promise.resolve({id:confirm.id})});
+  assert.equal(old.status,202);await drain();
+  assert.equal((getDb().prepare("SELECT role FROM resource_links WHERE resource_id=?").get(resource.id) as {role:string}).role,"reference");
+  const refreshed=intakeResultById(intakeId)!;
+  assert.equal(refreshed.state,"needs_input",JSON.stringify(refreshed));
+  const next=refreshed.questions.find((q)=>q.purpose==="confirm")!;
+  assert.ok(next);assert.notEqual(next.id,confirm.id);assert.match(next.prompt,/别处修正过标题/);
+  const approved=await answerRoute(request({text:"可以",expectedVersion:next.version},"resource-version-new-answer"),{params:Promise.resolve({id:next.id})});
+  assert.equal(approved.status,202);await drain();
+  assert.equal(intakeResultById(intakeId)!.state,"applied",JSON.stringify(intakeResultById(intakeId)));
+  assert.equal((getDb().prepare("SELECT role FROM resource_links WHERE resource_id=?").get(resource.id) as {role:string}).role,"achievement");
+  assert.equal((getDb().prepare("SELECT COUNT(*) AS n FROM resources").get() as {n:number}).n,1);
+});

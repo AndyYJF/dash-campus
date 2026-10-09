@@ -381,3 +381,76 @@ test("目标表随业务导出；没有在等的问题时孤立短答如实说�
   assert.ok(moved.goal && moved.goal.revision === 1, "新要求立新目标");
   assert.equal(getIntake(moved.intakeId)!.goalRevision, 1);
 });
+
+test("待确认方案的语义上下文可见：补充限制继续原目标，不另起重排目标", async () => {
+  const text = "晚上排得太晚，帮我早点收工";
+  onRoute = () => ({ items: [decideItem(text)] });
+  onDecide = () => ({ kind: "act", rationale: "建议每天20:30结束学习", intents: [{ op: "window_end", time: "20:30", days: "all" }] });
+  const first = await say(text);
+  const old = first.questions.find((q) => q.purpose === "confirm")!;
+  assert.ok(old, JSON.stringify(first));
+  const weekendBefore = (getDb().prepare("SELECT weekend_end FROM planning_preferences WHERE id=1").get() as { weekend_end: string }).weekend_end;
+  onRoute = (c) => {
+    const g = c.currentGoal as { id: string; previousDecision: { rationale: string; intents: unknown[] } };
+    assert.equal(g.id, first.goal!.id);
+    assert.deepEqual(g.previousDecision.intents, [{ op: "window_end", time: "20:30", days: "all" }]);
+    const qs = c.openQuestions as Array<{ id: string; purpose: string; goalId: string }>;
+    assert.equal(qs.find((q) => q.id === old.id)?.purpose, "confirm");
+    assert.equal(qs.find((q) => q.id === old.id)?.goalId, first.goal!.id);
+    return { items: [decideItem("双休日维持原样", true)] };
+  };
+  onDecide = (c) => {
+    const g = c.goal as { previous: { intents: unknown[] } };
+    assert.deepEqual(g.previous.intents, [{ op: "window_end", time: "20:30", days: "all" }]);
+    return { kind: "act", rationale: "只将工作日20:30收工，保留双休日", intents: [{ op: "window_end", time: "20:30", days: "workday" }], constraints: [{ kind: "protect_days", days: "weekend", excerpt: "双休日维持原样" }] };
+  };
+  const revised = await say("双休日维持原样");
+  assert.equal(revised.goal!.id, first.goal!.id);
+  assert.equal(revised.goal!.revision, 2);
+  assert.equal(getQuestion(old.id)!.status, "superseded");
+  assert.equal((getDb().prepare("SELECT COUNT(*) n FROM agent_action_batches WHERE intake_id=?").get(first.intakeId) as { n: number }).n, 0);
+  const latest = revised.questions.find((q) => q.purpose === "confirm")!;
+  assert.ok(latest, JSON.stringify(revised));
+  assert.equal(await answer(latest, "可以"), 202);
+  const prefs = getDb().prepare("SELECT workday_end,weekend_end FROM planning_preferences WHERE id=1").get() as { workday_end: string; weekend_end: string };
+  assert.deepEqual(prefs, { workday_end: "20:30", weekend_end: weekendBefore });
+  const before = facts();
+  assert.equal(await answer(old, "可以"), 409);
+  assert.equal(facts(), before);
+});
+
+test("跨天决策把周四当来源日，允许在其他天分配；日范围仍保留，不靠放宽执行门", async () => {
+  const text = "周四课满，那天别排学习了，挪到别的天";
+  const courses = getDb().prepare("SELECT * FROM courses ORDER BY id").all();
+  onRoute = () => ({ items: [{ itemKey: "rebalance", excerpt: text, outcome: { kind: "decide", objective: text, rationale: "周四是需要腾空的来源，其他日期要权衡", sourceDates: [{ date: "2026-10-08", excerpt: "周四" }] } }] });
+  onDecide = (context) => {
+    const scope = context.requestedScope as { dateFrom: string; dateTo: string; explicit: boolean };
+    assert.deepEqual(scope, { dateFrom: "2026-10-05", dateTo: "2026-10-11", explicit: false });
+    return { kind: "act", rationale: "本周周四不安排学习，其他日期按现有预算分配，课程保留", intents: [{ op: "no_study", dateFrom: "2026-10-08", dateTo: "2026-10-08", fromTime: null, label: "周四课满不排学习" }, { op: "replan", dateFrom: "2026-10-05", dateTo: "2026-10-11" }] };
+  };
+  let result = await say(text);
+  if (result.state === "needs_input") {
+    const confirmation = result.questions.find((q) => q.purpose === "confirm");
+    assert.ok(confirmation, JSON.stringify(result));
+    assert.match(confirmation.prompt, /2026-10-05 至 2026-10-09/);
+    assert.match(confirmation.prompt, /2 天不重新安排/);
+    await answer(confirmation, "可以");
+    result = intakeResultById(result.intakeId)!;
+  }
+  assert.ok(["applied", "no_change"].includes(result.state), JSON.stringify(result));
+  assert.equal((getDb().prepare("SELECT COUNT(*) n FROM plan_sessions WHERE date(start_utc, '+8 hours')='2026-10-08' AND status IN ('planned','tentative')").get() as { n: number }).n, 0);
+  assert.deepEqual(getDb().prepare("SELECT * FROM courses ORDER BY id").all(), courses);
+  const state = getDb().prepare("SELECT payload_json FROM intake_items WHERE intake_id=? ORDER BY created_at").all(result.intakeId) as Array<{ payload_json: string }>;
+  assert.ok(state.some((row) => JSON.parse(row.payload_json).sourceDateExclusions?.includes("2026-10-08")));
+});
+
+test("来源日提示不能取消主人明确的日期范围，即使模型同时给出相反的元数据", async () => {
+  const text = "只动周四，别动其他日期";
+  const before = JSON.stringify(getDb().prepare("SELECT * FROM planning_policy_rules ORDER BY id").all());
+  onRoute = () => ({ items: [{ itemKey: "bounded", excerpt: text, outcome: { kind: "decide", objective: text, rationale: "核对明确范围", sourceDates: [{ date: "2026-10-08", excerpt: "周四" }], constraints: [{ kind: "date_scope", dateFrom: "2026-10-08", dateTo: "2026-10-08", excerpt: "只动周四" }] } }] });
+  onDecide = () => replan("2026-10-05", "2026-10-11");
+  const result = await say(text);
+  assert.equal(result.state, "failed", JSON.stringify(result));
+  assert.equal(JSON.stringify(getDb().prepare("SELECT * FROM planning_policy_rules ORDER BY id").all()), before);
+  assert.equal((getDb().prepare("SELECT COUNT(*) n FROM agent_action_batches WHERE intake_id=?").get(result.intakeId) as { n: number }).n, 0);
+});

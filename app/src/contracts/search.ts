@@ -35,7 +35,7 @@ export class SearchError extends Error {
 export interface SearchProvider {
   readonly provider: string;
   /** 失败抛 SearchError */
-  search(args: { query: string; maxResults: number; signal?: AbortSignal }): Promise<SearchHit[]>;
+  search(args: { query: string; maxResults: number; topic?: "general" | "news"; days?: number; signal?: AbortSignal }): Promise<SearchHit[]>;
   /** 只返回成功取得正文的文档（status=retrieved）；部分 URL 失败不抛错。整体失败抛 SearchError */
   extract(args: { urls: string[]; signal?: AbortSignal }): Promise<EvidenceDocument[]>;
 }

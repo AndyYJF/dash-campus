@@ -1,87 +1,105 @@
-# 从这里接手：V2 易用性修复与自研 Agent
+# 从这里接手 Dash Campus
 
-更新：2026-10-06。当前生产 `395c0f3`（schema 35）：方向页 D0/D1 的 F01–F03 修复与「最近的目标」续办已发布；`main` 在 `c0fb270`，其后只有文档与测试提交，无需部署。版本、测试数和未完成项以 [当前状态](../STATUS.md) 顶部“当前快照”为准。方向页打磨 D0/D1（迁移 0035）见下节。Agent 语义修复（R01–R08、S01–S20，迁移 0033；复审修复 0034；过期未反馈块、剩余时钟、反馈记账及同步刷新修复、截止日与范围歧义）见其后；Agent增强 v1.1 的 P0–P6 已在 `main` 实现并逐包部署生产（`521aeaa`、schema32）；早先 R0–R5 与易用性修复的业务版本为 `95c8cf1`（schema29）。后续文档提交与业务部署修订分开记录。先读 [当前状态](../STATUS.md)、[产品与工程决策](../decisions.md) 及 [模糊调整的实现与证据](../flexible-adjustments-2026-10-04.md)。修复前审计基线 `cbbaeeeaa328807ebc97389a7a824f7acdb6c356` 只作历史，拉取后仍核对代码与工作区。
+更新：2026-10-06。先读 [根 AGENTS.md](../../../AGENTS.md)、[STATUS](../STATUS.md) 和 [决策记录](../decisions.md)。本页是开发地图；当前版本、部署记录与证据集中在 STATUS，不在各入口重复维护。拉取后仍须核对 HEAD、工作区和迁移最大号。
 
-反馈记账业务 **`967719d` / schema34** 已被最新 **`3895aa3` / schema34** 补发（均无迁移）。同日多段反馈按plan_session_id去重，“完成一半”不推算实际时间；最新补发让同步answered路径也广播dash:changed、PlanView也订阅，避免时间轴显示过期状态。证据见 [即时刷新发布](../feedback-refresh-fix-2026-10-05.md)；前段 `962b120` 是更早发布，保留历史。证据及未关联历史记录的兼容边界见 [反馈记账发布](../feedback-accounting-fix-2026-10-05.md)。不要改回按整天覆盖关联完成块，也不要用计划时间的一半构造actual。
+2026-10-07 本地主目录已同步远端，随后继续回答绑定与安排回归；这些修改尚未提交或部署。证据与边界见 [本轮复验](../agent-dialogue-robustness-2026-10-07.md)，不要把本地测试结果当作生产已更新。
 
-## Agent 语义修复（2026-10-05）
+2026-10-09本地新增AI资讯，入口`/news`，新增迁移0036；三个注册操作/get_ai_news、定期worker、导出恢复均已接通。接手先看[功能与证据](../ai-news-2026-10-09.md)及STATUS；保留此前工作区改动。真实来源/隔离/网页通过，真实模型和生产上线待验，不能沿用生产schema35直接运行新代码。
 
-[语义修复提示词](../../../Plan/dash-campus-AGENT-SEMANTIC-REPAIR-PROMPT-2026-10-05.md) 的 R01–R08 与 S01–S20 已实现，迁移 0033（schema 33）。证据见 [语义修复验收](./acceptance-semantic-repair-2026-10-05.md)，接口见 [契约](./AGENT-INTERFACE-CONTRACT.md) 末节，取舍见 [决策记录](../decisions.md) 末节。新增代码入口：约束类型 `src/domain/constraints.ts`、目标约束 `src/repositories/goal-constraints.ts`、统一门 `src/workflows/agent-gate.ts`、确认事实与实际影响 `src/workflows/command-facts.ts`、步骤凭据 `src/repositories/step-executions.ts`；回归 `test/agent-semantic-repair.test.ts`（R01–R08）与 `test/agent-semantic-scenarios.test.ts`（S 场景）。原 G04“通过”因核对盲点作废。
+## 1. 当前交付与下一步
 
-复审修复（验收页 §8，迁移 **0034** `intakes.active_ms`，schema 34，生产 `1c7792f`）：解除约束单独授权、学习块按实际时间核对条件、对象身份统一由 `commandEntities` 解析、`in_background` 结果状态、180 秒按主动执行时间、指代不明请主人指认；回归 `test/agent-semantic-review.test.ts`。
+R0–R5 易用性修复、Agent 增强 v1.1 P0–P6、后续语义/反馈修复及服务端目标续办已实施，不从旧 P0 重建。
 
-过期未反馈学习块（验收页 §9，无迁移，生产 `de8adff` → `962b120`）：已结束没反馈的块挂住需求不整段补排（`awaitingFeedbackSessions`，`src/workflows/plan.ts`），每段一个“这段做了吗，还剩多少？”问题（`askSessionFeedback`，`src/workflows/agent.ts`），回答走现有操作；回归 `test/session-feedback.test.ts`。剩余需求的报告时刻用真实写入时刻（`src/workflows/ops/tasks.ts`），和学习记录同一时钟比较先后，不要改回规划时钟 `ctx.now`。
+方向页已交付 D0/D1：四年阶段模板、去向偏好、工作样本、方向数据及五个注册操作。2026-10-06 复验关闭 F01 首次版本 0、F02 后续关联撤销、F03 关注后样本消失。按钮流程在独立库的登录态网页验证通过；真实模型、完整恢复和整份方向方案尚未验收。详见 [方向计划](../../../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md) 和 [方向复验](../../../Plan/dash-campus-DIRECTION-ACCEPTANCE-2026-10-05.md)。
 
-截止日与范围的歧义（验收页 §10，无迁移）：主人说的单日正好是截止日、本轮又要重排时，`deadlineScopeAmbiguity` / `askScopeChoice` / `takeScopeChoice`（`src/workflows/intake.ts`）在统一门与确认之前问“截止前都可以排 / 只调整那一天 / 先不要”；答“截止前”时 `decisionScope` 的 `notScope` 排除那一天（`src/workflows/agent-decide.ts`）。回归在 `test/agent-semantic-repair.test.ts` 末尾 4 项。不要靠放宽统一门或加“就要交了”之类关键词绕过。
+继续方向页按 D2–D5 补齐：
 
-## 方向页打磨 D0/D1（2026-10-05）
+1. 收紧默认视图：当前阶段为主，阶段目的和去向差异可读；按需展开未来阶段，落实工作区分栏/标签及样本比较，减少关注区与目录的内容重复。
+2. 接通工作样本 → 推荐 → 有限试做 → 近期行动。补共享预算的只读投入预览，选择后重读实际容量；排不下如实说明。正式投入须接真实下一步，不能只改标签。
+3. 主人线索的原文/出处/详情、方向关联、长期实践依据与反思续办；不推断主人感受、不把导师网页变成任务。
+4. 按方向计划第 11 节补整条网页登录流程、真实模型、完整导出恢复、手机/暗色与跨页刷新验证。D0/D1 的按钮复验不能代替这整条旅程。
 
-计划 [dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md](../../../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md)。内容目录 `src/content/direction/`；迁移 0035；五个操作名称固定；GET `/api/v2/direction` 只读。采用模板不建任务；“先不看了”只改 `direction_tracks.status`。D2–D5 未完成。
+原计划 D1 包含导出恢复目标，目前只有导出白名单及隔离覆盖，完整恢复仍缺；工作包标签不是全部验收证明。当前用户提出其他任务时按其任务范围推进。
 
-## Agent增强 v1.1（已实施，2026-10-05）
+## 2. 文件与代码地图
 
-[Agent增强方案v1.1](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md)的模型优先路由、有界只读工具、多轮追问/改口/跨设备续办、执行后核验与有限修正、试用指标已实现。逐包实现与证据见[实施记录](./implementation-progress.md)，G01–G12 证据层见[验收映射](./acceptance-g01-g12.md)，接口见[契约](./AGENT-INTERFACE-CONTRACT.md)末三节。接手后优先补：登录态网页走查、主人七天试用（设置页“试用指标”）、真实邮件收件与复杂视觉材料。下列历史R0–R5说明用于理解既有系统，不要求重新实现。
+2026-10-07 本地增加普通聊天界面与回答原子性修正（未部署），证据见 [本轮复验](../agent-dialogue-robustness-2026-10-07.md)。`src/app/chat/page.tsx` 是完整对话页，`GlobalAgent.tsx` 在根布局持有 `UniversalIntake`，不要再在各页创建独立输入框。对话读取接口的 `replyTo/replyResult` 与失效回答边界已补入接口契约。
 
-代码入口：路由 `src/workflows/agent-route.ts`、只读工具 `agent-tools.ts`、决策 `agent-decide.ts`、投递管线 `intake.ts`、核验 `agent-verify.ts`、修正 `agent-run.ts`、指标 `agent-metrics.ts`、预算与 trace `ai-budget.ts`/`agent-trace.ts`、注册表 `src/contracts/commands.ts` 的 `OPERATIONS`。真实模型评测 `scripts/eval-agent.mts`（固定语料）与 `scripts/eval-goal-flows.mts`（多轮目标），凭证只经环境变量。
+同日主人要求部署后，上述代码随 `chat-20261007` 工作区快照上线；GitHub未同步，生产版本与回退见 [发布记录](../chat-release-2026-10-07.md)。继续开发先保留工作区修改；不要拿HEAD本身替代已部署快照，也不要把前段“未部署”当最新状态。
 
-## 1. 要完成的用户体验
+发布后本地又补齐卡片/明确问题ID回答的旧定位清理及事务回滚；485/485与typecheck通过，该补充尚未上线。校园桥接失败定位为Dash沿用旧上游地址，当前插件HTTPS接口只读/schema探测通过，生产配置未改；Todo保持只读。接手以STATUS的分层状态为准。
 
-用户通过一个入口扔材料、表达意图、回答问题。自研 Agent 主动补关键事实，决定并执行具体安排，维护身份筛选、任务、目标项目、资料、实践、复盘和提醒。用户随时自然语言修改/撤销，主要看结果和行动，不维护一堆表单。
+下列代码路径相对 `app/`；修改应用代码前读 [app/AGENTS.md](../../AGENTS.md)。
 
-今天/本周共用课程、校历、生活保留、实际投入和剩余需求。桌面显示七天时间轴，手机显示日时间线；课程/空档/学习安排联动。自动获取官方节假日/学校调课；国家补班与学校补课映射分别处理。保留休息，近期安排稳定。
-
-## 2. 文件地图与阅读顺序
-
-| 文件 | 用途 |
+| 入口 | 用途 |
 |---|---|
-| [当前状态](../STATUS.md) | 唯一当前交接入口；历史部署与本次规划分开 |
-| [Agent增强v1.1](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) | P0–P6、参数级授权、多轮与执行闭环，G01–G12验收；已实施，证据见[验收映射](./acceptance-g01-g12.md) |
-| [审计基线](./REPAIR-BASELINE-2026-10-04.md) | 九项实际失败路径、源码定位与复现规则 |
-| [总修复计划](./REPAIR-PLAN-2026-10-04.md) | 主工作包 R0–R5；E01–E29；开发启动指令 |
-| [Agent接口契约](./AGENT-INTERFACE-CONTRACT.md) | 操作矩阵、通用问答、领域命令/HTTP对齐；E30–E39 |
-| [校历与假日规格](./ACADEMIC-CALENDAR-AND-HOLIDAYS.md) | 校历图片/PDF/链接导入、年度假日、补课映射与预算；E40–E49 |
-| [V2基础规格](./MASTER-PLAN.md) | 来源、事务、授权、时间预算、导出恢复等基础契约；初始基线已过期 |
-| [Coding Agent指令](./CODING-AGENT.md) | 约束和历史建设上下文；新修复入口优先于旧P0–P6 |
-| [E01–E49 验收映射](./acceptance-e01-e49.md) | 初始隔离验收与缺口；当前真实模型/生产证据看 STATUS 和各发布记录，主人试用未完成 |
-| [决策记录](../decisions.md) / [模糊调整](../flexible-adjustments-2026-10-04.md) | 统一输入、查询只读、事实决策、默认/明确范围、问答与确认边界；实现入口和验证范围 |
-| [实施历史](./implementation-progress.md) / [旧验收映射](./acceptance-map.md) | 各工作包的实现与当时验证；旧 A01–A22 不代表新修复完成或长期易用性通过 |
-| [运行说明](../deploy.md) | 配置/web+worker/迁移/备份；不要盲用旧生产回退记录 |
+| [STATUS](../STATUS.md) | 唯一当前状态入口，区分交付、发布记录、独立复验与未验证项 |
+| [方向计划](../../../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md) / [方向复验](../../../Plan/dash-campus-DIRECTION-ACCEPTANCE-2026-10-05.md) | D0–D5 目标、13 个场景、F01–F03 与剩余范围 |
+| `src/content/direction/`、`src/app/components/V2DirectionView.tsx`、`src/workflows/snapshot.ts` | 阶段内容、方向 UI、只读快照 |
+| `src/workflows/ops/direction-workspace.ts`、`src/workflows/ops/direction.ts` | 方向数据操作与候选试做；实体和调用以源码为准 |
+| `src/contracts/commands.ts` 的 `OPERATIONS`、`src/workflows/undo.ts` | 唯一业务注册表与撤销；新字段对齐绑定、授权、核验、恢复和导出 |
+| [Agent 接口契约](./AGENT-INTERFACE-CONTRACT.md) / [决策记录](../decisions.md) | 工具、HTTP、版本语义、事实与授权边界 |
+| `src/workflows/agent-route.ts`、`agent-tools.ts`、`agent-decide.ts`、`intake.ts` | 模型优先理解、只读读取、决策与多轮投递 |
+| `src/workflows/agent-gate.ts`、`command-facts.ts`、`agent-verify.ts`、`agent-run.ts` | 统一约束门、确认事实、读回核验、有限修正 |
+| `src/domain/budget.ts`、`scheduler.ts`、`calendar-occurrences.ts`、`src/workflows/plan.ts` | 课程、生活、实际投入、剩余需求与差异排程 |
+| [校历与假日规格](./ACADEMIC-CALENDAR-AND-HOLIDAYS.md) | 官方假日、国家补班与学校补课映射分别处理 |
+| [Agent 增强方案](../../../Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md) / [G01–G12](./acceptance-g01-g12.md) | 已实施的 P0–P6 设计与分层证据 |
+| [语义修复验收](./acceptance-semantic-repair-2026-10-05.md) / [实施记录](./implementation-progress.md) | 后续约束、反馈、截止歧义和跨设备续办的历史证据 |
+| [总修复计划](./REPAIR-PLAN-2026-10-04.md) / [E01–E49](./acceptance-e01-e49.md) | 早先 R0–R5 目标与当时验证，不能直接重新执行旧开工指令 |
+| [V2 基础规格](./MASTER-PLAN.md) / [历史建设说明](./CODING-AGENT.md) | 来源、事务、时间和恢复契约的背景；旧 P0/T0 开工顺序不再生效 |
+| [用户手册](../USER-MANUAL.md) / [运行说明](../deploy.md) | 面向用户的实际操作；配置、迁移、备份和发布方式 |
 
-先读根目录 `AGENTS.md`、本文件、STATUS与Agent增强v1.1，再读相关领域规格、实际代码及 `app/AGENTS.md`。工作在 dash-campus；不需要私人聊天历史、截图目录、服务器凭证才能开始本地实现。
+## 3. 必须保留的已有行为
 
-## 3. 本轮开工与既有待验证项
+- 查看只读；读取快照不生成任务、不启探索。模板采用和关注样本也不自动建学习任务。
+- 所有写路径复用注册操作、统一约束门与版本核对。首次方向配置版本为 0；已存在配置核对真实版本。
+- 方向创建被后续记录引用时，撤销返回冲突并保留数据；同批次创建/关联按逆序撤销。
+- 待反馈的过去学习块挂住剩余需求，不整段补排。实际用时与“完成一半”的进度分开；反馈按具体学习块记账，同步写入后广播共享刷新。
+- 保护课程、休息、锁定/已开始块及主人范围；截止日与修改范围歧义先问，不靠关键词放宽执行门。
+- 持久目标、问题、步骤凭据与预算继续使用已有实现；已完成目标可从服务端目标列表续办。异步工作未落地不能称为完成。
 
-本轮按Agent增强v1.1的P0–P6实施。以下是现有产品尚未完成的验证与兼容工作，继续保留，不代替本轮主线，也不因新增方案而自动完成。
+## 4. 验证边界与接手方式
 
-1. 补复杂课表截图、扫描 PDF 的真实视觉验证，以及真实模型的模糊调整追问续答。官网校历图片和简单调整已验证，不能据此推断任意材料/问答都可靠。
-2. 配置邮件后做 E23/E34 的真实投递与收件核对。
-3. 语义修复带迁移 0033，复审修复带 0034，方向工作区带 0035（当前 schema 35，生产 `2c54500`，见 STATUS）。S17 网页续办已发布；真实模型 `s17-continue-goal`、生产真实投递、邮件收件、复杂视觉、七天试用仍缺。后续改动按实际迁移版本、匹配备份/回退和公开行为验证发布，不重复执行旧迁移或重建生产。
-4. 主人连续七天试用，记录 REPAIR-PLAN §8 列的指标并修正。
-5. 把仍在使用的 v1 写接口（候选/资料/身份规则/可用时间块/设置表单）逐个并入统一操作或同一份变更记录；课表导入和任务/目标/项目/固定活动表单已并入。
+只对实际改动做必要验证。隔离业务、网页登录、真实模型、生产读取/写入、主人试用分别记录；旧测试通过或一张截图不能替代整条流程。后续每包更新 STATUS、决策、接口、实施记录和受影响手册；历史证据保留日期，不把旧版本写成当前。
 
-下面是修复开始时的第一工作包说明，保留作背景。
+仍需独立补齐的已有验证包括真实邮件收件、复杂课表截图/扫描 PDF、七天主人试用，以及 S17 六小时换设备续办的真实模型路径。已发生的局部网页验证按各报告记录，不能再笼统写“从未走查”，也不能据此声称全部验收完成。候选/资料/身份规则/可用时间块/设置等遗留 v1 表单的统一变更记录缺口，按实际调用路径核对后处理。
 
-### 原第一工作包：R0/R1
-
-1. 核对分支、dirty tree、package/迁移/导出模型；保留已有改动。隔离数据库路径必须在首次读配置前设置，不连接生产或 Todo 写库。
-2. 按审计摘要建立有固定时钟的失败用例，优先“已学150/预算180仍超排”“重复重排换ID”“旧课程语义统计零”。新增用例应证明行为，不镜像实现。
-3. 统一旧课程来源、校历事实和有效实例权威；来源不能证明的旧活动保留占用并标待核对，不猜原周次、不双扣。
-4. 修共享预算账本、剩余任务语义、课程/生活约束和差异排程；保护24h内/锁定/开始块，用户明确修改按范围执行。
-5. 有效课程和预算基础跑通后，继续R2的通用问答/命令/真实材料与结果，随后R3界面、R4策略及R5方向闭环。不要先交漂亮但错误的课表。
-
-源码主要在 `app/src/domain/{budget,scheduler,calendar-occurrences,time}.ts`、`workflows/{plan,snapshot,intake,commands,undo}.ts`、相应 repositories/contracts，以及三页组件和 UniversalIntake。新增迁移号以实际最大值为准，不按旧文档写死23。
-
-## 4. 验证与报告
-
-- 按E01–E49记录 pending/implemented/isolated-pass/real-web-pass 等证据层，不能直接把目标规格全部勾绿。
-- 真实截图课表/校历、通用回答、自然语言修改、撤销和页面刷新需要网页路径；模拟provider或文本PDF不能代替图片结构提取。
-- 国家日期与教学周/补课映射不同；抓取403/未发布/未获取与全年无假日不同。
-- 主人七天试用必须是真实使用，不能由模拟时钟或“最多3问”代替。
-- 每包更新 implementation-progress 与 STATUS；原记录保留日期并标历史。普通决定自主处理，不反复问命名/库选择。
-- 代码验证后再按当次授权提交/推送或部署；开发可在没有生产凭证时完成，不能从公开仓库寻找秘密。
-
-（“原第一工作包”及初始建设说明保留历史背景，当前状态与下一步已更新。）
+在独立库完成开发，不依赖私人聊天历史或生产凭证。Todo 严格只读；生产发布另按当次授权与匹配备份/回退实施。不要恢复过期 schema 的备份来补文档不一致。
 
 ## 5. 可复制开工指令
 
-> 接手dash-campus。先读根AGENTS、STATUS、START-HERE、Plan/dash-campus-AGENT-ROUTER-PLAN-2026-10.md v1.1、decisions、接口契约与G01–G12验收映射，再读实际源码。Agent增强v1.1 P0–P6已实现（schema32）；接手后补登录态网页走查、主人七天试用、真实邮件收件与复杂视觉材料。核对最新代码/dirty tree/迁移，用独立库，沿用唯一OPERATIONS、参数级授权、请求级持久预算、步骤依赖与核验；G01–G12与相关E01–E49分别按证据层报告。Todo绝对只读，不清生产、不提交秘密，不引入外部codingagent、不换框架。命令Git Bash先写脚本，未获适用指令不commit/push/上线。
+> 接手 dash-campus。先读根 AGENTS、app/AGENTS、STATUS、START-HERE、decisions、方向计划及方向复验，再核对最新 HEAD/schema/工作区与相关源码。R0–R5、Agent 增强 P0–P6 已实施；方向 D0/D1 与 F01–F03 已交付。按 D2–D5 的真实剩余范围补当前阶段视图、工作样本比较、推荐到有限试做的预算预览和排程、真实续建下一步、主人线索及长期反思。复用唯一 OPERATIONS、自研 Agent、多轮持久问题、参数授权、统一门、步骤凭据与读回核验；不从旧 P0 重建。保留版本 0、引用撤销冲突和样本持续可读回归。按方向计划第 11 节分别记录隔离、网页、真实模型、完整恢复与生产证据。单用户、自部署、唯一 Agent 栏、Todo 只读，Git Bash 先写脚本，保留未提交改动，不提交秘密，未要求不 commit/push/上线。
+
+## 条件续办补记（2026-10-07，本地未部署）
+
+补齐待确认方案进入目标摘要与路由上下文；新增一个失败前回归和真实模型3场景复验。完整测试仍有旧录制stale，57条真实重录进行中；保留版本与权限门，不用关键词把全部新话自动挂旧目标。继续前核对STATUS及[复验报告](../agent-dialogue-robustness-2026-10-07.md)。
+
+
+## 2026-10-08 查询与跨天补记
+
+旧57条真实重录已结束，54/57基于旧分类判定；后续发现评测漏算后台副作用及执行失败，已补严格判定。来源日期/明确范围、已有复盘读取、无对象确认已修；完整497/498，旧录制仍stale，不能称全绿。最新源码与证据以STATUS和复验报告为准，不再poll旧session76931。生产未包含本地补充。后续先核对正在进行的真实多轮结果，再重新录制最终提示词，不能靠手改指纹或旧录制输出继续。
+
+
+## 2026-10-08 最新接续：失败路由（本地未上线）
+
+59条真实批次72995已结束49/59，禁止再poll或称全绿。新修路由失败误建任务、失败片段显式重试、评测参考日误关前文；相关31/31＋附件1/1，真实完整指代2/2 applied/verified。录制兼容8715已结束：u057/u136回放判定差异，未闭合；预算主人授权、缺对象恢复、假日节选覆盖与模型超时仍缺。下一轮从[复验报告](../agent-routing-failures-2026-10-08.md)接续，生产仍reference-20261008/schema35，Todo只读，未commit/push/部署。
+
+## 2026-10-08 预算对话修复接续
+
+上一节“预算主人授权仍缺”已由本轮代码修复，相关70项隔离回归与typecheck/eslint通过；真实模型预算多轮仍待验。策略快照、具体旧值→新值确认、统一聊天续答与伪授权边界见[报告](../agent-budget-dialogue-2026-10-08.md)。本轮主人授权发布，线上状态以STATUS最新收据为准；未commit/push，Todo只读。
+
+## 本轮暂时收尾
+
+budget-20261008/schema35已发布，发布镜像84/84、源码与两容器核对及公网health通过，见[收据](../agent-budget-release-2026-10-08.md)。主人要求结束持续目标，暂不继续自动开发。后续若重新授权，从真实预算多轮、缺对象恢复、假日节选覆盖、超时、旧录制差异和完整真实网页旅程接续，不重新部署旧版本或擅自碰Todo。未commit/push。
+
+## 2026-10-08 预算提案改口接续（本地）
+
+继续调优目标已恢复active。agent_decide读取aiPolicy现值，ownerPolicyProposal仅由服务端从同目标、当前待确认的纯策略原事项继承；模型摘要/工具资料/已完成策略不能授权新预算。新提案仍需具体确认与版本门。三文件33/33及类型/静态检查通过；统一聊天真实多轮3/3，最终值250/1000/200单次保存，事实保护通过，详见[报告](../agent-budget-revisions-2026-10-08.md)。尚未部署/提交/推送，下一步修缺对象可恢复提问、假日范围、超时和完整真实网页；旧59条/录制失败保持原证据。
+
+## 2026-10-09 调优接续
+
+本地已修任务/项目缺匹配追问续办、连续对象选择键隔离及旧键兼容；生产未更新。37项相关隔离及追加兼容通过，真实模型请求受连接/超时影响，没有本轮真实通过证据。继续工作看[报告](../agent-missing-targets-2026-10-09.md)：先补超过8候选的搜索恢复、缺资料/无撤销历史，再做假日覆盖、有限超时恢复及最终真实/网页登录核对。不得把本轮局部通过称为整个目标完成，不从旧部署授权推导再次发布。
+
+### 同轮缺URL续办接续
+
+缺实际URL→info追问→补URL→选真实项目→具体确认→统一关联已补；39项相关与追加跨设备版本回归通过，类型/静态通过。missing-resource-chat仅准备，未真实调用。真实对象批次58681、97773均exit1，无活测试；最后1073、resource-version检查及phase-final也已exit0。接手不poll旧句柄、不把本地源码当生产。超过8候选/多资源指代/无撤销历史、假日覆盖、超时与完整真实验收仍待做。

@@ -121,8 +121,8 @@ export function buildTemplate(workDir: string, fixture = "week-basic"): string {
   return file;
 }
 
-function businessWrites(intakeId: string): string[] {
-  const rows = getDb().prepare(`SELECT command FROM agent_action_batches WHERE intake_id = ?`).all(intakeId) as Array<{ command: string }>;
+export function businessWrites(intakeId: string): string[] {
+  const rows = getDb().prepare(`SELECT command FROM agent_action_batches WHERE intake_id = ? UNION SELECT command FROM agent_step_executions WHERE intake_id = ? AND (batch_id IS NOT NULL OR json_array_length(effects_json) > 0)`).all(intakeId, intakeId) as Array<{ command: string }>;
   return rows.map((r) => r.command).filter((c) => !MATERIAL_ONLY_COMMANDS.has(c));
 }
 
@@ -188,6 +188,7 @@ export function grade(entry: CorpusEntry, o: CaseResult["observed"], intents: Ar
   const reasons: string[] = [];
   const readOnlyViolation = e.readOnly && o.writes.length > 0;
   if (readOnlyViolation) reasons.push(`只读请求产生了写入：${o.writes.join(",")}`);
+  if (o.failed > 0 || o.state === "failed") reasons.push(`执行失败：${o.errors.join("；") || "事项未成功完成"}`);
   const asked = o.questions > 0 || o.kind === "ask";
   const askOk = e.allowAsk && asked && o.writes.length === 0;
   const clockRejection = e.kind === "decide" && o.errors.some((x) => /钟点|几点|具体时间|具体时刻/.test(x));
@@ -256,8 +257,10 @@ function replayFetch(rec: Recording, stale: string[]): FetchLike {
   }) as FetchLike;
 }
 
-async function submit(entry: CorpusEntry, session: { token: string; csrf: string }, seq: number): Promise<string> {
-  const conversationId = currentConversationId(new Date(entry.now));
+export async function submitCorpusEntry(entry: CorpusEntry, session: { token: string; csrf: string }, seq: number): Promise<string> {
+  // 对话空闲时间比较审计时间（真实时钟），entry.now 只负责规划/相对日期。
+  // 用规划参考日会把刚建好的种子前文误关掉，导致近期指代测成无上下文。
+  const conversationId = currentConversationId();
   for (const t of entry.turns) appendTurn({ conversationId, role: t.role, text: t.text });
   const sel = entry.selected ? resolveSelected(entry.selected) : null;
   const body = { text: entry.text, referenceDate: entry.referenceDate, conversationId, ...(sel?.ref ? { selectedEntityRef: sel.ref } : {}), ...(sel?.slot ? { slot: sel.slot } : {}) };
@@ -307,7 +310,7 @@ export async function runEval(opts: EvalOptions): Promise<{ results: CaseResult[
     let result: CaseResult;
     try {
       const s = createSession(1);
-      const intakeId = await submit(entry, { token: s.token, csrf: s.session.csrfToken }, i);
+      const intakeId = await submitCorpusEntry(entry, { token: s.token, csrf: s.session.csrfToken }, i);
       for (let k = 0; k < 6; k++) await runDueJobsOnce();
       const observed = observe(intakeId);
       const g = grade(entry, observed, intentsFor(intakeId));
@@ -371,7 +374,7 @@ export function summarize(results: CaseResult[]) {
     askRate: pct(ran.filter((r) => r.observed.questions > 0).length, ran.length),
     confirmRate: pct(ran.filter((r) => (r.observed.confirms ?? 0) > 0).length, ran.length),
     rejectRate: pct(ran.filter((r) => r.observed.kind === "rejected").length, ran.length),
-    completedRate: pct(ran.filter((r) => ["applied", "answered", "no_change"].includes(r.observed.state)).length, ran.length),
+    completedRate: pct(ran.filter((r) => ["completed", "applied", "answered", "no_change"].includes(r.observed.state) && r.observed.failed === 0).length, ran.length),
     partialRate: pct(ran.filter((r) => r.observed.state === "partially_applied").length, ran.length),
     routedBy: ran.reduce<Record<string, number>>((m, r) => ((m[r.observed.routedBy ?? "none"] = (m[r.observed.routedBy ?? "none"] ?? 0) + 1), m), {}),
     readOnlyViolations: results.filter((r) => r.readOnlyViolation).map((r) => r.id),

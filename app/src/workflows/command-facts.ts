@@ -2,13 +2,15 @@ import crypto from "node:crypto";
 import { getDb } from "@/repositories/db";
 import { OPERATIONS, type Command, type FactSet } from "@/contracts/commands";
 import { instanceTimezone, tzOffsetMs } from "@/domain/time";
+import { getSetting } from "@/repositories/settings";
+import { AI_BUDGET_SETTINGS_KEY, aiBudgetSchema } from "@/contracts/review";
 
 /**
  * 确认快照（语义修复 W2/R06）：按操作注册表声明的读取集合，读出命令依赖的当前事实。
  * 确认绑定“命令 + 这些事实”；确认前或执行事务内事实变了，旧确认作废并说明差异；集合外的变化不作废。
  */
 
-const VERSIONED: Record<string, string> = { taskId: "tasks", sessionId: "plan_sessions", projectId: "projects", goalId: "goals", eventId: "fixed_events", practiceId: "practice_entries", candidateId: "candidates", trackId: "direction_tracks", roadmapItemId: "roadmap_items", practiceEntryId: "practice_entries" };
+const VERSIONED: Record<string, string> = { resourceId: "resources", taskId: "tasks", sessionId: "plan_sessions", projectId: "projects", goalId: "goals", eventId: "fixed_events", practiceId: "practice_entries", candidateId: "candidates", trackId: "direction_tracks", roadmapItemId: "roadmap_items", practiceEntryId: "practice_entries" };
 const PREF_COLUMNS: Record<string, string> = { workdayStart: "workday_start", workdayEnd: "workday_end", weekendStart: "weekend_start", weekendEnd: "weekend_end", dailyLimitMinutes: "daily_limit_minutes", minBlockMinutes: "min_block_minutes", bufferPercent: "buffer_percent", commuteMinutes: "commute_minutes", meals: "meals_json" };
 const PREF_LABELS: Record<string, string> = { workdayStart: "工作日开始时间", workdayEnd: "工作日结束时间", weekendStart: "周末开始时间", weekendEnd: "周末结束时间", dailyLimitMinutes: "每天上限", minBlockMinutes: "最短一段", bufferPercent: "机动比例", commuteMinutes: "交通时间", meals: "三餐时段" };
 
@@ -30,7 +32,7 @@ function relatedRules(rules: RuleLike[], revokeIds: string[]): Array<{ id: strin
     .map((r) => ({ id: r.id, version: r.version, status: r.status }));
 }
 
-const FIELD_KIND: Record<string, string> = { taskId: "task", sessionId: "plan_session", projectId: "project", goalId: "goal", eventId: "fixed_event", practiceId: "practice_entry", candidateId: "candidate", trackId: "direction_track", roadmapItemId: "roadmap_item", practiceEntryId: "practice_entry" };
+const FIELD_KIND: Record<string, string> = { resourceId: "resource", taskId: "task", sessionId: "plan_session", projectId: "project", goalId: "goal", eventId: "fixed_event", practiceId: "practice_entry", candidateId: "candidate", trackId: "direction_track", roadmapItemId: "roadmap_item", practiceEntryId: "practice_entry" };
 /** 通用对象字段（entityKind + entityId，如归档）能指向的对象类型与表 */
 const ENTITY_TABLE: Record<string, string> = { task: "tasks", goal: "goals", course_set: "course_sets", plan_session: "plan_sessions", project: "projects" };
 
@@ -71,6 +73,11 @@ export function commandFacts(command: Record<string, unknown>): Facts {
       for (const k of keys) out[`pref:${k}`] = row?.[PREF_COLUMNS[k]!] ?? null;
     }
   }
+  if (sets.includes("ai_news_policy")) out.aiNewsPolicy = getSetting("aiNewsPolicy");
+  if (sets.includes("agent_policy")) {
+    const entry = getSetting(AI_BUDGET_SETTINGS_KEY);
+    out.agentPolicy = { version: entry.version, value: aiBudgetSchema.parse(entry.value ?? {}) };
+  }
   if (sets.includes("direction_profile")) {
     out.directionProfile = (db.prepare(`SELECT version FROM direction_profile WHERE id = 1`).get() as { version: number } | undefined)?.version ?? null;
   }
@@ -105,6 +112,28 @@ const RULE_LABELS: Record<string, string> = { no_study: "不安排学习", date_
 export function describeImpact(command: Record<string, unknown>, facts: Facts): string[] {
   const name = command.command as Command["command"];
   const meta = OPERATIONS[name];
+  if (name === "update_agent_policy") {
+    const current = (facts.agentPolicy as { value?: Record<string, unknown> } | undefined)?.value ?? {};
+    const out: string[] = [];
+    if (command.dailyModelCalls !== undefined) out.push(`每日模型调用上限：${current.dailyModelCalls ?? "未设置"} → ${command.dailyModelCalls} 次（长期，每天重新计数）`);
+    if (command.dailySearchCalls !== undefined) out.push(`每日搜索调用上限：${current.dailySearchCalls ?? "未设置"} → ${command.dailySearchCalls} 次（长期，每天重新计数）`);
+    if (command.scheduledEnabled !== undefined) out.push(`定期探索和复盘：${current.scheduledEnabled ? "开启" : "关闭"} → ${command.scheduledEnabled ? "开启" : "关闭"}`);
+    if (command.weeklyReview !== undefined) {
+      const describe = (v: unknown) => { const t = v as { weekday: number; localTime: string } | null; return t ? `每周${"一二三四五六日"[t.weekday - 1]} ${t.localTime}` : "不定期运行"; };
+      out.push(`定期复盘：${describe(current.weeklyReview)} → ${describe(command.weeklyReview)}`);
+    }
+    return out;
+  }
+  if (name === "link_resource") {
+    const db = getDb();
+    const existing = typeof command.resourceId === "string" ? db.prepare("SELECT title FROM resources WHERE id=?").get(command.resourceId) as { title: string } | undefined : undefined;
+    const title = existing?.title || command.title || command.url || "提供的资料正文";
+    const link = typeof command.resourceId === "string" ? db.prepare("SELECT role FROM resource_links WHERE resource_id=? ORDER BY created_at LIMIT 1").get(command.resourceId) as { role: string } | undefined : undefined;
+    const role = String(command.role ?? link?.role ?? "reference");
+    const roleLabel = { reference: "参考资料", requirement: "别人的要求", achievement: "自己的成果" }[role] ?? role;
+    const project = typeof command.projectId === "string" ? db.prepare("SELECT title FROM projects WHERE id=?").get(command.projectId) as { title: string } | undefined : undefined;
+    return [`将「${String(title).slice(0, 200)}」存为${roleLabel}${project ? `，关联项目「${project.title}」` : ""}；只存资料，不创建任务或安排学习时间`];
+  }
   if (name !== "update_planning_policy") {
     if (!meta) return [];
     const notes = [

@@ -136,12 +136,13 @@ export const FULL_JSON_TABLES: Record<string, { omit?: string[] }> = {
   roadmap_items: {},
   direction_project_links: {},
   direction_reflections: {},
+  ai_news_runs: { omit: ["job_id"] },
     // 非敏感设置（邮件模板、预算）；调度内部状态不导出
   settings: {},
 };
 
 /** settings 里只属于调度内部的键 */
-export const FULL_JSON_SETTINGS_OMIT_KEYS = ["weeklyReviewNextRun", "digestSchedule:daily", "digestSchedule:weekly", "digestSystemFingerprint", "modelCapabilities"];
+export const FULL_JSON_SETTINGS_OMIT_KEYS = ["weeklyReviewNextRun", "digestSchedule:daily", "digestSchedule:weekly", "digestSystemFingerprint", "modelCapabilities", "aiNewsScheduleDate"];
 
 /** 明确不导出（审计用）：凭证、会话、幂等记录、后台队列、导出记录本身、实例控制 */
 export const FULL_JSON_EXCLUDED = [

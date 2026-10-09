@@ -1,3 +1,4 @@
+import { applyRequestNews, applyNewsPolicy, applyCancelNews } from "@/workflows/ops/ai-news";
 import { localDateInTz, instanceTimezone } from "@/domain/time";
 import { getDb } from "@/repositories/db";
 import { addChange, createBatch, type ChangeInput } from "@/repositories/journal";
@@ -126,6 +127,9 @@ const HANDLERS: { [N in Command["command"]]: Handler<N> } = {
   select_candidate: applySelectCandidate,
   update_project_state: applyProjectState,
   request_exploration: applyRequestExploration,
+  request_ai_news: applyRequestNews,
+  cancel_ai_news: applyCancelNews,
+  update_ai_news_policy: applyNewsPolicy,
   link_resource: applyLinkResource,
   update_direction_profile: applyDirectionProfile,
   upsert_direction_track: applyDirectionTrack,
@@ -155,7 +159,7 @@ export function executeCommand(raw: unknown, ctx: CommandContext): CommandResult
     return { ok: false, code: "VALIDATION", error: `命令不合法：${parsed.error.issues.map((i) => `${i.path.join(".")} ${i.message}`.trim()).join("; ")}` };
   }
   // 资料里的文字不是授权；Agent 推断的修改按参数级授权，需确认的不直接执行
-  const auth = authorizeCommand(parsed.data, { origin: ctx.explicit === false ? "material" : ctx.inferred ? "inferred" : "owner", confirmed: ctx.confirmed });
+  const auth = authorizeCommand(parsed.data, { origin: ctx.explicit === false ? "material" : ctx.inferred ? "inferred" : "owner", confirmed: ctx.confirmed, ownerPolicyProposal: ctx.explicit === true && ctx.ownerPolicyProposal === true });
   if (auth.kind === "deny") return { ok: false, code: "NOT_AUTHORIZED", error: auth.reason };
   if (auth.kind === "confirm") return { ok: false, code: "NEEDS_CONFIRMATION", error: auth.reason };
   // 旧部署周期的请求不得写入新周期（§9.1）

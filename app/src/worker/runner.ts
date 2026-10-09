@@ -43,6 +43,9 @@ async function runPlanMaintenanceJob(job: JobRow): Promise<{ kind: string }> {
   }
 }
 
+import { runNewsJob, scheduleNews } from "@/workflows/ai-news";
+import { AI_NEWS_JOB_TYPE } from "@/contracts/ai-news";
+
 const HANDLERS: Record<string, (job: JobRow) => Promise<{ kind: string }>> = {
   [REMINDER_JOB_TYPE]: runReminderJob,
   [DIGEST_JOB_TYPE]: runDigestJob,
@@ -53,6 +56,7 @@ const HANDLERS: Record<string, (job: JobRow) => Promise<{ kind: string }>> = {
   [EXPLORATION_JOB_TYPE]: runExplorationJob,
   [REVIEW_JOB_TYPE]: runReviewJob,
   [ASSISTANT_JOB_TYPE]: runAssistantJob,
+  [AI_NEWS_JOB_TYPE]: runNewsJob,
 };
 
 /**
@@ -76,6 +80,7 @@ export async function runDueJobsOnce(limit = 1): Promise<RunOnceStats & { held?:
   scheduleWeeklyReview();
   scheduleDigests();
   scheduleCalendarSync();
+  scheduleNews();
   // 旧兼容接口改了任务/日程（只递增了规划修订号）：补一次确定性重排，和统一操作之后的那次是同一个算法；没有变化不写批次
   if (planIsStale()) raisePlanQuestions(rebuildPlan(nowDate()), { conversationId: null, tz: instanceTimezone() });
   // 学习块刚过去、没有反馈：不必等下一次重排，到点就问“这段做了吗”（已问过的同一段不重复）

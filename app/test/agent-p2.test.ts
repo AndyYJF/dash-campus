@@ -16,6 +16,10 @@ import { executeOperation } from "@/workflows/commands";
 import { AgentToolbox, TOOL_RESULT_LIMIT } from "@/workflows/agent-tools";
 import { validateRoute } from "@/workflows/agent-route";
 import { INTAKE_JOB_TYPE } from "@/contracts/intake";
+import { insertReview, finishReview, updateOwnerFields } from "@/repositories/reviews";
+import { businessWrites } from "./corpus/eval";
+import { retryIntake } from "@/workflows/intake";
+import { getIntake } from "@/repositories/intakes";
 
 /**
  * Agent 增强 v1.1 P2：模型优先路由与有界只读工具。
@@ -193,7 +197,9 @@ test("第四次请求必须终结：一直申请工具的模型在第 4 次请�
   assert.equal(routeRequests(r.intakeId), 4, "单次决策最多 4 次 HTTP");
   assert.equal(r.understanding.routedBy, "rules");
   assert.match(r.understanding.fallbackReason ?? "", /第 4 次请求仍在申请工具/);
-  assert.ok(items(r.intakeId).some((i) => i.key === "note-1"), "降级后仍按分类保留原话");
+  assert.equal(r.state, "failed", "工具轮次耗尽要如实失败，不能让分类器猜成新任务");
+  assert.match(JSON.stringify(items(r.intakeId)), /随便聊聊最近的学习状态吧/);
+  assert.equal(provider.exchanges.filter((e) => e.workflow === INTAKE_JOB_TYPE).length, 0, "未理解的原话不再走资料分类");
 });
 
 test("Seen 外 ID：工具没返回过的对象既不能读详情也不能执行；分页截断时未放进结果的对象不进 SeenSet", async () => {
@@ -367,4 +373,118 @@ test("无模型降级：明确指令照常按规则执行，不能理解的原�
   } finally {
     setProvidersForTests({ model: { mode: "fixture", provider } });
   }
+});
+
+test("HTTP/worker 查看已有复盘：模型读列表和正文，返回本人记录，不生成新复盘", async () => {
+  const review = insertReview({ localMonday: "2026-09-28", timezone: "Asia/Shanghai", trigger: "manual" });
+  finishReview(review.id, { status: "ready", facts: { completedTasks: 1 }, aiDraft: null, integrationMode: "fixture" });
+  const saved = updateOwnerFields(review.id, review.version, { ownerSummary: "卡在极限证明，已整理两页问题" });
+  assert.equal(typeof saved, "object");
+  const snapshot = JSON.stringify(getDb().prepare("SELECT * FROM reviews ORDER BY id").all());
+  onRoute = (messages, _options, n) => {
+    if (n === 1) return calls([{ name: "get_reviews", args: { dateFrom: "2026-09-28", dateTo: "2026-10-04" } }]);
+    const observed = toolResults(messages);
+    if (n === 2) {
+      assert.equal((observed[0]!.items as Array<{ id: string }>)[0]!.id, review.id);
+      return calls([{ name: "get_reviews", args: { id: review.id } }]);
+    }
+    const detail = observed.at(-1)!;
+    assert.match(String(detail.text), /卡在极限证明/);
+    return final({ items: [act("上周的复盘写了啥", [{ op: "answer", text: "本人总结：卡在极限证明，已整理两页问题。这里只查看。", sources: [detail.observationId] }], "读取已有复盘原文")] });
+  };
+  const result = await say("上周的复盘写了啥");
+  assert.equal(result.state, "answered", JSON.stringify(result));
+  assert.match(result.summary, /卡在极限证明/);
+  assert.equal(result.undo.available, false);
+  assert.equal(JSON.stringify(getDb().prepare("SELECT * FROM reviews ORDER BY id").all()), snapshot);
+  assert.deepEqual(businessWrites(result.intakeId), []);
+});
+
+test("没有对应方案的短答不制造确认作息；HTTP 路由看到的规则提示无 confirm_policy", async () => {
+  const snapshot = getDb().prepare("SELECT * FROM settings ORDER BY key").all();
+  onRoute = (messages) => {
+    const context = (JSON.parse(String(messages[1]!.content)) as { context: { ruleHints: unknown } }).context;
+    assert.doesNotMatch(JSON.stringify(context.ruleHints ?? null), /confirm_policy/);
+    return final({ items: [{ itemKey: "clarify", excerpt: "嗯，就这样吧", outcome: { kind: "ask", question: { prompt: "你指的是哪一个方案？", reason: "当前没有能对应的方案", options: [] } } }] });
+  };
+  const result = await say("嗯，就这样吧");
+  assert.equal(result.state, "needs_input", JSON.stringify(result));
+  assert.match(result.questions[0]!.prompt, /哪一个方案/);
+  assert.deepEqual(businessWrites(result.intakeId), []);
+  assert.deepEqual(getDb().prepare("SELECT * FROM settings ORDER BY key").all(), snapshot);
+});
+
+test("只读评测计入生成复盘的步骤副作用，不依赖 journal 批次", async () => {
+  onRoute = () => final({ items: [act("生成本周复盘", [{ op: "review", week: "this" }], "主人明确要求新生成")] });
+  const result = await say("生成本周复盘");
+  assert.equal((getDb().prepare("SELECT COUNT(*) n FROM agent_action_batches WHERE intake_id=?").get(result.intakeId) as { n: number }).n, 0);
+  assert.ok(businessWrites(result.intakeId).includes("request_review"), JSON.stringify(result));
+});
+
+
+test("路由超时不能把未理解的主人要求降级成学习任务；明确规则仍可执行", async () => {
+  const before = facts();
+  const classifyBefore = provider.exchanges.filter((e) => e.workflow === INTAKE_JOB_TYPE).length;
+  onRoute = () => ({ ok: false, code: "TIMEOUT", message: "模型请求超时（45000ms）", retryable: false });
+  onClassify = (text) => ({ items: [{ itemKey: "invented-task", kind: "task", summary: text, excerpt: text }] });
+  const result = await say("把模型额度调到一千次");
+  assert.equal(facts(), before, "未理解的要求不能创建任务或修改安排");
+  assert.equal(provider.exchanges.filter((e) => e.workflow === INTAKE_JOB_TYPE).length, classifyBefore, "路由失败不能交给任务分类器猜意图");
+  assert.equal(result.state, "failed", JSON.stringify(result));
+  assert.match(result.summary, /超时/);
+  assert.equal(result.undo.available, false);
+  assert.match(JSON.stringify(items(result.intakeId)), /把模型额度调到一千次/);
+  const lookup = await say("看看今天的安排");
+  assert.equal(lookup.state, "answered", "确切的只读规则仍可降级执行");
+  assert.equal(facts(), before);
+});
+
+
+test("失败路由可显式重试回理解层，已完成安排不重放，也不变成资料", async () => {
+  op({ command: "schedule_session", title: "重试物理预习", date: "2026-10-08", startLocalTime: "19:00", durationMinutes: 60 });
+  const ownerText = "把重试物理预习挪到下周五晚上九点，把模型额度调到一千次";
+  onRoute = () => ({ ok: false, code: "TIMEOUT", message: "模拟路由超时", retryable: false });
+  const initial = await say(ownerText);
+  const moved = getDb().prepare("SELECT s.start_utc FROM plan_sessions s JOIN tasks t ON t.id=s.task_id WHERE t.title=? AND s.status IN ('planned','tentative')").get("重试物理预习") as { start_utc: string };
+  assert.equal(moved.start_utc, "2026-10-16T13:00:00.000Z", JSON.stringify(initial));
+  const before = facts();
+  const countBefore = routeExchanges().length;
+  onRoute = (messages) => {
+    const ctx = (JSON.parse(String(messages[1]!.content)) as { context: { text: string } }).context;
+    assert.doesNotMatch(ctx.text, /物理/); // 重试只送未理解的部分，已成功的部分不重放。
+    return final({ items: [{ itemKey: "budget-question", excerpt: ctx.text, outcome: { kind: "ask", question: { prompt: "一千次是指每天还是每月？", reason: "额度周期不明确", options: ["每天", "每月"] } } }] });
+  };
+  assert.deepEqual(retryIntake(initial.intakeId, getIntake(initial.intakeId)!.version), { kind: "requeued" });
+  await drain();
+  const result = intakeResultById(initial.intakeId)!;
+  assert.ok(routeExchanges().length > countBefore, "显式重试必须回到理解层");
+  assert.equal(result.state, "needs_input", JSON.stringify(result));
+  assert.ok(result.questions.some((q) => q.prompt.includes("每天还是每月")));
+  assert.equal(facts(), before);
+});
+
+
+test("路由失败只保留未理解原话，不阻断同次独立文件导入", async () => {
+  const text = "把模型额度調到一千次。" + "这句话是主人在输入框提出的设置请求，当前失败也不能变成一个学习任务。".repeat(3);
+  const note = "独立附件资料：矩阵乘法复习提纲。";
+  onRoute = () => ({ ok: false, code: "TIMEOUT", message: "模拟路由超时", retryable: false });
+  let classified = "";
+  onClassify = (input) => {
+    classified = input;
+    return { items: [{ itemKey: "attachment-note", kind: "note", summary: "矩阵乘法复习提纲", excerpt: note }] };
+  };
+  const before = facts();
+  const form = new FormData();
+  form.append("text", text);
+  form.append("files", new File([note], "isolated-note.txt", { type: "text/plain" }));
+  const response = await POST(new NextRequest("http://localhost/api/v2/intakes", { method: "POST", headers: { cookie: `${SESSION_COOKIE}=${token}`, "x-csrf-token": csrf, "idempotency-key": `mixed-attachment-${seq++}` }, body: form }));
+  assert.equal(response.status, 202, await response.clone().text());
+  const intakeId = ((await response.json()) as { intakeId: string }).intakeId;
+  await drain();
+  assert.match(classified, /矩阵乘法/);
+  assert.doesNotMatch(classified, /模型额度/);
+  assert.equal(facts(), before, "失败设置请求不建学习任务");
+  const rows = items(intakeId);
+  assert.ok(rows.some((r) => r.key === "route-failure" && r.state === "failed"));
+  assert.ok(rows.some((r) => r.key === "attachment-note" && r.state === "applied"), JSON.stringify(rows));
 });

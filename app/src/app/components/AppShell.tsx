@@ -8,17 +8,19 @@ import ShellExtras, { RestoreHoldBanner } from "./ShellExtras";
 import ThemeToggle from "./ThemeToggle";
 import AgentLauncher from "./AgentLauncher";
 
-/** 主导航只保留今天、本周、方向；收件箱/回顾/探索记录作为旧版入口放在方向页底部 */
+/** 主导航为今天、本周、方向、AI资讯、对话；收件箱/回顾/探索记录入口放在方向页底部 */
 const NAV_ITEMS: Array<{ href: string; label: string; icon: IconName }> = [
   { href: "/today", label: "今天", icon: "today" },
   { href: "/week", label: "本周", icon: "calendar" },
   { href: "/direction", label: "方向", icon: "target" },
+  { href: "/news", label: "AI资讯", icon: "inbox" },
+  { href: "/chat", label: "对话", icon: "pencil" },
 ];
 
 /**
  * AppShell（纸面/手册风）：
- * - ≥1024px：左侧一栏直接印在纸面上（刊名、三个栏目、近期项目、设置与主题），与正文之间只有一条细线。
- * - <1024px：顶部一行刊头——刊标、三个栏目标签、设置；底部只留 Agent 细条。
+ * - ≥1024px：左侧一栏直接印在纸面上（刊名、五个栏目、近期项目、设置与主题），与正文之间只有一条细线。
+ * - <1024px：顶部一行刊头——刊标、栏目标签、设置；工作台底部保留 Agent 入口。
  * 正文不再套圆角面板；Agent 输入由根布局里的 GlobalAgent 固定在底部。
  */
 export default function AppShell({

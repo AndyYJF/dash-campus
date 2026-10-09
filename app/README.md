@@ -10,6 +10,8 @@
 - [校历、节假日与调休规格](docs/agent-first-v2/ACADEMIC-CALENDAR-AND-HOLIDAYS.md)
 - [本地配置、运行和部署](docs/deploy.md)
 - [Agent-first V2 总规划](docs/agent-first-v2/MASTER-PLAN.md)
-- [Coding Agent 开工指令](docs/agent-first-v2/CODING-AGENT.md)
+- [Coding Agent 历史建设说明](docs/agent-first-v2/CODING-AGENT.md)
+- [方向页计划](../Plan/dash-campus-DIRECTION-POLISH-PLAN-2026-10-05.md) / [方向页复验](../Plan/dash-campus-DIRECTION-ACCEPTANCE-2026-10-05.md)
+- [仓库指令](../AGENTS.md) / [应用补充](AGENTS.md)
 
-首次运行先按部署说明复制 `.env.example` 并填写必要配置。数据库、凭证及私人业务资料不入库。已有V2代码需要按R0–R5修复并扩展自研Agent；新修复规格尚未实施，不能把文档推送视为已上线功能。
+首次运行先按部署说明复制 `.env.example` 并填写必要配置。数据库、凭证及私人业务资料不入库。R0–R5 与 Agent 增强 P0–P6 已实施；方向页 D0/D1 已交付、D2–D5 待完成。当前验证边界与最近部署记录以 STATUS 为准，文档更新不等于应用发布。

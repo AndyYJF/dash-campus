@@ -136,12 +136,12 @@ export function listOpenQuestions(limit = 50): QuestionRow[] {
   return rows.map(mapQuestion);
 }
 
-/** 某个对话里正在等主人回答的问题（不含指定投递自己的问题）：自然语言续答只在这些里面找 */
+/** 最近一组待答问题（不含指定投递自己的问题），组内仍按旧→新排列，避免历史积压挤掉刚问的问题 */
 export function openQuestionsInConversation(conversationId: string, exceptIntakeId: string | null, limit = 10): QuestionRow[] {
   const rows = getDb()
-    .prepare(`SELECT * FROM clarification_questions WHERE status = 'open' AND conversation_id = ? AND intake_id IS NOT ? ORDER BY created_at, rowid LIMIT ?`)
+    .prepare(`SELECT * FROM clarification_questions WHERE status = 'open' AND conversation_id = ? AND intake_id IS NOT ? ORDER BY created_at DESC, rowid DESC LIMIT ?`)
     .all(conversationId, exceptIntakeId, limit) as Array<Record<string, unknown>>;
-  return rows.map(mapQuestion);
+  return rows.reverse().map(mapQuestion);
 }
 
 export function listQuestionsForIntake(intakeId: string): QuestionRow[] {
